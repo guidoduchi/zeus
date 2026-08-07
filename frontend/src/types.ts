@@ -54,6 +54,7 @@ export interface DashboardStats {
 export interface DashboardPayload {
   datasetRevision: number;
   sort: string;
+  direction: "asc" | "desc";
   search: string;
   stats: DashboardStats;
   tickets: TicketSummary[];

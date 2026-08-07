@@ -9,6 +9,10 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+from ..excel_export import (
+    WorkbookPublicationError,
+    recreate_pendings_from_database,
+)
 from ..excel_import import (
     WorkbookValidationError,
     read_pendings,
@@ -134,10 +138,19 @@ def edit_ticket_through_pendings(
             "Configure the workbook folder before editing ticket fields in Zeus"
         )
     path = workbook_directory / "Pendings.xlsx"
+    recreated: dict[str, Any] | None = None
     if not path.is_file():
-        raise FeatureUnavailableError(
-            "Pendings.xlsx does not exist. Zeus will not create it during a ticket edit."
-        )
+        try:
+            recreated = recreate_pendings_from_database(
+                store,
+                workbook_directory,
+            )
+            if recreated.get("created"):
+                recreated["import"] = import_pendings(store, path)
+        except (WorkbookPublicationError, WorkbookValidationError, OSError) as exc:
+            raise FeatureUnavailableError(
+                f"Pendings.xlsx is missing and Zeus could not recreate it safely: {exc}"
+            ) from exc
 
     state = store.state()
     last_import_sha = state.get("pendings_state", {}).get("last_import_sha256")
@@ -183,6 +196,7 @@ def edit_ticket_through_pendings(
             "revision": actual_revision,
             "changedFields": [],
             "backup": None,
+            "pendingsRecreated": recreated,
         }
 
     workbook = load_workbook(path, data_only=False, read_only=False, keep_links=True)
@@ -259,6 +273,7 @@ def edit_ticket_through_pendings(
         "changedFields": changed_fields,
         "backup": str(backup) if backup else None,
         "import": import_summary,
+        "pendingsRecreated": recreated,
     }
 
 

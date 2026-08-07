@@ -58,6 +58,10 @@ Starting Zeus queues one visible source query. After that:
 - **Query data** runs it manually;
 - the activity banner shows queued/running stage, message, progress, and safe
   cancellation where supported;
+- if `Pendings.xlsx` was deleted, a manual or scheduled query recreates it from
+  every current Markdown ticket, reports that no backup was restored, then
+  continues the normal import/query sequence; `Closed.xlsx` is not required or
+  created by this recovery;
 - refreshing or reopening the browser page only reads current Markdown state;
   it never touches Excel, Advanced Search, or Outlook.
 
@@ -70,8 +74,9 @@ port. The server cannot bind to another machine or network interface.
 The dashboard keeps the information density of the original CLI: SR, lifecycle,
 Done?, planned state, age, email state, severity, and summary are visible by
 default. The gear beside **Fields** can show/hide and reorder every available
-field. Preferences, sort order, and dark/light theme are stored in that browser
-profile only. Column resizing is intentionally not supported.
+field. Sort field and ascending/descending direction are independently
+selectable. Preferences, sort order/direction, and dark/light theme are stored
+in that browser profile only. Column resizing is intentionally not supported.
 
 The page itself never scrolls. The ticket list owns its wheel and keyboard
 scrolling; the ticket detail panel has a separate scroll area. A row opens in a
@@ -85,8 +90,9 @@ master/detail panel with:
 - ticket audit history.
 
 Keyboard shortcuts preserve the useful CLI grammar: arrows and Page Up/Down
-select rows, Enter opens, Escape closes, Ctrl+F searches, `S` cycles sorting,
-`M` opens Operations, and `R` queries sources.
+select rows, Enter opens, and Escape closes. Anywhere in the active Zeus page
+outside an input, textarea, selector, or editable region, Ctrl+F searches, `S`
+cycles the sort field, `M` opens Operations, and `R` queries sources.
 
 ## Safe browser editing
 
@@ -104,6 +110,13 @@ If Excel changed after Zeus last queried it, the browser save stops and asks
 for a new query. Neither side silently wins. If Excel has the workbook locked,
 Zeus asks the user to save and close it. Web-edit backups are retained under
 `Zeus Backups\Web edits`.
+
+If `Pendings.xlsx` no longer exists, **Save through Pendings** first recreates a
+verified workbook from the current Markdown records, imports that exact file to
+establish a new hash and snapshot, and then applies the requested workbook-first
+edit. This is solely a missing-file fallback: an existing changed, invalid, or
+locked workbook is never overwritten. Recreation does not consult Pendings
+backups and does not publish or create `Closed.xlsx`.
 
 Browser-editable Pendings-owned fields are:
 

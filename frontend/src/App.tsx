@@ -19,12 +19,30 @@ import { TicketDetail } from "./components/TicketDetail";
 import { TicketGrid } from "./components/TicketGrid";
 import { TopBar } from "./components/TopBar";
 import { useColumnPreferences } from "./hooks/useColumnPreferences";
+import { useGlobalCommands } from "./hooks/useGlobalCommands";
 import type { BootstrapPayload, DashboardPayload, Job, TicketDetail as TicketDetailType } from "./types";
 
-const SORTS = ["report", "sr", "planned", "email", "age", "severity", "status"];
+const SORTS = ["report", "sr", "planned", "email", "age", "severity", "status"] as const;
+type SortMode = typeof SORTS[number];
+type SortDirection = "asc" | "desc";
+
+const DEFAULT_DIRECTIONS: Record<SortMode, SortDirection> = {
+  report: "asc",
+  sr: "desc",
+  planned: "asc",
+  email: "desc",
+  age: "desc",
+  severity: "asc",
+  status: "asc",
+};
 
 function readPreference(key: string, fallback: string): string {
   try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
+}
+
+function readSort(): SortMode {
+  const saved = readPreference("zeus3.dashboard.sort", "report");
+  return SORTS.includes(saved as SortMode) ? saved as SortMode : "report";
 }
 
 export default function App() {
@@ -35,7 +53,11 @@ export default function App() {
   const [ticketLoading, setTicketLoading] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState(() => readPreference("zeus3.dashboard.sort", "report"));
+  const [sort, setSort] = useState<SortMode>(readSort);
+  const [direction, setDirection] = useState<SortDirection>(() => {
+    const saved = readPreference("zeus3.dashboard.direction", DEFAULT_DIRECTIONS[sort]);
+    return saved === "desc" ? "desc" : "asc";
+  });
   const [theme, setTheme] = useState(() => readPreference("zeus3.theme", "dark"));
   const [operationsOpen, setOperationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -58,12 +80,16 @@ export default function App() {
     return result;
   }, []);
 
-  const loadDashboard = useCallback(async (currentSort = sort, currentSearch = search) => {
+  const loadDashboard = useCallback(async (
+    currentSort = sort,
+    currentDirection = direction,
+    currentSearch = search,
+  ) => {
     const requestId = ++dashboardRequest.current;
-    const result = await getDashboard(currentSort, currentSearch);
+    const result = await getDashboard(currentSort, currentDirection, currentSearch);
     if (requestId === dashboardRequest.current) setDashboard(result);
     return result;
-  }, [search, sort]);
+  }, [direction, search, sort]);
 
   const loadTicket = useCallback(async (ticketId: string) => {
     setTicketLoading(true);
@@ -86,10 +112,11 @@ export default function App() {
   }, []); // initial connection only
 
   useEffect(() => {
-    const timer = window.setTimeout(() => loadDashboard(sort, search).catch(reportError), 140);
+    const timer = window.setTimeout(() => loadDashboard(sort, direction, search).catch(reportError), 140);
     localStorage.setItem("zeus3.dashboard.sort", sort);
+    localStorage.setItem("zeus3.dashboard.direction", direction);
     return () => window.clearTimeout(timer);
-  }, [loadDashboard, reportError, search, sort]);
+  }, [direction, loadDashboard, reportError, search, sort]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -172,9 +199,12 @@ export default function App() {
     }
 
     setTicket(result.ticket);
+    const recreated = result.pendingsRecreated;
     setToast({
       tone: "success",
-      message: `SR ${ticketId} saved through Pendings.xlsx; the dashboard was updated from that workbook edit.`,
+      message: recreated?.created
+        ? `Pendings.xlsx was missing, so Zeus recreated it from ${recreated.rows} Markdown ticket record(s), then saved SR ${ticketId} through the new workbook. No backup was restored.`
+        : `SR ${ticketId} saved through Pendings.xlsx; the dashboard was updated from that workbook edit.`,
     });
     try {
       await loadDashboard();
@@ -187,12 +217,28 @@ export default function App() {
     }
   }
 
-  function cycleSort() {
-    const current = SORTS.indexOf(sort);
-    setSort(SORTS[(current + 1) % SORTS.length]);
-  }
-
   const activeJob = useMemo(() => jobs.find((job) => ["queued", "running"].includes(job.status)), [jobs]);
+  const chooseSort = useCallback((next: SortMode) => {
+    setSort(next);
+    setDirection(DEFAULT_DIRECTIONS[next]);
+  }, []);
+  const cycleSort = useCallback(() => {
+    const next = SORTS[(SORTS.indexOf(sort) + 1) % SORTS.length];
+    chooseSort(next);
+  }, [chooseSort, sort]);
+  const queryData = useCallback(() => {
+    if (!activeJob) void runJob("query");
+  }, [activeJob, runJob]);
+
+  useGlobalCommands({
+    disabled: operationsOpen || settingsOpen,
+    queryDisabled: Boolean(activeJob),
+    onSearch: () => searchRef.current?.focus(),
+    onSort: cycleSort,
+    onOperations: () => setOperationsOpen(true),
+    onQuery: queryData,
+  });
+
   const warnings = bootstrap?.startup.warnings || [];
   const notices = bootstrap?.startup.notices || [];
 
@@ -231,12 +277,18 @@ export default function App() {
           <input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search SR, summary, handler, site…" />
           {search && <button type="button" onClick={() => setSearch("")} aria-label="Clear search">×</button>}
         </label>
-        <label className="sort-control">Sort
-          <select value={sort} onChange={(event) => setSort(event.target.value)}>
+        <div className="sort-control" role="group" aria-label="Dashboard sorting">
+          <label>Sort
+          <select aria-label="Sort field" value={sort} onChange={(event) => chooseSort(event.target.value as SortMode)}>
             {SORTS.map((option) => <option value={option} key={option}>{option}</option>)}
           </select>
-        </label>
-        <button type="button" className="toolbar-button" onClick={() => runJob("query")} disabled={Boolean(activeJob)}>↻ Query data</button>
+          </label>
+          <select aria-label="Sort direction" value={direction} onChange={(event) => setDirection(event.target.value as SortDirection)}>
+            <option value="asc">↑ Ascending</option>
+            <option value="desc">↓ Descending</option>
+          </select>
+        </div>
+        <button type="button" className="toolbar-button" onClick={queryData} disabled={Boolean(activeJob)}>↻ Query data</button>
         <div className="columns-anchor">
           <button type="button" className="toolbar-button" onClick={() => setColumnsOpen((value) => !value)}>⚙ Fields</button>
           {columnsOpen && (
@@ -258,10 +310,6 @@ export default function App() {
           selectedId={selectedId}
           onSelect={setSelectedId}
           onCloseDetail={() => setSelectedId(null)}
-          onSearchShortcut={() => searchRef.current?.focus()}
-          onSortShortcut={cycleSort}
-          onOperationsShortcut={() => setOperationsOpen(true)}
-          onQueryShortcut={() => runJob("query")}
         />
         <TicketDetail
           ticket={ticket}

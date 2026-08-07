@@ -7,10 +7,6 @@ interface Props {
   selectedId: string | null;
   onSelect: (ticketId: string) => void;
   onCloseDetail: () => void;
-  onSearchShortcut: () => void;
-  onSortShortcut: () => void;
-  onOperationsShortcut: () => void;
-  onQueryShortcut: () => void;
 }
 
 function displayValue(ticket: TicketSummary, key: string): string {
@@ -33,10 +29,6 @@ export function TicketGrid({
   selectedId,
   onSelect,
   onCloseDetail,
-  onSearchShortcut,
-  onSortShortcut,
-  onOperationsShortcut,
-  onQueryShortcut,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -58,16 +50,7 @@ export function TicketGrid({
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     const current = selectedIndex >= 0 ? selectedIndex : 0;
-    if (event.ctrlKey && event.key.toLowerCase() === "f") {
-      event.preventDefault();
-      onSearchShortcut();
-      return;
-    }
-    const key = event.key.toLowerCase();
-    if (key === "s") onSortShortcut();
-    else if (key === "m") onOperationsShortcut();
-    else if (key === "r") onQueryShortcut();
-    else if (event.key === "ArrowDown") moveSelection(current + 1);
+    if (event.key === "ArrowDown") moveSelection(current + 1);
     else if (event.key === "ArrowUp") moveSelection(current - 1);
     else if (event.key === "PageDown") moveSelection(current + 12);
     else if (event.key === "PageUp") moveSelection(current - 12);

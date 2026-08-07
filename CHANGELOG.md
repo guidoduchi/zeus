@@ -37,6 +37,13 @@
   writes a canonical Excel date cell.
 - Made the Chrome/Edge save regression use browser-specific values so each
   project exercises a real Pendings transaction.
+- Promoted `S`, `M`, `R`, and `Ctrl+F` to page-level commands whenever focus is
+  outside an editable control, and added a persisted ascending/descending sort
+  direction beside the existing sort field.
+- Made manual and scheduled **Query data** plus **Save through Pendings**
+  recreate an absent `Pendings.xlsx` from the current Markdown database. The
+  verified recovery neither restores a backup nor creates or changes
+  `Closed.xlsx`, and interrupted recreation is journaled.
 
 ## 2.0.3 - 2026-08-06
 

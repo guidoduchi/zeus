@@ -38,6 +38,10 @@ Consequences:
 8. Reloading the web page is a read operation, never a source operation.
 9. Planned Date uses a browser calendar; users do not need to infer a text
    format.
+10. `S`, `M`, `R`, and Ctrl+F operate at page scope while focus is outside an
+    editable control. Text entry must never become an application command.
+11. Sort field and ascending/descending direction are separate browser-local
+    preferences.
 
 ## Authority invariants
 
@@ -53,6 +57,10 @@ Consequences:
 7. Closed is append-only finalized output and is not a prerequisite for startup.
 8. Spare is system-derived: non-empty BOM means `Y`; empty BOM means `N`.
    Neither the browser nor stale workbook content may override that rule.
+9. A truly absent Pendings file may be materialized from the current Markdown
+   database only when Query or Save explicitly needs it. This exception never
+   applies to an existing changed or corrupt workbook, never restores a
+   Pendings backup, and never creates or mutates Closed.
 
 ## Runtime invariants
 

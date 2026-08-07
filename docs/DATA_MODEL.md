@@ -31,6 +31,21 @@ Closed is not required to import Pendings. When present it is validated and
 indexed. Advanced Search is not required to show Pendings-derived tickets.
 Outlook is never required to build or query the database.
 
+## Missing-Pendings materialization
+
+When a manual or scheduled Query, or a browser Save, finds that
+`Pendings.xlsx` is genuinely absent, Zeus may materialize a replacement from
+every current Markdown record. It preserves the last known valid header order
+when available, writes active and closure-pending rows, builds the report sheet,
+verifies all ticket IDs, and establishes a new protected-field snapshot before
+ordinary import continues.
+
+This recovery is not publication and is not backup restore. It never reads a
+Pendings backup, creates or modifies `Closed.xlsx`, or finalizes a ticket. An
+existing workbook—even invalid or externally changed—remains protected by the
+normal validation and conflict rules. Preparation and replacement are
+journaled so startup can finalize a verified replacement after interruption.
+
 ## Browser edit transaction
 
 A web edit is a Pendings transaction, not a direct Markdown mutation. Its
@@ -69,9 +84,9 @@ writable data root, validates it, swaps it atomically, and appends a local audit
 event. Keeping staging below the data root preserves Windows ACL inheritance
 and avoids cross-volume replacement failures.
 
-Workbook publication, Pendings restore, and web edits add their own backup or
-journal boundary. Startup recovers a verified operation or discards its
-uncommitted preparation before ordinary import begins.
+Workbook publication, Pendings restore/recreation, and web edits add their own
+backup or journal boundary. Startup recovers a verified operation or discards
+its uncommitted preparation before ordinary import begins.
 
 ## Email privacy
 

@@ -167,10 +167,15 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/dashboard":
             sort = query.get("sort", ["report"])[0]
+            direction = query.get("direction", [None])[0]
             search = query.get("search", [""])[0]
             self._send_json(
                 HTTPStatus.OK,
-                self.server.service.dashboard(sort=sort, search=search),
+                self.server.service.dashboard(
+                    sort=sort,
+                    direction=direction,
+                    search=search,
+                ),
             )
             return
         ticket_match = TICKET_ROUTE.fullmatch(path)

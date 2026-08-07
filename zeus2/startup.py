@@ -6,7 +6,13 @@ from threading import Event
 from typing import Any
 
 from .diagnostics import record_exception
-from .excel_export import recover_pendings_restore, recover_publication
+from .excel_export import (
+    WorkbookPublicationError,
+    recover_pendings_recreation,
+    recover_pendings_restore,
+    recover_publication,
+    recreate_pendings_from_database,
+)
 from .excel_import import WorkbookValidationError
 from .mail import (
     MailFetchCancelled,
@@ -159,6 +165,7 @@ def reconcile_advanced_and_new_mail(
 def run_startup(
     store: ZeusStore,
     *,
+    recreate_missing_pendings: bool = False,
     cancel_event: Event | None = None,
     progress: Any = None,
 ) -> StartupResult:
@@ -180,13 +187,31 @@ def run_startup(
             recovered = recover_publication(store, workbook_directory)
             if recovered:
                 result.operations["publication_recovery"] = recovered
+            recreated = recover_pendings_recreation(store, workbook_directory)
+            if recreated:
+                result.operations["pendings_recreation_recovery"] = recreated
+                if recreated.get("created") and recreated.get("notice"):
+                    result.notices.append(str(recreated["notice"]))
         except Exception as exc:
             result.warnings.append(f"PUBLICATION RECOVERY WARNING — {exc}")
 
         try:
             assert pending_path is not None
+            if recreate_missing_pendings and not pending_path.is_file():
+                recreated = recreate_pendings_from_database(
+                    store,
+                    workbook_directory,
+                )
+                result.operations["pendings_recreation"] = recreated
+                if recreated.get("notice"):
+                    result.notices.append(str(recreated["notice"]))
             result.operations["pendings_import"] = import_pendings(store, pending_path)
-        except (WorkbookValidationError, ReconciliationError, OSError) as exc:
+        except (
+            WorkbookPublicationError,
+            WorkbookValidationError,
+            ReconciliationError,
+            OSError,
+        ) as exc:
             message = str(exc)
             result.warnings.append(
                 "PENDINGS WARNING — the Markdown database was preserved and no local "

@@ -520,6 +520,215 @@ def _snapshot_for_tickets(
     }
 
 
+def _recreated_pendings_headers(store: ZeusStore) -> list[str]:
+    snapshot = store.state().get("publication_state", {}).get("pendings_snapshot")
+    saved = snapshot.get("header_order") if isinstance(snapshot, dict) else None
+    if (
+        isinstance(saved, list)
+        and len(saved) == len(PENDING_COLUMNS)
+        and set(saved) == set(PENDING_COLUMNS)
+    ):
+        return [str(value) for value in saved]
+    return list(PENDING_COLUMNS)
+
+
+def _finalize_pendings_recreation(
+    store: ZeusStore,
+    journal: dict[str, Any],
+) -> None:
+    summary = {
+        "path": journal["path"],
+        "rows": journal["rows"],
+        "source": "markdown_database",
+        "sha256": journal["new_hash"],
+    }
+    with store.transaction(
+        "pendings-recreation-finalize",
+        summary,
+        backup=False,
+    ) as staging:
+        state = store.state(staging)
+        state.setdefault("publication_state", {})["pendings_snapshot"] = journal[
+            "pendings_snapshot"
+        ]
+        pendings_state = state.setdefault("pendings_state", {})
+        pendings_state["last_error"] = None
+        pendings_state["last_recreated_at"] = journal["recreated_at"]
+        pendings_state["last_recreated_sha256"] = journal["new_hash"]
+        (staging / "pendings_recreation_journal.json").unlink(missing_ok=True)
+        atomic_write_json(staging / "state.json", state)
+
+
+def recover_pendings_recreation(
+    store: ZeusStore,
+    workbook_directory: Path,
+) -> dict[str, Any] | None:
+    """Finish or safely discard an interrupted database-driven recreation."""
+
+    journal_path = store.current / "pendings_recreation_journal.json"
+    if not journal_path.exists():
+        return None
+    import json
+
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    target = workbook_directory.expanduser().resolve() / "Pendings.xlsx"
+    actual = sha256_file(target) if target.is_file() else None
+    if actual == journal.get("new_hash"):
+        _finalize_pendings_recreation(store, journal)
+        return {
+            "recovered": "finalized",
+            "created": True,
+            "path": str(target),
+            "rows": int(journal.get("rows") or 0),
+            "source": "markdown_database",
+            "sha256": journal.get("new_hash"),
+            "restoredBackup": False,
+            "notice": journal.get("notice"),
+        }
+    if actual is None:
+        with store.transaction(
+            "pendings-recreation-abort",
+            {"reason": "target_not_replaced"},
+            backup=False,
+        ) as staging:
+            (staging / "pendings_recreation_journal.json").unlink(missing_ok=True)
+        return {"recovered": "aborted", "created": False}
+    raise WorkbookPublicationError(
+        "An interrupted Pendings recreation found a different Pendings.xlsx. "
+        "Zeus preserved that file; query it after confirming its contents."
+    )
+
+
+def recreate_pendings_from_database(
+    store: ZeusStore,
+    workbook_directory: Path,
+) -> dict[str, Any]:
+    """Create a missing Pendings workbook from current Markdown records only.
+
+    This is intentionally not operational publication: it does not create or
+    change Closed.xlsx, finalize closure-pending tickets, or restore a backup.
+    """
+
+    store.ensure_layout()
+    workbook_directory = workbook_directory.expanduser().resolve()
+    workbook_directory.mkdir(parents=True, exist_ok=True)
+    recovered = recover_pendings_recreation(store, workbook_directory)
+    target = workbook_directory / "Pendings.xlsx"
+    if target.is_file():
+        if recovered and recovered.get("created"):
+            return recovered
+        return {
+            "created": False,
+            "path": str(target),
+            "source": "existing_workbook",
+        }
+
+    tickets = list(store.iter_tickets())
+    active = [
+        ticket
+        for ticket in tickets
+        if ticket.get("lifecycle", {}).get("status") == "active"
+    ]
+    closure_pending = [ticket for ticket in tickets if ticket not in active]
+    header_order = _recreated_pendings_headers(store)
+    token = uuid.uuid4().hex
+    temporary = workbook_directory / f".zeus-recreate-pendings-{token}.xlsx"
+    workbook = Workbook()
+    try:
+        _write_ticket_sheet(workbook, tickets, header_order=header_order)
+        _write_report_sheet(workbook, active, closure_pending, store.config)
+        workbook.save(temporary)
+    finally:
+        workbook.close()
+
+    try:
+        generated = read_pendings(temporary)
+        expected_ids = {ticket["ticket_id"] for ticket in tickets}
+        if set(generated.records) != expected_ids:
+            raise WorkbookPublicationError(
+                "Recreated Pendings.xlsx failed ticket-ID verification"
+            )
+        recreated_at = iso_now()
+        new_hash = generated.sha256
+        notice = (
+            "Pendings.xlsx was missing and Zeus recreated it from "
+            f"{len(tickets)} Markdown ticket record(s). No backup was restored."
+        )
+        snapshot = _snapshot_for_tickets(
+            tickets,
+            pending_path=temporary,
+            header_order=header_order,
+        )
+        snapshot["filename"] = "Pendings.xlsx"
+        journal = {
+            "schema_version": 1,
+            "path": str(target),
+            "recreated_at": recreated_at,
+            "rows": len(tickets),
+            "active_rows": len(active),
+            "closure_pending_rows": len(closure_pending),
+            "new_hash": new_hash,
+            "pendings_snapshot": snapshot,
+            "notice": notice,
+        }
+        with store.transaction(
+            "pendings-recreation-prepare",
+            {
+                "path": str(target),
+                "rows": len(tickets),
+                "source": "markdown_database",
+            },
+        ) as staging:
+            atomic_write_json(
+                staging / "pendings_recreation_journal.json",
+                journal,
+            )
+        if target.exists():
+            with store.transaction(
+                "pendings-recreation-abort",
+                {"reason": "workbook_appeared_during_recreation"},
+                backup=False,
+            ) as staging:
+                (staging / "pendings_recreation_journal.json").unlink(
+                    missing_ok=True
+                )
+            raise WorkbookPublicationError(
+                "Pendings.xlsx appeared while Zeus was recreating it. Zeus preserved "
+                "the existing file; query again to import it safely."
+            )
+        os.replace(temporary, target)
+        _finalize_pendings_recreation(store, journal)
+        return {
+            "created": True,
+            "path": str(target),
+            "rows": len(tickets),
+            "activeRows": len(active),
+            "closurePendingRows": len(closure_pending),
+            "source": "markdown_database",
+            "sha256": new_hash,
+            "restoredBackup": False,
+            "notice": notice,
+        }
+    except Exception:
+        # If replacement already succeeded, the journal deliberately remains
+        # available for startup recovery. Otherwise no managed file changed.
+        if not target.is_file():
+            try:
+                with store.transaction(
+                    "pendings-recreation-abort",
+                    {"reason": "recreation_failed_before_replace"},
+                    backup=False,
+                ) as staging:
+                    (staging / "pendings_recreation_journal.json").unlink(
+                        missing_ok=True
+                    )
+            except Exception:
+                pass
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _filter_staging_for_closed(store: ZeusStore, staging: Path, closing_ids: set[str]) -> None:
     path = store.staging_file(staging)
     if not path.exists():

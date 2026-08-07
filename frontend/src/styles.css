@@ -218,7 +218,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .search-box > span { color: var(--cyan); font-size: 18px; }
 .search-box input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); }
 .search-box button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
-.sort-control { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+.sort-control, .sort-control label { display: flex; align-items: center; gap: 5px; color: var(--muted); }
 .sort-control select, .toolbar-button { height: 28px; border: 1px solid var(--line); background: var(--surface-raised); color: var(--text); padding: 0 8px; }
 .toolbar-button { cursor: pointer; }
 .toolbar-button:hover:not(:disabled) { border-color: var(--cyan); }

@@ -46,8 +46,8 @@ export async function getBootstrap(): Promise<BootstrapPayload> {
   return payload;
 }
 
-export function getDashboard(sort: string, search: string): Promise<DashboardPayload> {
-  const query = new URLSearchParams({ sort, search });
+export function getDashboard(sort: string, direction: "asc" | "desc", search: string): Promise<DashboardPayload> {
+  const query = new URLSearchParams({ sort, direction, search });
   return request<DashboardPayload>(`/api/dashboard?${query}`);
 }
 
@@ -59,7 +59,18 @@ export function saveTicket(
   ticketId: string,
   revision: string,
   changes: Record<string, unknown>,
-): Promise<{ changed: boolean; changedFields: string[]; ticket: TicketDetail }> {
+): Promise<{
+  changed: boolean;
+  changedFields: string[];
+  ticket: TicketDetail;
+  pendingsRecreated?: {
+    created: boolean;
+    rows: number;
+    source: string;
+    restoredBackup: boolean;
+    notice: string;
+  };
+}> {
   return request(`/api/tickets/${ticketId}/local`, {
     method: "PATCH",
     headers: { "If-Match": revision },

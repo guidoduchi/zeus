@@ -56,10 +56,6 @@ function renderGrid(selectedId: string | null = null) {
       selectedId={selectedId}
       onSelect={onSelect}
       onCloseDetail={vi.fn()}
-      onSearchShortcut={vi.fn()}
-      onSortShortcut={vi.fn()}
-      onOperationsShortcut={vi.fn()}
-      onQueryShortcut={vi.fn()}
     />,
   );
   return onSelect;

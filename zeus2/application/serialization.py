@@ -30,6 +30,16 @@ COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "device", "label": "Device", "width": 150, "default": False},
 )
 
+DEFAULT_SORT_DIRECTIONS = {
+    "report": "asc",
+    "sr": "desc",
+    "planned": "asc",
+    "email": "desc",
+    "age": "desc",
+    "severity": "asc",
+    "status": "asc",
+}
+
 
 def ticket_revision(ticket: dict[str, Any]) -> str:
     """Return a stable optimistic-concurrency token for one ticket."""
@@ -160,14 +170,14 @@ def _sort_key(ticket: dict[str, Any], config: dict[str, Any], mode: str) -> Any:
     facts = aging_for_ticket(ticket, config)
     upstream = ticket.get("upstream", {}).get("fields", {})
     if mode == "sr":
-        return (-int(ticket["ticket_id"]),)
+        return (int(ticket["ticket_id"]),)
     if mode in {"report", "planned"}:
         return report_sort_key(ticket, config)
     if mode == "email":
         value = facts.communication_inactivity_days
-        return (value is None, 0 if value is None else -value, -int(ticket["ticket_id"]))
+        return (value is not None, -1 if value is None else value, int(ticket["ticket_id"]))
     if mode == "age":
-        return (-(facts.ticket_age_days or -1), -int(ticket["ticket_id"]))
+        return (-1 if facts.ticket_age_days is None else facts.ticket_age_days, int(ticket["ticket_id"]))
     if mode == "severity":
         return (str(upstream.get("Customer Severity") or "").casefold(), -int(ticket["ticket_id"]))
     if mode == "status":
@@ -179,10 +189,12 @@ def dashboard_payload(
     store: ZeusStore,
     *,
     sort: str = "report",
+    direction: str | None = None,
     search: str = "",
     dataset_revision: int = 0,
 ) -> dict[str, Any]:
     config = store.config
+    direction = direction or DEFAULT_SORT_DIRECTIONS.get(sort, "asc")
     all_records = list(store.iter_tickets())
     active = [
         ticket
@@ -191,8 +203,9 @@ def dashboard_payload(
     ]
     closing = [ticket for ticket in all_records if ticket not in active]
     query = search.strip().casefold()
-    ordered = sorted(active, key=lambda value: _sort_key(value, config, sort)) + sorted(
-        closing, key=lambda value: _sort_key(value, config, sort)
+    reverse = direction == "desc"
+    ordered = sorted(active, key=lambda value: _sort_key(value, config, sort), reverse=reverse) + sorted(
+        closing, key=lambda value: _sort_key(value, config, sort), reverse=reverse
     )
     if query:
         ordered = [ticket for ticket in ordered if query in _ticket_search_text(ticket)]
@@ -210,6 +223,7 @@ def dashboard_payload(
     return {
         "datasetRevision": dataset_revision,
         "sort": sort,
+        "direction": direction,
         "search": search,
         "stats": {
             "active": len(active),

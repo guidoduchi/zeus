@@ -24,6 +24,11 @@ from zeus2.application.jobs import EventBroker, JobManager
 from zeus2.application.serialization import dashboard_payload, ticket_revision
 from zeus2.application.service import ApplicationService
 from zeus2.config import save_config
+from zeus2.excel_export import (
+    recreate_pendings_from_database,
+    recover_pendings_recreation,
+)
+from zeus2.excel_import import read_pendings
 from zeus2.main import _restart_command
 from zeus2.startup import run_startup
 from zeus2.store import ZeusStore
@@ -199,6 +204,135 @@ class PendingsFirstSourceTests(WebFixture):
             "Initial note",
         )
 
+    def test_query_recreates_deleted_pendings_from_markdown_not_a_backup(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        backup_directory = self.books / "Zeus Backups"
+        backup_directory.mkdir(exist_ok=True)
+        write_managed(
+            backup_directory / "Pendings_20990101_000000_000000.xlsx",
+            [pending_row("12345678", **{"Notes": "Value from the latest backup"})],
+        )
+        (self.books / "Pendings.xlsx").unlink()
+
+        ordinary_startup = run_startup(self.store)
+        self.assertFalse((self.books / "Pendings.xlsx").exists())
+        self.assertTrue(
+            any("Pendings.xlsx was not found" in warning for warning in ordinary_startup.warnings)
+        )
+
+        query = run_startup(self.store, recreate_missing_pendings=True)
+
+        recreated = query.operations["pendings_recreation"]
+        self.assertTrue(recreated["created"])
+        self.assertEqual(recreated["source"], "markdown_database")
+        self.assertFalse(recreated["restoredBackup"])
+        self.assertTrue(any("No backup was restored" in notice for notice in query.notices))
+        self.assertFalse(any("PENDINGS WARNING" in warning for warning in query.warnings))
+        managed = read_pendings(self.books / "Pendings.xlsx")
+        self.assertEqual(
+            managed.records["12345678"]["local"]["fields"]["Notes"],
+            "Initial note",
+        )
+        self.assertEqual(
+            self.store.state()["pendings_state"]["last_import_sha256"],
+            sha256_file(self.books / "Pendings.xlsx"),
+        )
+        self.assertFalse((self.books / "Closed.xlsx").exists())
+
+    def test_save_recreates_deleted_pendings_then_applies_the_edit(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        before = self.store.read_ticket("12345678")
+        (self.books / "Pendings.xlsx").unlink()
+
+        result = edit_ticket_through_pendings(
+            self.store,
+            "12345678",
+            {"Notes": "Saved after deletion"},
+            expected_revision=ticket_revision(before),
+        )
+
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["pendingsRecreated"]["created"])
+        self.assertFalse(result["pendingsRecreated"]["restoredBackup"])
+        managed = read_pendings(self.books / "Pendings.xlsx")
+        self.assertEqual(
+            managed.records["12345678"]["local"]["fields"]["Notes"],
+            "Saved after deletion",
+        )
+        self.assertEqual(
+            self.store.read_ticket("12345678")["local"]["fields"]["Notes"],
+            "Saved after deletion",
+        )
+        self.assertFalse((self.books / "Closed.xlsx").exists())
+
+    def test_recreation_keeps_closure_pending_markdown_rows_in_pendings(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        ticket = self.store.read_ticket("12345678")
+        ticket["lifecycle"]["status"] = "closure_pending"
+        with self.store.transaction("test-closure-pending", {}) as staging:
+            self.store.write_ticket_bundle(staging, ticket)
+        (self.books / "Pendings.xlsx").unlink()
+
+        run_startup(self.store, recreate_missing_pendings=True)
+
+        self.assertEqual(
+            set(read_pendings(self.books / "Pendings.xlsx").records),
+            {"12345678"},
+        )
+        self.assertEqual(
+            self.store.read_ticket("12345678")["lifecycle"]["status"],
+            "closure_pending",
+        )
+
+    def test_interrupted_recreation_is_finalized_from_its_journal(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        (self.books / "Pendings.xlsx").unlink()
+
+        with patch(
+            "zeus2.excel_export._finalize_pendings_recreation",
+            side_effect=RuntimeError("simulated interruption"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                recreate_pendings_from_database(self.store, self.books)
+
+        self.assertTrue((self.books / "Pendings.xlsx").is_file())
+        self.assertTrue(
+            (self.store.current / "pendings_recreation_journal.json").is_file()
+        )
+        recovered = recover_pendings_recreation(self.store, self.books)
+        self.assertEqual(recovered["recovered"], "finalized")
+        self.assertFalse(
+            (self.store.current / "pendings_recreation_journal.json").exists()
+        )
+
+    def test_dashboard_supports_true_sr_ascending_and_descending_order(self) -> None:
+        write_managed(
+            self.books / "Pendings.xlsx",
+            [pending_row("12345678"), pending_row("12345680"), pending_row("12345679")],
+        )
+        run_startup(self.store)
+
+        ascending = dashboard_payload(self.store, sort="sr", direction="asc")
+        descending = dashboard_payload(self.store, sort="sr", direction="desc")
+        default_order = dashboard_payload(self.store, sort="sr")
+
+        self.assertEqual(
+            [ticket["ticketId"] for ticket in ascending["tickets"]],
+            ["12345678", "12345679", "12345680"],
+        )
+        self.assertEqual(
+            [ticket["ticketId"] for ticket in descending["tickets"]],
+            ["12345680", "12345679", "12345678"],
+        )
+        self.assertEqual(ascending["direction"], "asc")
+        self.assertEqual(descending["direction"], "desc")
+        self.assertEqual(default_order["direction"], "desc")
+        self.assertEqual(default_order["tickets"], descending["tickets"])
+
 
 class JobManagerTests(unittest.TestCase):
     def test_jobs_are_serialized_and_emit_visible_progress(self) -> None:
@@ -292,6 +426,67 @@ class ApplicationServiceContractTests(WebFixture):
                 )
             )
             self.assertEqual(service.dashboard(sort="report", search="")["stats"]["active"], 1)
+        finally:
+            service.stop()
+
+    def test_query_job_recreates_a_deleted_pendings_workbook(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        (self.books / "Pendings.xlsx").unlink()
+        service = ApplicationService(self.store)
+        try:
+            job = service.submit_job("query", {})
+            deadline = time.monotonic() + 3
+            snapshot = service.jobs.get(job["id"])
+            while snapshot and snapshot["status"] in {"queued", "running"}:
+                if time.monotonic() >= deadline:
+                    self.fail("Deleted-Pendings query did not finish")
+                time.sleep(0.01)
+                snapshot = service.jobs.get(job["id"])
+
+            self.assertIsNotNone(snapshot)
+            self.assertEqual(snapshot["status"], "succeeded")
+            self.assertTrue((self.books / "Pendings.xlsx").is_file())
+            self.assertTrue(
+                snapshot["result"]["operations"]["pendings_recreation"]["created"]
+            )
+            self.assertTrue(
+                any(
+                    "recreated it from 1 Markdown ticket record" in notice
+                    for notice in service.latest_startup.notices
+                )
+            )
+        finally:
+            service.stop()
+
+    def test_save_response_reports_recreation_and_clears_the_stale_warning(self) -> None:
+        self.seed_pendings_only()
+        startup = run_startup(self.store)
+        (self.books / "Pendings.xlsx").unlink()
+        service = ApplicationService(self.store)
+        service.latest_startup = startup
+        service.latest_startup.warnings.append(
+            "PENDINGS WARNING — Pendings.xlsx was not found: deleted for test"
+        )
+        try:
+            before = service.ticket("12345678")
+            result = service.edit_ticket(
+                "12345678",
+                changes={"Notes": "Recreated by the save endpoint"},
+                expected_revision=before["revision"],
+            )
+
+            self.assertTrue(result["pendingsRecreated"]["created"])
+            self.assertEqual(result["pendingsRecreated"]["rows"], 1)
+            self.assertFalse(
+                any(
+                    "Pendings.xlsx was not found" in warning
+                    for warning in service.latest_startup.warnings
+                )
+            )
+            self.assertTrue(
+                any("No backup was restored" in notice for notice in service.latest_startup.notices)
+            )
         finally:
             service.stop()
 

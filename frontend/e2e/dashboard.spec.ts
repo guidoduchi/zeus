@@ -43,6 +43,37 @@ test("field choices persist and a manual source query is visible", async ({ page
   await expect(page.getByLabel("Active operation").getByText("Querying data sources", { exact: true })).toBeVisible();
 });
 
+test("window commands and sort direction work outside editable fields", async ({ page }) => {
+  await page.goto("/");
+  const sort = page.getByLabel("Sort field");
+  const direction = page.getByLabel("Sort direction");
+  const search = page.getByPlaceholder("Search SR, summary, handler, site…");
+
+  await expect(sort).toHaveValue("report");
+  await page.locator(".stats-bar").click();
+  await page.keyboard.press("s");
+  await expect(sort).toHaveValue("sr");
+  await expect(direction).toHaveValue("desc");
+
+  await direction.selectOption("asc");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("zeus3.dashboard.direction"))).toBe("asc");
+  await page.reload();
+  await expect(sort).toHaveValue("sr");
+  await expect(direction).toHaveValue("asc");
+
+  await search.click();
+  await page.keyboard.type("s");
+  await expect(sort).toHaveValue("sr");
+  await search.fill("");
+  await page.locator(".stats-bar").click();
+  await page.keyboard.press("m");
+  await expect(page.getByRole("dialog", { name: "Operations" })).toBeVisible();
+  await page.getByRole("button", { name: "Close Operations" }).click();
+
+  await page.keyboard.press("r");
+  await expect(page.getByLabel("Active operation").getByText("Querying data sources", { exact: true })).toBeVisible();
+});
+
 test("saving through Pendings keeps the workstation mounted", async ({ page }, testInfo) => {
   const browserLabel = testInfo.project.name;
   const note = `Saved from the real browser regression (${browserLabel})`;

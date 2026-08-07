@@ -27,7 +27,8 @@ publication, mail, and MOP generation.
 | `zeus2/main.py` | default web command, singleton launch, browser/tray lifecycle, legacy command delegation |
 | `zeus2/application/service.py` | use cases, scheduler, operation serialization, data events |
 | `zeus2/application/jobs.py` | one mutation lane, progress snapshots, cancellation, SSE events |
-| `zeus2/application/edits.py` | conflict-safe Pendings-first browser edits |
+| `zeus2/application/edits.py` | conflict-safe Pendings-first browser edits and missing-file entrypoint |
+| `zeus2/excel_export.py` | verified publication, restore, and database-driven Pendings recreation |
 | `zeus2/application/serialization.py` | stable dashboard/detail API shapes and sorting |
 | `zeus2/application/settings.py` | typed configuration payload and validation |
 | `zeus2/web/server.py` | loopback HTTP/static/API boundary and security headers |
@@ -71,11 +72,13 @@ Python module directly; they do not install or execute frontend tooling.
 
 - core regression tests preserve the 2.0.3 data and recovery contracts;
 - application tests cover Pendings-only bootstrap, web edits, conflicts,
-  serialized jobs, local HTTP security, no-query GETs, and safe stale records;
+  deletion/recreation journals, serialized jobs, local HTTP security,
+  no-query GETs, and safe stale records;
 - Vitest covers field preference persistence, wheel event ownership, ticket
-  interaction, safe email rendering, and minimal edit payloads;
+  interaction, page-level command suppression, safe email rendering, and
+  minimal edit payloads;
 - Playwright drives Chrome and Microsoft Edge against a real Python server to
-  verify list scrolling, no page scrolling, ticket panels, persisted fields,
-  and visible manual queries;
+  verify list scrolling, no page scrolling, ticket panels, persisted fields and
+  sort direction, global commands, and visible manual queries;
 - Windows CI runs Python 3.13 and 3.14, rebuilds the UI, and checks wheel/static
   package behavior before a branch is merged.

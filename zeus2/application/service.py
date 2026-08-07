@@ -28,6 +28,7 @@ from .errors import (
 )
 from .jobs import EventBroker, JobContext, JobManager
 from .serialization import (
+    DEFAULT_SORT_DIRECTIONS,
     dashboard_payload,
     serialize_ticket_detail,
 )
@@ -172,12 +173,22 @@ class ApplicationService:
             },
         }
 
-    def dashboard(self, *, sort: str, search: str) -> dict[str, Any]:
+    def dashboard(
+        self,
+        *,
+        sort: str,
+        search: str,
+        direction: str | None = None,
+    ) -> dict[str, Any]:
         if sort not in {"report", "sr", "planned", "email", "age", "severity", "status"}:
             raise ValidationError(f"Unsupported dashboard sort: {sort}")
+        direction = direction or DEFAULT_SORT_DIRECTIONS[sort]
+        if direction not in {"asc", "desc"}:
+            raise ValidationError(f"Unsupported dashboard sort direction: {direction}")
         return dashboard_payload(
             self.store,
             sort=sort,
+            direction=direction,
             search=search,
             dataset_revision=self.dataset_revision,
         )
@@ -211,9 +222,24 @@ class ApplicationService:
             )
         finally:
             self._operation_lock.release()
-        if result.get("changed"):
-            self._touch_data("ticket-edit")
-        return {
+        recreated = result.get("pendingsRecreated")
+        if isinstance(recreated, dict) and recreated.get("created"):
+            notice = str(recreated.get("notice") or "").strip()
+            self.latest_startup.warnings = [
+                warning
+                for warning in self.latest_startup.warnings
+                if "Pendings.xlsx was not found" not in warning
+            ]
+            if notice and notice not in self.latest_startup.notices:
+                self.latest_startup.notices.append(notice)
+        recreated_workbook = bool(
+            isinstance(recreated, dict) and recreated.get("created")
+        )
+        if result.get("changed") or recreated_workbook:
+            self._touch_data(
+                "ticket-edit" if result.get("changed") else "pendings-recreation"
+            )
+        response = {
             "changed": bool(result.get("changed")),
             "changedFields": result.get("changedFields", []),
             # The browser replaces its open detail with this response before
@@ -222,6 +248,9 @@ class ApplicationService:
             # successful edit can never leave React with a partial object.
             "ticket": self.ticket(normalized_ticket_id),
         }
+        if isinstance(recreated, dict) and recreated.get("created"):
+            response["pendingsRecreated"] = recreated
+        return response
 
     def get_settings(self) -> dict[str, Any]:
         return settings_payload(self.store)
@@ -283,6 +312,7 @@ class ApplicationService:
             context.report("pendings", "Reading Pendings.xlsx")
             result = run_startup(
                 self.store,
+                recreate_missing_pendings=not startup,
                 cancel_event=context.cancel_event,
                 progress=context.progress_callback,
             )

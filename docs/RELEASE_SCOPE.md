@@ -12,11 +12,15 @@ Included:
 - independent ticket-list and detail scrolling; no whole-page scrolling;
 - fixed-width columns with locally persisted visibility and order controls;
 - severity in the default dense dashboard plus every original CLI fact;
-- locally persisted dark/light theme and sorting;
+- locally persisted dark/light theme, sort field, and ascending/descending
+  direction;
+- page-level `S`, `M`, `R`, and Ctrl+F commands outside editable controls;
 - visible serialized startup, scheduled, and manual source-query work;
 - page refreshes that never trigger a source query;
 - Pendings-only queries that succeed with an informational skip when no
   Advanced Search workbook is available;
+- database-driven recreation of a deleted Pendings workbook during Query or
+  Save, without backup restoration, Closed creation, or closure finalization;
 - optional Outlook behavior that is disabled clearly and nonfatally when no
   valid store exists;
 - the full Advanced Search, closure, Outlook, publishing, recovery, MOP, aging,
