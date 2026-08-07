@@ -146,7 +146,8 @@ test("saving through Pendings keeps the workstation mounted", async ({ page }, t
   await expect(page.getByLabel("Notes")).toHaveValue(note);
   await expect(page.getByLabel("Planned Date")).toHaveValue(plannedDate);
 
-  await page.getByRole("button", { name: /^Spare Parts/ }).click();
+  const detail = page.getByRole("complementary", { name: /SR \d{8} detail/ });
+  await detail.getByRole("button", { name: /^Spare Parts/ }).click();
   const bom = page.getByLabel("Device 1 part 1 BOM (part number)");
   await bom.fill(bomValue);
   await page.getByRole("button", { name: /Save through Pendings/ }).click();
