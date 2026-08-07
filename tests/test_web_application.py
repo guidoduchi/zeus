@@ -28,7 +28,7 @@ from zeus2.excel_export import (
     recreate_pendings_from_database,
     recover_pendings_recreation,
 )
-from zeus2.excel_import import read_pendings
+from zeus2.excel_import import WorkbookValidationError, read_pendings
 from zeus2.main import _restart_command
 from zeus2.startup import run_startup
 from zeus2.store import ZeusStore
@@ -120,7 +120,7 @@ class PendingsFirstSourceTests(WebFixture):
         self.assertEqual(updated["local"]["fields"]["Done?"], "Y")
         self.assertTrue((self.books / "Zeus Backups" / "Web edits").is_dir())
 
-    def test_bom_derives_spare_and_calendar_date_in_workbook_and_markdown(self) -> None:
+    def test_normalized_spare_parts_and_calendar_round_trip_through_workbook(self) -> None:
         write_managed(
             self.books / "Pendings.xlsx",
             [
@@ -135,29 +135,79 @@ class PendingsFirstSourceTests(WebFixture):
         before = self.store.read_ticket("12345678")
         self.assertEqual(before["local"]["fields"]["Spare"], "N")
 
+        spare_parts = [
+            {
+                "device": "server-a",
+                "model": "2288H V5",
+                "parts": [
+                    {
+                        "slot": "Slot 1",
+                        "part": "Disk",
+                        "bom": "BOM-9000",
+                        "faulty_sn": "FAULTY-1",
+                        "new_sn": "NEW-1",
+                    },
+                    {
+                        "slot": "Slot 2",
+                        "part": "Disk",
+                        "bom": "BOM-9001",
+                        "faulty_sn": "FAULTY-2",
+                        "new_sn": None,
+                    },
+                ],
+            },
+            {
+                "device": "server-b",
+                "model": "CH121 V5",
+                "parts": [
+                    {
+                        "slot": "DIMM 3",
+                        "part": "Memory",
+                        "bom": "BOM-9002",
+                        "faulty_sn": "FAULTY-3",
+                        "new_sn": "NEW-3",
+                    }
+                ],
+            },
+        ]
         result = edit_ticket_through_pendings(
             self.store,
             "12345678",
-            {"BOM": "  BOM-9000  ", "Planned Date": "2026-08-21"},
+            {"Spare Parts": spare_parts, "Planned Date": "2026-08-21"},
             expected_revision=ticket_revision(before),
         )
 
-        self.assertEqual(result["changedFields"], ["BOM", "Planned Date", "Spare"])
+        self.assertEqual(
+            result["changedFields"],
+            ["Spare Parts", "Planned Date", "Spare"],
+        )
         workbook = load_workbook(self.books / "Pendings.xlsx", data_only=False)
         try:
             headers = [cell.value for cell in workbook.active[1]]
             bom = workbook.active.cell(2, headers.index("BOM") + 1)
             planned = workbook.active.cell(2, headers.index("Planned Date") + 1)
             spare = workbook.active.cell(2, headers.index("Spare") + 1)
-            self.assertEqual(bom.value, "BOM-9000")
+            self.assertEqual(bom.value, "BOM-9000\nBOM-9001\nBOM-9002")
             self.assertEqual(planned.value.date(), date(2026, 8, 21))
             self.assertEqual(planned.number_format, "yyyy-mm-dd")
             self.assertEqual(spare.value, "Y")
+            spare_sheet = workbook["Spare Parts"]
+            spare_headers = [cell.value for cell in spare_sheet[1]]
+            self.assertEqual(spare_sheet.max_row, 4)
+            self.assertEqual(
+                spare_sheet.cell(2, spare_headers.index("Device") + 1).value,
+                "server-a",
+            )
+            self.assertEqual(
+                spare_sheet.cell(4, spare_headers.index("Device #") + 1).value,
+                2,
+            )
         finally:
             workbook.close()
         updated = self.store.read_ticket("12345678")
         self.assertEqual(updated["local"]["fields"]["Planned Date"], "2026-08-21")
         self.assertEqual(updated["local"]["fields"]["Spare"], "Y")
+        self.assertEqual(updated["local"]["spare_parts"], spare_parts)
 
     def test_spare_cannot_be_supplied_by_a_browser_edit(self) -> None:
         self.seed_pendings_only()
@@ -167,7 +217,7 @@ class PendingsFirstSourceTests(WebFixture):
 
         with self.assertRaisesRegex(
             ValidationError,
-            "Spare is derived from BOM and cannot be edited directly",
+            "Spare is an export-only value and cannot be edited directly",
         ):
             edit_ticket_through_pendings(
                 self.store,
@@ -178,6 +228,131 @@ class PendingsFirstSourceTests(WebFixture):
 
         self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), workbook_hash)
         self.assertEqual(self.store.read_ticket("12345678")["local"]["fields"]["Spare"], "N")
+
+    def test_spare_parts_sheet_manual_edits_and_explicit_empty_row_round_trip(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        before = self.store.read_ticket("12345678")
+        edit_ticket_through_pendings(
+            self.store,
+            "12345678",
+            {
+                "Spare Parts": [
+                    {
+                        "device": "server-a",
+                        "model": "2288H V5",
+                        "parts": [
+                            {
+                                "slot": "Slot 1",
+                                "part": "Disk",
+                                "bom": "BOM-1",
+                                "faulty_sn": "OLD-1",
+                                "new_sn": None,
+                            }
+                        ],
+                    }
+                ]
+            },
+            expected_revision=ticket_revision(before),
+        )
+
+        workbook = load_workbook(self.books / "Pendings.xlsx")
+        sheet = workbook["Spare Parts"]
+        headers = [cell.value for cell in sheet[1]]
+        sheet.cell(2, headers.index("New SN") + 1).value = "NEW-1"
+        sheet.append(
+            [
+                "12345678",
+                1,
+                "server-a",
+                "2288H V5",
+                2,
+                "Slot 2",
+                "Disk",
+                "BOM-2",
+                "OLD-2",
+                "NEW-2",
+            ]
+        )
+        workbook.save(self.books / "Pendings.xlsx")
+        workbook.close()
+
+        run_startup(self.store)
+        imported = self.store.read_ticket("12345678")
+        self.assertEqual(len(imported["local"]["spare_parts"]), 1)
+        self.assertEqual(len(imported["local"]["spare_parts"][0]["parts"]), 2)
+        self.assertEqual(
+            imported["local"]["spare_parts"][0]["parts"][0]["new_sn"],
+            "NEW-1",
+        )
+
+        workbook = load_workbook(self.books / "Pendings.xlsx")
+        sheet = workbook["Spare Parts"]
+        sheet.delete_rows(2, max(1, sheet.max_row - 1))
+        sheet.append(["12345678"])
+        workbook.save(self.books / "Pendings.xlsx")
+        workbook.close()
+
+        run_startup(self.store)
+        cleared = self.store.read_ticket("12345678")
+        self.assertEqual(cleared["local"]["spare_parts"], [])
+        self.assertIsNone(cleared["local"]["fields"]["BOM"])
+        self.assertEqual(cleared["local"]["fields"]["Spare"], "N")
+
+    def test_normalized_workbook_rejects_deleted_spare_parts_sheet(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        before = self.store.read_ticket("12345678")
+        edit_ticket_through_pendings(
+            self.store,
+            "12345678",
+            {
+                "Spare Parts": [
+                    {
+                        "device": "server-a",
+                        "model": "2288H V5",
+                        "parts": [
+                            {
+                                "slot": "Slot 1",
+                                "part": "Disk",
+                                "bom": "BOM-1",
+                                "faulty_sn": "OLD-1",
+                                "new_sn": None,
+                            }
+                        ],
+                    }
+                ]
+            },
+            expected_revision=ticket_revision(before),
+        )
+
+        path = self.books / "Pendings.xlsx"
+        workbook = load_workbook(path)
+        workbook.remove(workbook["Spare Parts"])
+        workbook.save(path)
+        workbook.close()
+
+        with self.assertRaisesRegex(
+            WorkbookValidationError,
+            "Spare Parts is missing from a normalized Zeus workbook",
+        ):
+            read_pendings(path)
+
+    def test_dashboard_exposes_total_emails_found_as_a_default_column(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        ticket = self.store.read_ticket("12345678")
+        ticket["email"]["total_received"] = 5
+        ticket["email"]["total_sent"] = 3
+        self.store.write_ticket_bundle(self.store.current, ticket)
+
+        dashboard = dashboard_payload(self.store)
+        self.assertEqual(dashboard["tickets"][0]["emailCount"], 8)
+        email_column = next(
+            column for column in dashboard["columns"] if column["key"] == "emailCount"
+        )
+        self.assertEqual(email_column["label"], "Emails")
+        self.assertTrue(email_column["default"])
 
     def test_external_excel_change_blocks_web_edit_without_overwrite(self) -> None:
         self.seed_pendings_only()

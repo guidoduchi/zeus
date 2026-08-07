@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from copy import deepcopy
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from openpyxl import load_workbook
 from ..excel_export import (
     WorkbookPublicationError,
     recreate_pendings_from_database,
+    write_spare_parts_sheet,
 )
 from ..excel_import import (
     WorkbookValidationError,
@@ -20,7 +22,14 @@ from ..excel_import import (
 )
 from ..reconcile import import_pendings
 from ..store import ZeusStore
-from ..tickets import EDITABLE_LOCAL_COLUMNS, normalize_done, spare_from_bom
+from ..tickets import (
+    EDITABLE_LOCAL_COLUMNS,
+    LEGACY_SPARE_COLUMNS,
+    SPARE_PARTS_CHANGE_KEY,
+    normalize_done,
+    normalize_local,
+    normalize_spare_parts,
+)
 from ..utils import parse_date, sha256_file
 from .errors import ConflictError, FeatureUnavailableError, ValidationError
 from .serialization import ticket_revision
@@ -38,8 +47,9 @@ def _normalize_local_changes(changes: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(changes, dict) or not changes:
         raise ValidationError("Choose at least one Pendings field to update")
     if "Spare" in changes:
-        raise ValidationError("Spare is derived from BOM and cannot be edited directly")
-    unknown = sorted(set(changes) - set(EDITABLE_LOCAL_COLUMNS))
+        raise ValidationError("Spare is an export-only value and cannot be edited directly")
+    allowed = set(EDITABLE_LOCAL_COLUMNS) | {SPARE_PARTS_CHANGE_KEY}
+    unknown = sorted(set(changes) - allowed)
     if unknown:
         raise ValidationError(
             "Only Pendings-owned fields can be edited in Zeus",
@@ -47,6 +57,9 @@ def _normalize_local_changes(changes: dict[str, Any]) -> dict[str, Any]:
         )
     prepared: dict[str, Any] = {}
     for key, value in changes.items():
+        if key == SPARE_PARTS_CHANGE_KEY:
+            prepared[key] = _normalize_spare_parts_change(value)
+            continue
         if isinstance(value, (dict, list, tuple, set)):
             raise ValidationError(f"{key} must be a text, date, number, or blank value")
         if key == "Done?":
@@ -70,6 +83,58 @@ def _normalize_local_changes(changes: dict[str, Any]) -> dict[str, Any]:
         else:
             prepared[key] = text if text else None
     return prepared
+
+
+def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ValidationError("Spare Parts must be a list of devices")
+    if len(value) > 200:
+        raise ValidationError("A ticket cannot contain more than 200 damaged devices")
+    device_keys = {"device", "model", "parts"}
+    part_keys = {"slot", "part", "bom", "faulty_sn", "new_sn"}
+    total_parts = 0
+    for device_index, device in enumerate(value, start=1):
+        if not isinstance(device, dict):
+            raise ValidationError(f"Spare Parts device {device_index} must be an object")
+        unknown_device = sorted(set(device) - device_keys)
+        if unknown_device:
+            raise ValidationError(
+                f"Spare Parts device {device_index} has unknown fields: "
+                + ", ".join(unknown_device)
+            )
+        for key in ("device", "model"):
+            field = device.get(key)
+            if field is not None and isinstance(field, (dict, list, tuple, set)):
+                raise ValidationError(f"Spare Parts device {device_index} {key} must be text or blank")
+            if field is not None and len(str(field)) > 10_000:
+                raise ValidationError(f"Spare Parts device {device_index} {key} is too long")
+        parts = device.get("parts", [])
+        if not isinstance(parts, list):
+            raise ValidationError(f"Spare Parts device {device_index} parts must be a list")
+        total_parts += len(parts)
+        if total_parts > 2_000:
+            raise ValidationError("A ticket cannot contain more than 2,000 damaged parts")
+        for part_index, part in enumerate(parts, start=1):
+            if not isinstance(part, dict):
+                raise ValidationError(
+                    f"Spare Parts device {device_index}, part {part_index} must be an object"
+                )
+            unknown_part = sorted(set(part) - part_keys)
+            if unknown_part:
+                raise ValidationError(
+                    f"Spare Parts device {device_index}, part {part_index} has unknown fields: "
+                    + ", ".join(unknown_part)
+                )
+            for key, field in part.items():
+                if field is not None and isinstance(field, (dict, list, tuple, set)):
+                    raise ValidationError(
+                        f"Spare Parts device {device_index}, part {part_index} {key} must be text or blank"
+                    )
+                if field is not None and len(str(field)) > 10_000:
+                    raise ValidationError(
+                        f"Spare Parts device {device_index}, part {part_index} {key} is too long"
+                    )
+    return normalize_spare_parts(value)
 
 
 def _backup_directory(workbook_directory: Path) -> Path:
@@ -173,21 +238,31 @@ def edit_ticket_through_pendings(
         )
 
     prepared = _normalize_local_changes(changes)
-    existing = ticket.get("local", {}).get("fields", {})
-    effective_bom = prepared.get("BOM", existing.get("BOM"))
-    prepared["Spare"] = spare_from_bom(effective_bom)
+    existing_local = normalize_local(ticket.get("local"))
+    proposed_local = deepcopy(existing_local)
+    proposed_fields = proposed_local["fields"]
+    for key, value in prepared.items():
+        if key == SPARE_PARTS_CHANGE_KEY:
+            proposed_local["spare_parts"] = value
+        else:
+            proposed_fields[key] = value
+    proposed_local = normalize_local(proposed_local)
+
     changed_fields = [
-        key for key, value in prepared.items() if _comparable_cell(existing.get(key)) != _comparable_cell(value)
+        key
+        for key, value in prepared.items()
+        if (
+            existing_local.get("spare_parts") != value
+            if key == SPARE_PARTS_CHANGE_KEY
+            else _comparable_cell(existing_local["fields"].get(key))
+            != _comparable_cell(value)
+        )
     ]
-    workbook_fields = managed.records[ticket_id]["local"]["fields"]
     if (
-        _comparable_cell(workbook_fields.get("Spare"))
-        != _comparable_cell(prepared["Spare"])
-        and "Spare" not in changed_fields
+        SPARE_PARTS_CHANGE_KEY in changed_fields
+        and existing_local["fields"].get("Spare")
+        != proposed_local["fields"].get("Spare")
     ):
-        # A pre-3.0 workbook may contain a stale manually-entered Spare value.
-        # Repair it during the next authorized web transaction without ever
-        # accepting Spare as browser input.
         changed_fields.append("Spare")
     if not changed_fields:
         return {
@@ -211,14 +286,38 @@ def edit_ticket_through_pendings(
             if cell.value not in (None, "")
         }
         row_number = int(managed.records[ticket_id]["row_number"])
-        for field in changed_fields:
+        fields_to_write = {
+            field: proposed_local["fields"].get(field)
+            for field in prepared
+            if field != SPARE_PARTS_CHANGE_KEY
+        }
+        # Compatibility cells are generated from the normalized hierarchy and
+        # remain useful in exports, but they are never an independent editor.
+        fields_to_write.update(
+            {
+                field: proposed_local["fields"].get(field)
+                for field in [*LEGACY_SPARE_COLUMNS, "Spare"]
+            }
+        )
+        for field, value in fields_to_write.items():
             column_number = mapping.get(field)
             if column_number is None:
                 raise WorkbookValidationError(f"Pendings.xlsx is missing the {field} column")
             cell = worksheet.cell(row=row_number, column=column_number)
-            cell.value = prepared[field]
-            if field == "Planned Date" and isinstance(prepared[field], date):
+            cell.value = value
+            if field == "Planned Date" and isinstance(value, date):
                 cell.number_format = "yyyy-mm-dd"
+
+        sheet_tickets = [
+            {
+                "ticket_id": managed_ticket_id,
+                "local": proposed_local
+                if managed_ticket_id == ticket_id
+                else record["local"],
+            }
+            for managed_ticket_id, record in managed.records.items()
+        ]
+        write_spare_parts_sheet(workbook, sheet_tickets)
 
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=".zeus-web-edit-",

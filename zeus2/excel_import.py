@@ -16,8 +16,12 @@ from .tickets import (
     CLOSED_SCHEMA_DRIFT_COLUMNS,
     LOCAL_COLUMNS,
     PENDING_COLUMNS,
+    SPARE_PART_COLUMNS,
+    SPARE_PARTS_EXPORT_MARKER,
+    SPARE_PARTS_SHEET,
     UPSTREAM_COLUMNS,
     empty_local,
+    normalize_local,
     normalize_done,
 )
 from .utils import normalize_ticket_id, parse_date, sha256_file, to_iso
@@ -239,6 +243,10 @@ def _local_from_row(
             parsed = parse_date(value)
             value = parsed.isoformat() if parsed else value
         fields[column] = value
+    # ``empty_local`` is complete for new records, but at this point we still
+    # need to distinguish a legacy flat workbook from one that explicitly
+    # contains the normalized Spare Parts worksheet.
+    local.pop("spare_parts", None)
     fields["Done?"], corrected = normalize_done(fields.get("Done?"))
     styles: dict[str, dict[str, Any]] = {}
     for header, column_number in header_columns.items():
@@ -249,6 +257,170 @@ def _local_from_row(
             styles[header] = snapshot
     local["presentation"] = {"cell_styles": styles}
     return local, corrected
+
+
+def _positive_index(value: Any, *, label: str, row_number: int) -> int:
+    cleaned = _clean_value(value)
+    if isinstance(cleaned, float) and cleaned.is_integer():
+        cleaned = int(cleaned)
+    text = str(cleaned or "").strip()
+    if not text.isdigit() or int(text) < 1:
+        raise WorkbookValidationError(
+            f"{SPARE_PARTS_SHEET} row {row_number}: {label} must be a positive integer"
+        )
+    return int(text)
+
+
+def _read_spare_parts(
+    workbook: Any,
+    *,
+    ticket_ids: set[str],
+) -> dict[str, list[dict[str, Any]]] | None:
+    """Read the optional normalized device/part table.
+
+    A managed normalized sheet contains at least one row per SR.  Tickets with
+    no spare-parts data use a blank sentinel row, making deletion explicit and
+    preventing an accidentally omitted row from erasing legacy information.
+    """
+
+    if SPARE_PARTS_SHEET not in workbook.sheetnames:
+        primary = workbook.worksheets[0]
+        generated_headers = [
+            str(cell.value or "").strip()
+            for cell in primary[1]
+            if cell.comment
+            and SPARE_PARTS_EXPORT_MARKER in str(cell.comment.text or "")
+        ]
+        if generated_headers:
+            raise WorkbookValidationError(
+                f"{SPARE_PARTS_SHEET} is missing from a normalized Zeus workbook. "
+                "Restore the worksheet from a backup before importing it."
+            )
+        return None
+    worksheet = workbook[SPARE_PARTS_SHEET]
+    headers, mapping = _trimmed_headers(worksheet)
+    missing = sorted(set(SPARE_PART_COLUMNS) - set(headers))
+    unknown = sorted(set(headers) - set(SPARE_PART_COLUMNS))
+    if missing:
+        raise WorkbookValidationError(
+            f"{SPARE_PARTS_SHEET} is missing required columns: {', '.join(missing)}"
+        )
+    if unknown:
+        raise WorkbookValidationError(
+            f"{SPARE_PARTS_SHEET} contains unknown columns: {', '.join(unknown)}"
+        )
+
+    grouped: dict[str, dict[int, dict[str, Any]]] = {}
+    seen_tickets: set[str] = set()
+    seen_parts: set[tuple[str, int, int]] = set()
+    for row_number in range(2, worksheet.max_row + 1):
+        if _row_is_blank(worksheet, row_number, worksheet.max_column):
+            continue
+        try:
+            ticket_id = normalize_ticket_id(
+                _cell_value(worksheet, row_number, mapping, "SRNo")
+            )
+        except ValueError as exc:
+            raise WorkbookValidationError(
+                f"{SPARE_PARTS_SHEET} row {row_number}: {exc}"
+            ) from exc
+        if ticket_id not in ticket_ids:
+            raise WorkbookValidationError(
+                f"{SPARE_PARTS_SHEET} row {row_number} references SR {ticket_id}, "
+                "which is absent from the primary sheet"
+            )
+        seen_tickets.add(ticket_id)
+
+        device_value = _clean_value(
+            _cell_value(worksheet, row_number, mapping, "Device #")
+        )
+        data_columns = [
+            "Device",
+            "Model",
+            "Part #",
+            "Slot",
+            "Part",
+            "BOM",
+            "Faulty SN",
+            "New SN",
+        ]
+        values = {
+            column: _clean_value(_cell_value(worksheet, row_number, mapping, column))
+            for column in data_columns
+        }
+        if device_value in (None, ""):
+            if any(value not in (None, "") for value in values.values()):
+                raise WorkbookValidationError(
+                    f"{SPARE_PARTS_SHEET} row {row_number}: Device # is required "
+                    "when device or part data is present"
+                )
+            continue
+
+        device_number = _positive_index(
+            device_value, label="Device #", row_number=row_number
+        )
+        devices = grouped.setdefault(ticket_id, {})
+        device = devices.setdefault(
+            device_number,
+            {"device": values["Device"], "model": values["Model"], "parts": []},
+        )
+        for source, target in (("Device", "device"), ("Model", "model")):
+            candidate = values[source]
+            if candidate is None:
+                continue
+            if device[target] not in (None, candidate):
+                raise WorkbookValidationError(
+                    f"{SPARE_PARTS_SHEET} row {row_number}: Device # {device_number} "
+                    f"has conflicting {source} values for SR {ticket_id}"
+                )
+            device[target] = candidate
+
+        part_data = {
+            "slot": values["Slot"],
+            "part": values["Part"],
+            "bom": values["BOM"],
+            "faulty_sn": values["Faulty SN"],
+            "new_sn": values["New SN"],
+        }
+        part_value = values["Part #"]
+        if part_value in (None, ""):
+            if any(value is not None for value in part_data.values()):
+                raise WorkbookValidationError(
+                    f"{SPARE_PARTS_SHEET} row {row_number}: Part # is required "
+                    "when part data is present"
+                )
+            continue
+        part_number = _positive_index(
+            part_value, label="Part #", row_number=row_number
+        )
+        identity = (ticket_id, device_number, part_number)
+        if identity in seen_parts:
+            raise WorkbookValidationError(
+                f"{SPARE_PARTS_SHEET} contains duplicate SR/Device #/Part #: "
+                f"{ticket_id}/{device_number}/{part_number}"
+            )
+        seen_parts.add(identity)
+        device["parts"].append((part_number, part_data))
+
+    missing_tickets = sorted(ticket_ids - seen_tickets, reverse=True)
+    if missing_tickets:
+        raise WorkbookValidationError(
+            f"{SPARE_PARTS_SHEET} is missing an explicit row for SR: "
+            + ", ".join(missing_tickets[:20])
+        )
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for ticket_id in ticket_ids:
+        result[ticket_id] = []
+        for _, device in sorted(grouped.get(ticket_id, {}).items()):
+            result[ticket_id].append(
+                {
+                    "device": device["device"],
+                    "model": device["model"],
+                    "parts": [part for _, part in sorted(device["parts"])],
+                }
+            )
+    return result
 
 
 def read_pendings(path: Path) -> ManagedWorkbook:
@@ -305,6 +477,11 @@ def read_pendings(path: Path) -> ManagedWorkbook:
                 "Pendings.xlsx contains duplicate SRNo values: "
                 + ", ".join(sorted(set(duplicates)))
             )
+        spare_parts = _read_spare_parts(workbook, ticket_ids=set(records))
+        for ticket_id, record in records.items():
+            if spare_parts is not None:
+                record["local"]["spare_parts"] = spare_parts[ticket_id]
+            record["local"] = normalize_local(record["local"])
         return ManagedWorkbook(
             path=path,
             sheet_name=worksheet.title,
@@ -386,12 +563,22 @@ def read_closed(path: Path) -> ManagedWorkbook:
             if ticket_id in records:
                 duplicates.append(ticket_id)
                 continue
-            records[ticket_id] = {"ticket_id": ticket_id, "row_number": row_number}
+            local, _ = _local_from_row(worksheet, row_number, mapping)
+            records[ticket_id] = {
+                "ticket_id": ticket_id,
+                "row_number": row_number,
+                "local": local,
+            }
         if duplicates:
             raise WorkbookValidationError(
                 "Closed.xlsx contains duplicate SRNo values: "
                 + ", ".join(sorted(set(duplicates)))
             )
+        spare_parts = _read_spare_parts(workbook, ticket_ids=set(records))
+        for ticket_id, record in records.items():
+            if spare_parts is not None:
+                record["local"]["spare_parts"] = spare_parts[ticket_id]
+            record["local"] = normalize_local(record["local"])
         return ManagedWorkbook(
             path=path,
             sheet_name=worksheet.title,

@@ -29,7 +29,8 @@ Consequences:
 2. Wheel input over the dashboard moves the dashboard; the ticket panel owns
    its own scroll position.
 3. Columns may be toggled and reordered, but not resized.
-4. The default field set preserves the original dashboard and adds Severity.
+4. The default field set preserves the original dashboard and adds Severity
+   plus the cumulative number of emails found per ticket.
 5. Opening a ticket reveals full detail without requiring every detail column
    in the list.
 6. Search, sort, theme, visible columns, and column order remain local to the
@@ -42,6 +43,8 @@ Consequences:
     editable control. Text entry must never become an application command.
 11. Sort field and ascending/descending direction are separate browser-local
     preferences.
+12. Work and Spare Parts editors own a fixed action row above the global command
+    strip; scrolling their content never moves or overlaps either command rail.
 
 ## Authority invariants
 
@@ -55,12 +58,16 @@ Consequences:
 6. Outlook is optional. Without an available selected store, no email operation
    runs and the reason stays visible.
 7. Closed is append-only finalized output and is not a prerequisite for startup.
-8. Spare is system-derived: non-empty BOM means `Y`; empty BOM means `N`.
-   Neither the browser nor stale workbook content may override that rule.
+8. Spare is export-only and system-derived: any normalized part with a BOM
+   means `Y`; no BOM means `N`. Neither the browser nor stale flat workbook
+   content may override that rule.
 9. A truly absent Pendings file may be materialized from the current Markdown
    database only when Query or Save explicitly needs it. This exception never
    applies to an existing changed or corrupt workbook, never restores a
    Pendings backup, and never creates or mutates Closed.
+10. Multiple damaged devices and parts are represented by the normalized
+    `Spare Parts` worksheet and `local.spare_parts`; flat compatibility cells
+    must never become a competing nested-data authority.
 
 ## Runtime invariants
 

@@ -1028,7 +1028,7 @@ class PublicationTests(ZeusCase):
         self.assertIn("12345678", self.store.closed_index()["ticket_ids"])
 
         pending = load_workbook(self.books / "Pendings.xlsx", data_only=False)
-        self.assertEqual(pending.sheetnames[:2], ["Pendings", "Report"])
+        self.assertEqual(pending.sheetnames[:3], ["Pendings", "Spare Parts", "Report"])
         self.assertEqual(pending["Pendings"]["A2"].value, "12345679")
         formulas = [
             cell.coordinate
@@ -1048,6 +1048,11 @@ class PublicationTests(ZeusCase):
         self.assertEqual(closed.active["A2"].fill.fgColor.rgb[-6:], "ABCDEF")
         ids = {str(closed.active.cell(row, 1).value) for row in range(2, closed.active.max_row + 1)}
         self.assertEqual(ids, {"11111111", "12345678"})
+        spare_ids = {
+            str(closed["Spare Parts"].cell(row, 1).value)
+            for row in range(2, closed["Spare Parts"].max_row + 1)
+        }
+        self.assertEqual(spare_ids, {"11111111", "12345678"})
         closed.close()
 
         # Internal snapshots can contain Outlook bodies, so final closure must

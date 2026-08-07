@@ -85,14 +85,8 @@ test("saving through Pendings keeps the workstation mounted", async ({ page }, t
   await page.locator("[data-ticket-id]").first().click();
   await page.getByRole("button", { name: "Work fields" }).click();
   const planned = page.getByLabel("Planned Date");
-  const bom = page.getByLabel("BOM");
-  const spare = page.getByLabel("Spare");
   await expect(planned).toHaveAttribute("type", "date");
-  await expect(spare).not.toBeEditable();
-  await bom.fill("");
-  await expect(spare).toHaveValue("N");
-  await bom.fill(bomValue);
-  await expect(spare).toHaveValue("Y");
+  await expect(page.getByLabel("Spare")).toHaveCount(0);
   await planned.fill(plannedDate);
   await page.getByLabel("Notes").fill(note);
   await page.getByRole("button", { name: /Save through Pendings/ }).click();
@@ -102,7 +96,51 @@ test("saving through Pendings keeps the workstation mounted", async ({ page }, t
   await expect(page.getByRole("button", { name: "History" })).toBeVisible();
   await expect(page.getByLabel("Notes")).toHaveValue(note);
   await expect(page.getByLabel("Planned Date")).toHaveValue(plannedDate);
-  await expect(page.getByLabel("Spare")).toHaveValue("Y");
+
+  await page.getByRole("button", { name: /^Spare Parts/ }).click();
+  const bom = page.getByLabel("Device 1 part 1 BOM (part number)");
+  await bom.fill(bomValue);
+  await page.getByRole("button", { name: /Save through Pendings/ }).click();
+  await expect(page.getByText(/saved through Pendings\.xlsx/i)).toBeVisible();
+  await expect(bom).toHaveValue(bomValue);
+});
+
+test("work and spare editors remain bounded above the global command strip", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("[data-ticket-id]").first().click();
+  const detail = page.getByRole("complementary", { name: /SR \d{8} detail/ });
+  await detail.getByRole("button", { name: "Work fields" }).click();
+  const fieldScroll = detail.locator(".edit-tab-scroll");
+  await fieldScroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+
+  const geometry = await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>(".detail-panel");
+    const actions = document.querySelector<HTMLElement>(".edit-actions");
+    const command = document.querySelector<HTMLElement>(".command-strip");
+    const outer = document.querySelector<HTMLElement>(".bounded-edit-scroll");
+    if (!panel || !actions || !command || !outer) throw new Error("Bounded editor elements missing");
+    const panelBox = panel.getBoundingClientRect();
+    const actionBox = actions.getBoundingClientRect();
+    const commandBox = command.getBoundingClientRect();
+    return {
+      outerOverflow: getComputedStyle(outer).overflowY,
+      outerFits: outer.scrollHeight <= outer.clientHeight + 1,
+      actionsInsidePanel: actionBox.bottom <= panelBox.bottom + 1,
+      panelBeforeCommand: panelBox.bottom <= commandBox.top + 1,
+      actionsBeforeCommand: actionBox.bottom <= commandBox.top + 1,
+    };
+  });
+  expect(geometry).toEqual({
+    outerOverflow: "hidden",
+    outerFits: true,
+    actionsInsidePanel: true,
+    panelBeforeCommand: true,
+    actionsBeforeCommand: true,
+  });
+
+  await detail.getByRole("button", { name: /^Spare Parts/ }).click();
+  await expect(detail.locator(".edit-actions")).toBeVisible();
+  await expect(detail.locator(".edit-tab-scroll")).toBeVisible();
 });
 
 test("legacy reply chains stay compact inside bounded email panes", async ({ page }) => {

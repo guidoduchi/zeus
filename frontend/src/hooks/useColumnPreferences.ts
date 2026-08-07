@@ -32,12 +32,18 @@ function readStored(definitions: ColumnDefinition[]): StoredPreferences {
     // user's saved choices with defaults.
     if (!definitions.length) return { order: storedOrder, visible: storedVisible };
     const known = new Set(definitions.map((column) => column.key));
+    const previouslyKnown = new Set(storedOrder);
     const order = storedOrder.filter((key) => known.has(key));
     for (const key of fallback.order) {
       if (!order.includes(key)) order.push(key);
     }
     const visible = storedVisible.filter((key) => known.has(key));
     if (!visible.length) visible.push(...fallback.visible);
+    for (const column of definitions) {
+      if (column.default && !previouslyKnown.has(column.key) && !visible.includes(column.key)) {
+        visible.push(column.key);
+      }
+    }
     if (known.has("ticketId") && !visible.includes("ticketId")) visible.unshift("ticketId");
     return { order, visible };
   } catch {
@@ -52,12 +58,18 @@ export function useColumnPreferences(definitions: ColumnDefinition[]) {
     if (!definitions.length) return;
     setPreferences((current) => {
       const known = new Set(definitions.map((column) => column.key));
+      const previouslyKnown = new Set(current.order);
       const order = current.order.filter((key) => known.has(key));
       for (const column of definitions) {
         if (!order.includes(column.key)) order.push(column.key);
       }
       const visible = current.visible.filter((key) => known.has(key));
       if (!visible.length) visible.push(...defaults(definitions).visible);
+      for (const column of definitions) {
+        if (column.default && !previouslyKnown.has(column.key) && !visible.includes(column.key)) {
+          visible.push(column.key);
+        }
+      }
       if (known.has("ticketId") && !visible.includes("ticketId")) visible.unshift("ticketId");
       return { order, visible };
     });

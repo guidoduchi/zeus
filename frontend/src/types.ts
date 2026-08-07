@@ -21,6 +21,7 @@ export interface TicketSummary {
   ticketAgeColor: Risk | null;
   emailInactivityDays: number | null;
   emailLabel: string;
+  emailCount: number;
   emailColor: Risk | null;
   lastEmailDirection: string | null;
   received: number;
@@ -73,6 +74,20 @@ export interface EmailMessage {
   quotedHistoryLines: number;
 }
 
+export interface SparePart {
+  slot: string | null;
+  part: string | null;
+  bom: string | null;
+  faulty_sn: string | null;
+  new_sn: string | null;
+}
+
+export interface SpareDevice {
+  device: string | null;
+  model: string | null;
+  parts: SparePart[];
+}
+
 export interface HistoryEvent {
   timestamp: string | null;
   action: string | null;
@@ -88,6 +103,7 @@ export interface MopFile {
 export interface TicketDetail extends TicketSummary {
   upstreamFields: Record<string, unknown>;
   localFields: Record<string, unknown>;
+  spareParts: SpareDevice[];
   email: {
     totalReceived: number;
     totalSent: number;

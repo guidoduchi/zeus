@@ -15,6 +15,10 @@ Included:
 - locally persisted dark/light theme, sort field, and ascending/descending
   direction;
 - page-level `S`, `M`, `R`, and Ctrl+F commands outside editable controls;
+- fixed Work/Spare action rails that remain above the global command strip;
+- a normalized, repeatable damaged-device and spare-parts editor backed by a
+  one-row-per-part Pendings worksheet and legacy scalar migration;
+- a default dashboard Emails column showing cumulative messages found;
 - visible serialized startup, scheduled, and manual source-query work;
 - page refreshes that never trigger a source query;
 - Pendings-only queries that succeed with an informational skip when no

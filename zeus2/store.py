@@ -19,7 +19,7 @@ from .config import (
     resolve_path_setting,
     save_config,
 )
-from .tickets import LOCAL_COLUMNS, UPSTREAM_COLUMNS, empty_email
+from .tickets import LOCAL_COLUMNS, UPSTREAM_COLUMNS, empty_email, normalize_local
 from .utils import (
     atomic_write_json,
     atomic_write_text,
@@ -110,7 +110,8 @@ def render_ticket_markdown(ticket: dict[str, Any]) -> str:
     ticket_id = normalize_ticket_id(ticket.get("ticket_id"))
     lifecycle = ticket.get("lifecycle", {})
     upstream = ticket.get("upstream", {}).get("fields", {})
-    local = ticket.get("local", {}).get("fields", {})
+    prepared_local = normalize_local(ticket.get("local"))
+    local = prepared_local.get("fields", {})
     email = ticket.get("email", {})
     lines = [
         f"{RECORD_MARKER}{_encode_record(ticket)} -->",
@@ -131,6 +132,34 @@ def render_ticket_markdown(ticket: dict[str, Any]) -> str:
     lines.extend(["", "## Pendings fields", "", "| Field | Value |", "|---|---|"])
     for column in LOCAL_COLUMNS:
         lines.append(f"| {_display(column)} | {_display(local.get(column))} |")
+    lines.extend(["", "## Spare parts"])
+    spare_parts = prepared_local.get("spare_parts", [])
+    if not spare_parts:
+        lines.extend(["", "_No spare-parts record._"])
+    for device_number, device in enumerate(spare_parts, start=1):
+        lines.extend(
+            [
+                "",
+                f"### Device {device_number}: {_display(device.get('device'))}",
+                "",
+                f"- Model: {_display(device.get('model'))}",
+                "",
+                "| Slot | Part | BOM | Faulty SN | New SN |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        parts = device.get("parts") or []
+        if not parts:
+            lines.append("| — | — | — | — | — |")
+        for part in parts:
+            lines.append(
+                "| "
+                + " | ".join(
+                    _display(part.get(key))
+                    for key in ("slot", "part", "bom", "faulty_sn", "new_sn")
+                )
+                + " |"
+            )
     received = int(email.get("total_received") or 0)
     sent = int(email.get("total_sent") or 0)
     lines.extend(
@@ -332,6 +361,7 @@ class ZeusStore:
         ticket = dict(ticket)
         ticket_id = normalize_ticket_id(ticket.get("ticket_id"))
         ticket["ticket_id"] = ticket_id
+        ticket["local"] = normalize_local(ticket.get("local"))
         if notes is not None:
             ticket.setdefault("local", {}).setdefault("fields", {})["Notes"] = notes
         if mail_summary is not None:
@@ -370,6 +400,8 @@ class ZeusStore:
         email = ticket.get("email", {})
         if not isinstance(email.get("messages", []), list):
             raise StoreError(f"Ticket {ticket_id} has invalid retained email data")
+        if not isinstance(ticket.get("local", {}).get("spare_parts", []), list):
+            raise StoreError(f"Ticket {ticket_id} has invalid spare-parts data")
 
     def validate_current(self, current_path: Path) -> None:
         state = self.state(current_path)

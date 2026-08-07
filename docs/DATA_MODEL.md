@@ -5,7 +5,8 @@
 | Record area | Authoritative writer |
 |---|---|
 | `upstream.fields` | Advanced Search reconciliation, or the protected snapshot carried by Pendings when rebuilding from Pendings alone |
-| `local.fields` | validated Pendings import/restore/web-edit transaction; `Spare` is derived from `BOM` |
+| `local.fields` | validated Pendings import/restore/web-edit transaction for generic work fields and derived flat compatibility values |
+| `local.spare_parts` | normalized `Spare Parts` worksheet or the same Pendings-first browser transaction |
 | `local.presentation.cell_styles` | validated Pendings import/restore |
 | `lifecycle` | Advanced Search reconciliation and verified publication |
 | `email` | optional Outlook staging and synchronization |
@@ -30,6 +31,21 @@ refreshes protected fields and lifecycle without overwriting local fields.
 Closed is not required to import Pendings. When present it is validated and
 indexed. Advanced Search is not required to show Pendings-derived tickets.
 Outlook is never required to build or query the database.
+
+## Spare-parts hierarchy
+
+`local.spare_parts` is a list of damaged devices. Each device stores `device`,
+`model`, and a list of parts; each part stores `slot`, `part`, `bom`,
+`faulty_sn`, and `new_sn`. The normalized `Spare Parts` worksheet carries one
+row per part with explicit Device # and Part # ordering. Every SR has at least
+one row: a blank sentinel means that the ticket deliberately has no spare-parts
+record, while a missing SR row is rejected as unsafe.
+
+Legacy Pendings files without this worksheet remain valid. Their single Model,
+Device, Slot, Part, BOM, Old SN, and New SN values migrate to one device/part
+record. The next authorized browser edit, recreation, or publication writes the
+normalized worksheet. The flat primary-sheet columns remain generated export
+summaries, not a second editable hierarchy.
 
 ## Missing-Pendings materialization
 
@@ -57,11 +73,12 @@ creates a recoverable original copy, replaces Pendings atomically, imports that
 file through the existing reconciliation path, and writes the audit event. If
 the Markdown import fails, the workbook backup is atomically restored.
 
-`Spare` remains a workbook and Markdown column for compatibility, but it is not
-an editable field. Normalization enforces `Y` when trimmed `BOM` content exists
-and `N` otherwise. A browser BOM edit writes both cells in the same workbook
-transaction. Planned dates cross the browser boundary as `YYYY-MM-DD` and are
-stored in Excel as date cells rather than free-form display text.
+`Spare` remains a workbook and Markdown compatibility value but is absent from
+the site. Normalization enforces `Y` when any normalized part has a non-empty
+BOM and `N` otherwise. A browser hierarchy edit rewrites the normalized table,
+flat compatibility cells, and `Spare` in one workbook transaction. Planned
+dates cross the browser boundary as `YYYY-MM-DD` and are stored in Excel as date
+cells rather than free-form display text.
 
 ## State markers
 

@@ -121,15 +121,23 @@ backups and does not publish or create `Closed.xlsx`.
 Browser-editable Pendings-owned fields are:
 
 ```text
-Planned Date, Site, Cloud, Model, Device, Slot, Part, BOM, Old SN, New SN,
-RelatedSR, Notes, Done?
+Planned Date, Site, Cloud, RelatedSR, Notes, Done?
 ```
 
 `Planned Date` uses the browser's calendar control and is written as a real
-Excel date. `Spare` is read-only in Zeus and is always derived from `BOM`:
-non-empty BOM = `Y`; empty BOM = `N`. The same invariant is applied when a
-Pendings workbook rebuilds the Markdown database, so a stale manual `Spare`
-cell cannot become application state.
+Excel date.
+
+Hardware replacement data has its own **Spare Parts** section. A ticket may
+contain zero or more damaged devices; every device has its own model and zero
+or more parts with Slot, Part, BOM (part number), Faulty SN, and New SN. The
+same hierarchy is stored in a normalized `Spare Parts` worksheet, one row per
+part, so Pendings can rebuild it without packing nested data into one cell.
+Historical single-device columns migrate automatically.
+
+The original flat Model/Device/Slot/Part/BOM/Old SN/New SN cells remain derived
+compatibility columns in the primary worksheet. `Spare` is export-only and is
+generated as `Y` when any normalized part has a BOM, otherwise `N`; neither
+value appears as an editable site field.
 
 Protected fields are:
 

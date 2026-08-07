@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Color, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -25,9 +26,15 @@ from .reconcile import import_pendings
 from .store import ZeusStore
 from .tickets import (
     CLOSED_SCHEMA_DRIFT_COLUMNS,
+    LEGACY_SPARE_COLUMNS,
     LOCAL_COLUMNS,
     PENDING_COLUMNS,
+    SPARE_PART_COLUMNS,
+    SPARE_PARTS_EXPORT_MARKER,
+    SPARE_PARTS_SHEET,
     UPSTREAM_COLUMNS,
+    normalize_local,
+    spare_part_rows,
     ticket_cell_value,
     workflow_code,
 )
@@ -161,6 +168,9 @@ def _set_column_widths(worksheet: Any, headers: list[str]) -> None:
         "Resolve By Suspend": 20,
         "Spare": 10,
         "Done?": 10,
+        "Device #": 10,
+        "Part #": 9,
+        "Faulty SN": 24,
     }
     for index, header in enumerate(headers, start=1):
         worksheet.column_dimensions[worksheet.cell(1, index).column_letter].width = widths.get(header, 16)
@@ -216,6 +226,70 @@ def _write_ticket_sheet(
         f"{worksheet.cell(2, done_column).coordinate}:"
         f"{worksheet.cell(max(2, worksheet.max_row), done_column).coordinate}"
     )
+    write_spare_parts_sheet(workbook, ordered)
+    return worksheet
+
+
+def write_spare_parts_sheet(
+    workbook: Any,
+    tickets: Iterable[dict[str, Any]],
+) -> Any:
+    """Replace the normalized, one-row-per-part workbook table."""
+
+    if SPARE_PARTS_SHEET in workbook.sheetnames:
+        workbook.remove(workbook[SPARE_PARTS_SHEET])
+    primary = workbook.worksheets[0]
+    for cell in primary[1]:
+        header = str(cell.value or "").strip()
+        if header in {*LEGACY_SPARE_COLUMNS, "Spare"}:
+            cell.comment = Comment(
+                f"{SPARE_PARTS_EXPORT_MARKER} "
+                "Edit that worksheet or the Spare Parts site section instead.",
+                "Zeus",
+            )
+    worksheet = workbook.create_sheet(SPARE_PARTS_SHEET, 1)
+    worksheet.append(SPARE_PART_COLUMNS)
+    for cell in worksheet[1]:
+        _header_style(cell)
+    worksheet["A1"].comment = Comment(
+        "Keep one row for every SR. To record no spare parts, keep the SRNo "
+        "and clear the remaining cells instead of deleting the row.",
+        "Zeus",
+    )
+    worksheet["B1"].comment = Comment(
+        "Positive device order within this SR. Repeat the same number for each part on one device.",
+        "Zeus",
+    )
+    worksheet["E1"].comment = Comment(
+        "Positive part order within the device. Leave blank only when the device has no parts yet.",
+        "Zeus",
+    )
+    worksheet.row_dimensions[1].height = 30
+
+    ordered = sorted(list(tickets), key=lambda ticket: int(ticket["ticket_id"]), reverse=True)
+    for ticket in ordered:
+        ticket_id = str(ticket["ticket_id"])
+        local = normalize_local(ticket.get("local"))
+        rows = spare_part_rows(local.get("spare_parts"))
+        if not rows:
+            # Explicit sentinel: an absent row is a validation error, while a
+            # blank managed row means this ticket deliberately has no parts.
+            rows = [{}]
+        for row in rows:
+            worksheet.append(
+                [ticket_id]
+                + [row.get(column) for column in SPARE_PART_COLUMNS if column != "SRNo"]
+            )
+            row_number = worksheet.max_row
+            worksheet.cell(row_number, 1).number_format = "@"
+            for column_number in range(1, len(SPARE_PART_COLUMNS) + 1):
+                worksheet.cell(row_number, column_number).alignment = Alignment(
+                    vertical="top", wrap_text=True
+                )
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = f"A1:{worksheet.cell(1, len(SPARE_PART_COLUMNS)).coordinate}"
+    worksheet.sheet_view.showGridLines = False
+    _set_column_widths(worksheet, SPARE_PART_COLUMNS)
     return worksheet
 
 
@@ -376,6 +450,10 @@ def _append_closed_rows(
         worksheet = workbook.worksheets[0]
         existing = read_closed(existing_path)
         existing_ids = set(existing.records)
+        spare_tickets = {
+            ticket_id: {"ticket_id": ticket_id, "local": record.get("local", {})}
+            for ticket_id, record in existing.records.items()
+        }
     else:
         workbook = Workbook()
         worksheet = workbook.active
@@ -384,6 +462,7 @@ def _append_closed_rows(
         for cell in worksheet[1]:
             _header_style(cell)
         existing_ids = set()
+        spare_tickets = {}
     for ticket in sorted(closure_pending, key=lambda item: int(item["ticket_id"]), reverse=True):
         if ticket["ticket_id"] in existing_ids:
             continue
@@ -405,11 +484,13 @@ def _append_closed_rows(
             elif header in {"Report Date", "ResolveBy", "Resolve By Suspend"} and isinstance(cell.value, datetime):
                 cell.number_format = "yyyy-mm-dd hh:mm:ss"
         existing_ids.add(ticket["ticket_id"])
+        spare_tickets[ticket["ticket_id"]] = ticket
     if existing_path is None:
         _set_column_widths(worksheet, header_order)
         worksheet.freeze_panes = "A2"
         worksheet.auto_filter.ref = f"A1:{worksheet.cell(1, len(header_order)).coordinate}"
         worksheet.sheet_view.showGridLines = False
+    write_spare_parts_sheet(workbook, spare_tickets.values())
     workbook.save(path)
     workbook.close()
     return existing_ids

@@ -31,8 +31,8 @@
 - Made an absent optional Advanced Search workbook an informational skip rather
   than a failed-looking source warning; Pendings-only queries still complete and
   update the dashboard normally.
-- Made Spare a read-only invariant derived from BOM (`Y` when present, otherwise
-  `N`) across Pendings import, web edits, Markdown, and publication.
+- Made Spare a system-derived compatibility invariant across Pendings import,
+  web edits, Markdown, and publication; the final interface keeps it export-only.
 - Replaced free-form Planned Date entry with a native browser calendar that
   writes a canonical Excel date cell.
 - Made the Chrome/Edge save regression use browser-specific values so each
@@ -44,6 +44,16 @@
   recreate an absent `Pendings.xlsx` from the current Markdown database. The
   verified recovery neither restores a backup nor creates or changes
   `Closed.xlsx`, and interrupted recreation is journaled.
+- Replaced the scroll-container sticky save footer with a bounded two-row
+  editor layout, preventing Work fields from overlapping the global query bar
+  at the bottom of the panel.
+- Split hardware replacement work into a repeatable **Spare Parts** section:
+  tickets may hold multiple damaged devices and multiple parts per device, with
+  Slot, Part, BOM, Faulty SN, and New SN stored in a normalized workbook sheet.
+  Existing scalar records migrate automatically; flat columns and the
+  export-only `Spare` flag remain generated compatibility output.
+- Added a default dashboard **Emails** column showing cumulative received plus
+  sent messages without opening each ticket.
 
 ## 2.0.3 - 2026-08-06
 

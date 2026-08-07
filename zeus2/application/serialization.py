@@ -7,7 +7,7 @@ from typing import Any
 from ..aging import aging_for_ticket, report_sort_key
 from ..mail import strip_quoted_history
 from ..store import ZeusStore
-from ..tickets import spare_from_bom
+from ..tickets import normalize_local
 from ..utils import json_dumps, parse_date
 
 
@@ -19,6 +19,7 @@ COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "plannedDate", "label": "Planned", "width": 116, "default": True},
     {"key": "ticketAgeDays", "label": "Age", "width": 62, "default": True},
     {"key": "emailLabel", "label": "Email", "width": 142, "default": True},
+    {"key": "emailCount", "label": "Emails", "width": 68, "default": True},
     {"key": "severity", "label": "Severity", "width": 92, "default": True},
     {"key": "summary", "label": "Summary", "width": 360, "default": True, "flex": True},
     {"key": "product", "label": "Product", "width": 190, "default": False},
@@ -70,8 +71,20 @@ def serialize_ticket_summary(
 ) -> dict[str, Any]:
     facts = aging_for_ticket(ticket, config)
     upstream = ticket.get("upstream", {}).get("fields", {})
-    local = ticket.get("local", {}).get("fields", {})
+    prepared_local = normalize_local(ticket.get("local"))
+    local = prepared_local.get("fields", {})
     email = ticket.get("email", {})
+    email_count = int(email.get("total_received") or 0) + int(email.get("total_sent") or 0)
+    devices = [
+        str(device.get("device"))
+        for device in prepared_local.get("spare_parts", [])
+        if device.get("device")
+    ]
+    models = [
+        str(device.get("model"))
+        for device in prepared_local.get("spare_parts", [])
+        if device.get("model")
+    ]
     return {
         "ticketId": ticket["ticket_id"],
         "revision": ticket_revision(ticket),
@@ -85,6 +98,7 @@ def serialize_ticket_summary(
         "ticketAgeColor": facts.ticket_age_color,
         "emailInactivityDays": facts.communication_inactivity_days,
         "emailLabel": facts.communication_label,
+        "emailCount": email_count,
         "emailColor": facts.communication_color,
         "lastEmailDirection": email.get("last_direction"),
         "received": int(email.get("total_received") or 0),
@@ -98,8 +112,8 @@ def serialize_ticket_summary(
         "resolveDays": facts.resolve_days,
         "site": local.get("Site") or "—",
         "cloud": local.get("Cloud") or "—",
-        "model": local.get("Model") or "—",
-        "device": local.get("Device") or "—",
+        "model": ", ".join(dict.fromkeys(models)) or "—",
+        "device": ", ".join(dict.fromkeys(devices)) or "—",
         "risk": _risk(
             facts.planned_color,
             facts.ticket_age_color,
@@ -148,19 +162,20 @@ def serialize_ticket_detail(
 ) -> dict[str, Any]:
     result = serialize_ticket_summary(ticket, config)
     email = ticket.get("email", {})
-    local_fields = deepcopy(ticket.get("local", {}).get("fields", {}))
+    prepared_local = normalize_local(ticket.get("local"))
+    local_fields = deepcopy(prepared_local.get("fields", {}))
     planned_date = parse_date(local_fields.get("Planned Date"))
     # Native browser date controls consume ISO calendar dates.  Invalid legacy
     # labels such as ``Unplanned`` are represented by an empty date control;
     # the summary still exposes the human-readable "Unplanned" label.
     local_fields["Planned Date"] = planned_date.isoformat() if planned_date else None
-    local_fields["Spare"] = spare_from_bom(local_fields.get("BOM"))
     result.update(
         {
             "upstreamFields": deepcopy(
                 ticket.get("upstream", {}).get("fields", {})
             ),
             "localFields": local_fields,
+            "spareParts": deepcopy(prepared_local.get("spare_parts", [])),
             "email": {
                 "totalReceived": int(email.get("total_received") or 0),
                 "totalSent": int(email.get("total_sent") or 0),
@@ -182,8 +197,13 @@ def serialize_ticket_detail(
 
 def _ticket_search_text(ticket: dict[str, Any]) -> str:
     upstream = ticket.get("upstream", {}).get("fields", {})
-    local = ticket.get("local", {}).get("fields", {})
-    values = [ticket.get("ticket_id"), *upstream.values(), *local.values()]
+    local = normalize_local(ticket.get("local"))
+    values = [
+        ticket.get("ticket_id"),
+        *upstream.values(),
+        *local.get("fields", {}).values(),
+        json_dumps(local.get("spare_parts", []), indent=None),
+    ]
     return "\n".join(str(value) for value in values if value not in (None, "")).casefold()
 
 

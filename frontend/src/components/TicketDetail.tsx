@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import type { EmailMessage, TicketDetail as TicketDetailType } from "../types";
+import type { EmailMessage, SpareDevice, SparePart, TicketDetail as TicketDetailType } from "../types";
 
-type Tab = "overview" | "work" | "emails" | "mops" | "history";
+type Tab = "overview" | "work" | "spares" | "emails" | "mops" | "history";
 
 interface TemplateOption {
   name: string;
@@ -17,23 +17,14 @@ interface Props {
   onGenerateMop: (ticketId: string, template: string) => void;
 }
 
-const LOCAL_FIELDS = [
+const WORK_FIELDS = [
   "Planned Date",
   "Site",
   "Cloud",
-  "Model",
-  "Device",
-  "Slot",
-  "Part",
-  "BOM",
-  "Old SN",
-  "New SN",
   "RelatedSR",
-  "Spare",
   "Done?",
   "Notes",
 ];
-const EDITABLE_LOCAL_FIELDS = LOCAL_FIELDS.filter((field) => field !== "Spare");
 
 function draftValue(field: string, value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -42,10 +33,6 @@ function draftValue(field: string, value: unknown): string {
     return match?.[1] || "";
   }
   return String(value);
-}
-
-function spareFromBom(value: unknown): "Y" | "N" {
-  return String(value ?? "").trim() ? "Y" : "N";
 }
 
 function display(value: unknown): string {
@@ -72,17 +59,16 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
 
   useEffect(() => {
     setDraft(Object.fromEntries(
-      EDITABLE_LOCAL_FIELDS.map((field) => [field, draftValue(field, ticket.localFields[field])]),
+      WORK_FIELDS.map((field) => [field, draftValue(field, ticket.localFields[field])]),
     ));
   }, [ticket]);
 
   const changes = useMemo(() => Object.fromEntries(
-    EDITABLE_LOCAL_FIELDS
+    WORK_FIELDS
       .filter((field) => draftValue(field, ticket.localFields[field]) !== String(draft[field] ?? ""))
       .map((field) => [field, draft[field] === "" ? null : draft[field]]),
   ), [draft, ticket.localFields]);
   const changedCount = Object.keys(changes).length;
-  const derivedSpare = spareFromBom(draft.BOM);
 
   function setField(field: string, value: string) {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -101,62 +87,209 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
   }
 
   return (
-    <div className="tab-content work-tab">
-      <div className="source-contract">
-        <strong>Pendings remains authoritative.</strong>
-        <span>Save writes the validated workbook first, then imports the same values into Markdown.</span>
+    <div className="bounded-edit-tab">
+      <div className="edit-tab-scroll">
+        <div className="tab-content work-tab">
+          <div className="source-contract">
+            <strong>Pendings remains authoritative.</strong>
+            <span>Save writes the validated workbook first, then imports the same values into Markdown.</span>
+          </div>
+          <div className="work-form">
+            {WORK_FIELDS.map((field) => {
+              if (field === "Notes") {
+                return (
+                  <label className="form-field full" key={field}>
+                    <span>{field}</span>
+                    <textarea rows={7} value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} />
+                  </label>
+                );
+              }
+              if (field === "Planned Date") {
+                return (
+                  <label className="form-field" key={field}>
+                    <span>{field}</span>
+                    <input type="date" value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} />
+                  </label>
+                );
+              }
+              if (field === "Done?") {
+                return (
+                  <label className="form-field" key={field}>
+                    <span>{field}</span>
+                    <select value={draft[field] || "N"} onChange={(event) => setField(field, event.target.value)}>
+                      <option value="N">N — Not completed</option>
+                      <option value="Y">Y — Completed</option>
+                      <option value="P">P — Attempted, issue pending</option>
+                      <option value="?">? — Outside visibility</option>
+                    </select>
+                  </label>
+                );
+              }
+              return (
+                <label className="form-field" key={field}>
+                  <span>{field}</span>
+                  <input value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} placeholder="—" />
+                </label>
+              );
+            })}
+          </div>
+        </div>
       </div>
-      <div className="work-form">
-        {LOCAL_FIELDS.map((field) => {
-          if (field === "Notes") {
-            return (
-              <label className="form-field full" key={field}>
-                <span>{field}</span>
-                <textarea rows={7} value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} />
-              </label>
-            );
-          }
-          if (field === "Planned Date") {
-            return (
-              <label className="form-field" key={field}>
-                <span>{field}</span>
-                <input type="date" value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} />
-              </label>
-            );
-          }
-          if (field === "Spare") {
-            return (
-              <label className="form-field derived-field" key={field}>
-                <span>{field}</span>
-                <input value={derivedSpare} readOnly aria-label="Spare" aria-describedby="spare-derived-help" />
-                <small id="spare-derived-help">Automatic: Y when BOM has a value; otherwise N.</small>
-              </label>
-            );
-          }
-          if (field === "Done?") {
-            return (
-              <label className="form-field" key={field}>
-                <span>{field}</span>
-                <select value={draft[field] || "N"} onChange={(event) => setField(field, event.target.value)}>
-                  <option value="N">N — Not completed</option>
-                  <option value="Y">Y — Completed</option>
-                  <option value="P">P — Attempted, issue pending</option>
-                  <option value="?">? — Outside visibility</option>
-                </select>
-              </label>
-            );
-          }
-          return (
-            <label className="form-field" key={field}>
-              <span>{field}</span>
-              <input value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} placeholder="—" />
-            </label>
-          );
-        })}
-      </div>
-      <div className="inline-actions sticky-actions">
+      <div className="inline-actions edit-actions">
         <span>{changedCount ? `${changedCount} unsaved field(s)` : "No unsaved changes"}</span>
         <button type="button" className="primary-button" disabled={!changedCount || saving} onClick={save}>
+          {saving ? "Saving…" : "Save through Pendings"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+type DraftPart = Record<keyof SparePart, string>;
+interface DraftDevice {
+  device: string;
+  model: string;
+  parts: DraftPart[];
+}
+
+function emptyPart(): DraftPart {
+  return { slot: "", part: "", bom: "", faulty_sn: "", new_sn: "" };
+}
+
+function spareDraft(value: SpareDevice[]): DraftDevice[] {
+  return value.map((device) => ({
+    device: device.device || "",
+    model: device.model || "",
+    parts: device.parts.map((part) => ({
+      slot: part.slot || "",
+      part: part.part || "",
+      bom: part.bom || "",
+      faulty_sn: part.faulty_sn || "",
+      new_sn: part.new_sn || "",
+    })),
+  }));
+}
+
+function cleanSpareParts(value: DraftDevice[] | SpareDevice[]): SpareDevice[] {
+  return value.flatMap((device) => {
+    const parts = device.parts.flatMap((part) => {
+      const cleaned: SparePart = {
+        slot: String(part.slot || "").trim() || null,
+        part: String(part.part || "").trim() || null,
+        bom: String(part.bom || "").trim() || null,
+        faulty_sn: String(part.faulty_sn || "").trim() || null,
+        new_sn: String(part.new_sn || "").trim() || null,
+      };
+      return Object.values(cleaned).some(Boolean) ? [cleaned] : [];
+    });
+    const cleaned: SpareDevice = {
+      device: String(device.device || "").trim() || null,
+      model: String(device.model || "").trim() || null,
+      parts,
+    };
+    return cleaned.device || cleaned.model || cleaned.parts.length ? [cleaned] : [];
+  });
+}
+
+function SparePartsTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket: TicketDetailType }) {
+  const [devices, setDevices] = useState<DraftDevice[]>([]);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setDevices(spareDraft(ticket.spareParts)), [ticket]);
+
+  const cleaned = useMemo(() => cleanSpareParts(devices), [devices]);
+  const changed = JSON.stringify(cleaned) !== JSON.stringify(cleanSpareParts(ticket.spareParts));
+  const partCount = cleaned.reduce((total, device) => total + device.parts.length, 0);
+
+  function updateDevice(index: number, field: "device" | "model", value: string) {
+    setDevices((current) => current.map((device, position) => (
+      position === index ? { ...device, [field]: value } : device
+    )));
+  }
+
+  function updatePart(deviceIndex: number, partIndex: number, field: keyof SparePart, value: string) {
+    setDevices((current) => current.map((device, position) => position !== deviceIndex ? device : ({
+      ...device,
+      parts: device.parts.map((part, candidate) => candidate === partIndex ? { ...part, [field]: value } : part),
+    })));
+  }
+
+  async function save() {
+    if (!changed) return;
+    setSaving(true);
+    try {
+      await onSave(ticket.ticketId, ticket.revision, { "Spare Parts": cleaned });
+    } catch {
+      // App owns conflict/error feedback and authoritative reloads.
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="bounded-edit-tab">
+      <div className="edit-tab-scroll">
+        <div className="tab-content spare-parts-tab">
+          <div className="source-contract">
+            <strong>The Spare Parts worksheet remains authoritative.</strong>
+            <span>Each damaged device can contain multiple parts. Compatibility columns and the export-only Spare tag are generated automatically.</span>
+          </div>
+          {!devices.length && (
+            <div className="empty-spares">
+              <strong>This ticket has no spare-parts record.</strong>
+              <span>Add a device only when hardware replacement work is required.</span>
+            </div>
+          )}
+          <div className="spare-device-list">
+            {devices.map((device, deviceIndex) => (
+              <article className="spare-device" key={`device-${deviceIndex}`}>
+                <header>
+                  <strong>Damaged device {deviceIndex + 1}</strong>
+                  <button type="button" className="text-button danger-text" onClick={() => setDevices((current) => current.filter((_, index) => index !== deviceIndex))}>Remove device</button>
+                </header>
+                <div className="device-fields">
+                  <label className="form-field">
+                    <span>Device</span>
+                    <input aria-label={`Device ${deviceIndex + 1} name`} value={device.device} onChange={(event) => updateDevice(deviceIndex, "device", event.target.value)} placeholder="Hostname or equipment ID" />
+                  </label>
+                  <label className="form-field">
+                    <span>Model</span>
+                    <input aria-label={`Device ${deviceIndex + 1} model`} value={device.model} onChange={(event) => updateDevice(deviceIndex, "model", event.target.value)} placeholder="Equipment model" />
+                  </label>
+                </div>
+                <div className="part-list">
+                  {device.parts.map((part, partIndex) => (
+                    <section className="spare-part" key={`part-${partIndex}`}>
+                      <header>
+                        <strong>Part {partIndex + 1}</strong>
+                        <button type="button" className="text-button danger-text" onClick={() => setDevices((current) => current.map((candidate, index) => index !== deviceIndex ? candidate : ({ ...candidate, parts: candidate.parts.filter((_, position) => position !== partIndex) })))}>Remove part</button>
+                      </header>
+                      <div className="part-fields">
+                        {([
+                          ["slot", "Slot"],
+                          ["part", "Part"],
+                          ["bom", "BOM (part number)"],
+                          ["faulty_sn", "Faulty SN"],
+                          ["new_sn", "New SN"],
+                        ] as Array<[keyof SparePart, string]>).map(([field, label]) => (
+                          <label className="form-field" key={field}>
+                            <span>{label}</span>
+                            <input aria-label={`Device ${deviceIndex + 1} part ${partIndex + 1} ${label}`} value={part[field]} onChange={(event) => updatePart(deviceIndex, partIndex, field, event.target.value)} placeholder="—" />
+                          </label>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+                <button type="button" className="secondary-button add-part" onClick={() => setDevices((current) => current.map((candidate, index) => index === deviceIndex ? ({ ...candidate, parts: [...candidate.parts, emptyPart()] }) : candidate))}>+ Add damaged part</button>
+              </article>
+            ))}
+          </div>
+          <button type="button" className="secondary-button add-device" onClick={() => setDevices((current) => [...current, { device: "", model: "", parts: [emptyPart()] }])}>+ Add damaged device</button>
+        </div>
+      </div>
+      <div className="inline-actions edit-actions">
+        <span>{changed ? `${cleaned.length} device(s), ${partCount} part(s) · unsaved` : `${cleaned.length} device(s), ${partCount} part(s)`}</span>
+        <button type="button" className="primary-button" disabled={!changed || saving} onClick={save}>
           {saving ? "Saving…" : "Save through Pendings"}
         </button>
       </div>
@@ -248,7 +381,8 @@ export function TicketDetail({ ticket, loading, templates, onClose, onSave, onGe
   const tabs: Array<[Tab, string, number | null]> = [
     ["overview", "Overview", null],
     ["work", "Work fields", null],
-    ["emails", "Emails", ticket.email.messages.length],
+    ["spares", "Spare Parts", ticket.spareParts.reduce((total, device) => total + device.parts.length, 0)],
+    ["emails", "Emails", ticket.emailCount],
     ["mops", "MOPs", ticket.mops.length],
     ["history", "History", ticket.history.length],
   ];
@@ -268,7 +402,7 @@ export function TicketDetail({ ticket, loading, templates, onClose, onSave, onGe
           </button>
         ))}
       </nav>
-      <div className={`detail-scroll${tab === "emails" ? " email-detail-scroll" : ""}`}>
+      <div className={`detail-scroll${tab === "emails" ? " email-detail-scroll" : ""}${tab === "work" || tab === "spares" ? " bounded-edit-scroll" : ""}`}>
         {tab === "overview" && (
           <div className="tab-content">
             <div className="fact-grid">
@@ -284,6 +418,7 @@ export function TicketDetail({ ticket, loading, templates, onClose, onSave, onGe
           </div>
         )}
         {tab === "work" && <WorkTab ticket={ticket} onSave={onSave} />}
+        {tab === "spares" && <SparePartsTab ticket={ticket} onSave={onSave} />}
         {tab === "emails" && <EmailsTab messages={ticket.email.messages} />}
         {tab === "mops" && <MopsTab ticket={ticket} templates={templates} onGenerateMop={onGenerateMop} />}
         {tab === "history" && (

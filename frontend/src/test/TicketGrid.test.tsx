@@ -10,6 +10,7 @@ const columns: ColumnDefinition[] = [
   { key: "plannedDate", label: "Planned", width: 116, default: true },
   { key: "ticketAgeDays", label: "Age", width: 62, default: true },
   { key: "emailLabel", label: "Email", width: 142, default: true },
+  { key: "emailCount", label: "Emails", width: 68, default: true },
   { key: "severity", label: "Severity", width: 92, default: true },
   { key: "summary", label: "Summary", width: 360, default: true, flex: true },
 ];
@@ -28,6 +29,7 @@ function ticket(ticketId: string): TicketSummary {
     ticketAgeColor: null,
     emailInactivityDays: null,
     emailLabel: "No email found",
+    emailCount: 7,
     emailColor: "grey",
     lastEmailDirection: null,
     received: 0,
@@ -96,5 +98,6 @@ describe("TicketGrid", () => {
     expect(screen.getAllByText("Unplanned")[0]).toHaveClass("tone-yellow");
     expect(screen.getAllByText("10")[0]).toHaveClass("tone-none");
     expect(screen.getAllByText("No email found")[0]).toHaveClass("tone-grey");
+    expect(screen.getAllByText("7")[0]).toHaveClass("tone-none");
   });
 });

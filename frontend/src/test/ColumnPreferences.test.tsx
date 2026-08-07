@@ -40,4 +40,19 @@ describe("dashboard field preferences", () => {
     expect(result.current.visibleKeys).toEqual(["ticketId", "summary"]);
     expect(result.current.visibleColumns.map((column) => column.key)).toEqual(["ticketId", "summary"]);
   });
+
+  it("shows a newly introduced default column without unhiding older choices", () => {
+    localStorage.setItem("zeus3.dashboard.columns", JSON.stringify({
+      order: ["ticketId", "severity", "summary", "handler"],
+      visible: ["ticketId", "summary"],
+    }));
+    const nextDefinitions: ColumnDefinition[] = [
+      ...definitions,
+      { key: "emailCount", label: "Emails", width: 68, default: true },
+    ];
+    const { result } = renderHook(() => useColumnPreferences(nextDefinitions));
+
+    expect(result.current.visibleKeys).toContain("emailCount");
+    expect(result.current.visibleKeys).not.toContain("severity");
+  });
 });
