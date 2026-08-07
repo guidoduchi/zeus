@@ -289,13 +289,22 @@ class UtilityAndConfigTests(ZeusCase):
         primary = folder / "primary.ost"
         archive.touch()
         primary.touch()
-        self.assertEqual(scan_outlook_store_files(folder), [archive, primary])
+        # Windows may expose the temporary directory through its 8.3 alias
+        # while ``Path.resolve()`` returns the long spelling. Compare the
+        # canonical paths that Zeus intentionally persists.
+        self.assertEqual(
+            scan_outlook_store_files(folder),
+            [archive.resolve(), primary.resolve()],
+        )
 
         config = self.store.config
         with patch("builtins.input", side_effect=[str(folder), "2"]):
             changed = _edit_outlook_store_setting(config, base=self.home)
         self.assertTrue(changed)
-        self.assertEqual(config["paths"]["outlook_store_path"], str(primary))
+        self.assertEqual(
+            config["paths"]["outlook_store_path"],
+            str(primary.resolve()),
+        )
 
         with patch("builtins.input", side_effect=["", "2"]):
             changed = _edit_outlook_store_setting(config, base=self.home)
@@ -1081,7 +1090,7 @@ class PublicationTests(ZeusCase):
             source_path = Path(source)
             destination_path = Path(destination)
             if (
-                destination_path == self.books / "Closed.xlsx"
+                destination_path.resolve() == (self.books / "Closed.xlsx").resolve()
                 and source_path.name.startswith(".zeus-closed-")
             ):
                 raise PermissionError("simulated Excel lock")
