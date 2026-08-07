@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from zeus2.config import save_config
+from zeus2.excel_export import publish_operational_workbooks
 from zeus2.main import main
 from zeus2.startup import run_startup
 from zeus2.store import ZeusStore
@@ -133,6 +134,14 @@ def prepare_fixture(root: Path) -> Path:
         }
     )
     store.write_ticket_bundle(store.current, legacy)
+    # Keep one finalized SR in the real-browser fixture.  Its normalized spare
+    # record must remain in the Spare Parts workspace through Closed.xlsx even
+    # after the live Markdown bundle is removed.
+    finalized = store.read_ticket("39400002")
+    finalized["lifecycle"]["status"] = "closure_pending"
+    with store.transaction("e2e-finalized-spare-parts", {}) as staging:
+        store.write_ticket_bundle(staging, finalized)
+    publish_operational_workbooks(store, workbooks, create_missing=True)
     return home
 
 

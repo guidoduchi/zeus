@@ -55,4 +55,28 @@ describe("dashboard field preferences", () => {
     expect(result.current.visibleKeys).toContain("emailCount");
     expect(result.current.visibleKeys).not.toContain("severity");
   });
+
+  it("keeps Spare Parts field choices separate from Service Requests", () => {
+    const spareKey = "zeus3.spare-parts.columns";
+    const { result } = renderHook(() => useColumnPreferences(definitions, spareKey));
+    act(() => result.current.toggle("handler"));
+
+    expect(JSON.parse(localStorage.getItem(spareKey) || "{}").visible).toContain("handler");
+    expect(localStorage.getItem("zeus3.dashboard.columns")).toBeNull();
+  });
+
+  it("repairs saved layouts and keeps SR pinned as the first column", () => {
+    const spareKey = "zeus3.spare-parts.columns";
+    localStorage.setItem(spareKey, JSON.stringify({
+      order: ["severity", "summary", "ticketId", "handler"],
+      visible: ["severity", "summary"],
+    }));
+    const { result } = renderHook(() => useColumnPreferences(definitions, spareKey));
+
+    expect(result.current.orderedColumns[0].key).toBe("ticketId");
+    expect(result.current.visibleKeys).toContain("ticketId");
+    act(() => result.current.move("severity", -1));
+    act(() => result.current.move("ticketId", 1));
+    expect(result.current.orderedColumns[0].key).toBe("ticketId");
+  });
 });

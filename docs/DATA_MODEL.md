@@ -47,6 +47,24 @@ record. The next authorized browser edit, recreation, or publication writes the
 normalized worksheet. The flat primary-sheet columns remain generated export
 summaries, not a second editable hierarchy.
 
+## Workspace projections and request exports
+
+Service Requests projects current Markdown records. Spare Parts combines those
+current records with the normalized non-email fields already preserved in
+Zeus-validated Closed.xlsx. It flattens each device/part pair for dense
+management and uses a presentation-only row identity composed from the SR and
+current device/part positions. SR is mandatory, pinned first, and remains the
+owner regardless of lifecycle. Current editing targets the parent SR through
+the existing Pendings-first transaction; finalized Closed rows are read-only.
+Closed.xlsx is cached in memory by file identity for dashboard searches, but
+the cache is never an authority and is invalidated when the workbook changes.
+
+The configured Spare Parts export directory is outside the authority graph.
+Files written there are downstream request artifacts: Zeus may replace or add
+an export only through an explicit future export operation, but startup, Query,
+recovery, and reconciliation never read those files. The workbook schema is
+deliberately deferred until the required email-generation format is defined.
+
 ## Missing-Pendings materialization
 
 When a manual or scheduled Query, or a browser Save, finds that

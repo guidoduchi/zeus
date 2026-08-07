@@ -53,6 +53,15 @@ def _path_status(store: ZeusStore, key: str, value: Any) -> dict[str, Any]:
         count = sum(1 for _ in path.glob("*.docx")) if path.is_dir() else 0
         status["templateCount"] = count
         status["message"] = f"{count} Word template(s) found" if path.is_dir() else "Folder not found"
+    elif key == "spare_parts_export_directory":
+        count = sum(1 for _ in path.glob("*.xlsx")) if path.is_dir() else 0
+        status["workbookCount"] = count
+        status["writeOnly"] = True
+        status["message"] = (
+            f"Export-only folder · {count} workbook(s)"
+            if path.is_dir()
+            else "Folder not found"
+        )
     return status
 
 

@@ -14,50 +14,121 @@ import { JobBanner } from "./components/JobBanner";
 import { NoticeStrip } from "./components/NoticeStrip";
 import { OperationsModal } from "./components/OperationsModal";
 import { SettingsModal } from "./components/SettingsModal";
+import { SparePartsGrid } from "./components/SparePartsGrid";
 import { StatsBar } from "./components/StatsBar";
 import { TicketDetail } from "./components/TicketDetail";
 import { TicketGrid } from "./components/TicketGrid";
 import { TopBar } from "./components/TopBar";
 import { useColumnPreferences } from "./hooks/useColumnPreferences";
 import { useGlobalCommands } from "./hooks/useGlobalCommands";
-import type { BootstrapPayload, DashboardPayload, Job, TicketDetail as TicketDetailType } from "./types";
+import type {
+  BootstrapPayload,
+  DashboardPayload,
+  Job,
+  SparePartSummary,
+  TicketDetail as TicketDetailType,
+  WorkspaceKey,
+} from "./types";
 
-const SORTS = ["report", "sr", "planned", "email", "age", "severity", "status"] as const;
-type SortMode = typeof SORTS[number];
 type SortDirection = "asc" | "desc";
 
-const DEFAULT_DIRECTIONS: Record<SortMode, SortDirection> = {
-  report: "asc",
-  sr: "desc",
-  planned: "asc",
-  email: "desc",
-  age: "desc",
-  severity: "asc",
-  status: "asc",
+interface WorkspaceConfiguration {
+  label: string;
+  defaultSort: string;
+  sorts: Array<{ value: string; label: string }>;
+  defaultDirections: Record<string, SortDirection>;
+  searchPlaceholder: string;
+  columnsStorageKey: string;
+}
+
+const WORKSPACES: Record<WorkspaceKey, WorkspaceConfiguration> = {
+  "service-requests": {
+    label: "Service Requests",
+    defaultSort: "report",
+    sorts: [
+      { value: "report", label: "Report" },
+      { value: "sr", label: "SR" },
+      { value: "planned", label: "Planned" },
+      { value: "email", label: "Email" },
+      { value: "age", label: "Age" },
+      { value: "severity", label: "Severity" },
+      { value: "status", label: "Status" },
+    ],
+    defaultDirections: {
+      report: "asc", sr: "desc", planned: "asc", email: "desc",
+      age: "desc", severity: "asc", status: "asc",
+    },
+    searchPlaceholder: "Search SR, summary, handler, site…",
+    columnsStorageKey: "zeus3.dashboard.columns",
+  },
+  "spare-parts": {
+    label: "Spare Parts",
+    defaultSort: "sr",
+    sorts: [
+      { value: "sr", label: "SR" },
+      { value: "planned", label: "Planned" },
+      { value: "site", label: "Site" },
+      { value: "cloud", label: "Cloud" },
+      { value: "device", label: "Device" },
+      { value: "part", label: "Part" },
+      { value: "bom", label: "BOM" },
+    ],
+    defaultDirections: {
+      sr: "desc", planned: "asc", site: "asc", cloud: "asc",
+      device: "asc", part: "asc", bom: "asc",
+    },
+    searchPlaceholder: "Search SR, device, part, BOM, serial, site…",
+    columnsStorageKey: "zeus3.spare-parts.columns",
+  },
 };
+
+interface WorkspacePreference {
+  search: string;
+  sort: string;
+  direction: SortDirection;
+}
 
 function readPreference(key: string, fallback: string): string {
   try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
 }
 
-function readSort(): SortMode {
-  const saved = readPreference("zeus3.dashboard.sort", "report");
-  return SORTS.includes(saved as SortMode) ? saved as SortMode : "report";
+function workspacePreferenceKey(workspace: WorkspaceKey, name: string): string {
+  const prefix = workspace === "service-requests" ? "zeus3.dashboard" : "zeus3.spare-parts";
+  return `${prefix}.${name}`;
+}
+
+function readWorkspace(): WorkspaceKey {
+  return readPreference("zeus3.workspace", "service-requests") === "spare-parts"
+    ? "spare-parts"
+    : "service-requests";
+}
+
+function readWorkspacePreference(workspace: WorkspaceKey): WorkspacePreference {
+  const config = WORKSPACES[workspace];
+  const savedSort = readPreference(workspacePreferenceKey(workspace, "sort"), config.defaultSort);
+  const sort = config.sorts.some((option) => option.value === savedSort) ? savedSort : config.defaultSort;
+  const defaultDirection = config.defaultDirections[sort];
+  const savedDirection = readPreference(workspacePreferenceKey(workspace, "direction"), defaultDirection);
+  return {
+    search: readPreference(workspacePreferenceKey(workspace, "search"), ""),
+    sort,
+    direction: savedDirection === "desc" ? "desc" : "asc",
+  };
 }
 
 export default function App() {
+  const [workspace, setWorkspace] = useState<WorkspaceKey>(readWorkspace);
+  const [workspacePreferences, setWorkspacePreferences] = useState<Record<WorkspaceKey, WorkspacePreference>>(() => ({
+    "service-requests": readWorkspacePreference("service-requests"),
+    "spare-parts": readWorkspacePreference("spare-parts"),
+  }));
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   const [ticket, setTicket] = useState<TicketDetailType | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [ticketLoading, setTicketLoading] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<SortMode>(readSort);
-  const [direction, setDirection] = useState<SortDirection>(() => {
-    const saved = readPreference("zeus3.dashboard.direction", DEFAULT_DIRECTIONS[sort]);
-    return saved === "desc" ? "desc" : "asc";
-  });
   const [theme, setTheme] = useState(() => readPreference("zeus3.theme", "dark"));
   const [operationsOpen, setOperationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -66,7 +137,20 @@ export default function App() {
   const [toast, setToast] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const dashboardRequest = useRef(0);
-  const { orderedColumns, visibleColumns, visibleKeys, toggle, move, reset } = useColumnPreferences(dashboard?.columns || []);
+  const preference = workspacePreferences[workspace];
+  const { search, sort, direction } = preference;
+  const workspaceConfig = WORKSPACES[workspace];
+  const { orderedColumns, visibleColumns, visibleKeys, toggle, move, reset } = useColumnPreferences(
+    dashboard?.columns || [],
+    workspaceConfig.columnsStorageKey,
+  );
+
+  const updateWorkspacePreference = useCallback((updates: Partial<WorkspacePreference>) => {
+    setWorkspacePreferences((current) => ({
+      ...current,
+      [workspace]: { ...current[workspace], ...updates },
+    }));
+  }, [workspace]);
 
   const reportError = useCallback((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -81,15 +165,16 @@ export default function App() {
   }, []);
 
   const loadDashboard = useCallback(async (
+    currentWorkspace = workspace,
     currentSort = sort,
     currentDirection = direction,
     currentSearch = search,
   ) => {
     const requestId = ++dashboardRequest.current;
-    const result = await getDashboard(currentSort, currentDirection, currentSearch);
+    const result = await getDashboard(currentWorkspace, currentSort, currentDirection, currentSearch);
     if (requestId === dashboardRequest.current) setDashboard(result);
     return result;
-  }, [direction, search, sort]);
+  }, [direction, search, sort, workspace]);
 
   const loadTicket = useCallback(async (ticketId: string) => {
     setTicketLoading(true);
@@ -99,7 +184,8 @@ export default function App() {
     } catch (error) {
       reportError(error);
       setTicket(null);
-      setSelectedId(null);
+      setSelectedTicketId(null);
+      setSelectedRowId(null);
     } finally {
       setTicketLoading(false);
     }
@@ -112,11 +198,16 @@ export default function App() {
   }, []); // initial connection only
 
   useEffect(() => {
-    const timer = window.setTimeout(() => loadDashboard(sort, direction, search).catch(reportError), 140);
-    localStorage.setItem("zeus3.dashboard.sort", sort);
-    localStorage.setItem("zeus3.dashboard.direction", direction);
+    const timer = window.setTimeout(
+      () => loadDashboard(workspace, sort, direction, search).catch(reportError),
+      140,
+    );
+    localStorage.setItem("zeus3.workspace", workspace);
+    localStorage.setItem(workspacePreferenceKey(workspace, "sort"), sort);
+    localStorage.setItem(workspacePreferenceKey(workspace, "direction"), direction);
+    localStorage.setItem(workspacePreferenceKey(workspace, "search"), search);
     return () => window.clearTimeout(timer);
-  }, [direction, loadDashboard, reportError, search, sort]);
+  }, [direction, loadDashboard, reportError, search, sort, workspace]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -137,7 +228,7 @@ export default function App() {
         } else if (envelope.type === "dataset") {
           loadDashboard().catch(reportError);
           loadBootstrap().catch(reportError);
-          if (selectedId) loadTicket(selectedId);
+          if (selectedTicketId) loadTicket(selectedTicketId);
         } else if (envelope.type === "configuration") {
           loadBootstrap().catch(reportError);
         }
@@ -149,15 +240,15 @@ export default function App() {
     source.addEventListener("dataset", receive);
     source.addEventListener("configuration", receive);
     return () => source.close();
-  }, [bootstrap?.instanceId, loadBootstrap, loadDashboard, loadTicket, reportError, selectedId]);
+  }, [bootstrap?.instanceId, loadBootstrap, loadDashboard, loadTicket, reportError, selectedTicketId]);
 
   useEffect(() => {
-    if (!selectedId) {
+    if (!selectedTicketId) {
       setTicket(null);
       return;
     }
-    loadTicket(selectedId);
-  }, [loadTicket, selectedId]);
+    loadTicket(selectedTicketId);
+  }, [loadTicket, selectedTicketId]);
 
   useEffect(() => {
     if (!toast) return;
@@ -218,17 +309,46 @@ export default function App() {
   }
 
   const activeJob = useMemo(() => jobs.find((job) => ["queued", "running"].includes(job.status)), [jobs]);
-  const chooseSort = useCallback((next: SortMode) => {
-    setSort(next);
-    setDirection(DEFAULT_DIRECTIONS[next]);
-  }, []);
+  const chooseSort = useCallback((next: string) => {
+    updateWorkspacePreference({
+      sort: next,
+      direction: workspaceConfig.defaultDirections[next],
+    });
+  }, [updateWorkspacePreference, workspaceConfig]);
   const cycleSort = useCallback(() => {
-    const next = SORTS[(SORTS.indexOf(sort) + 1) % SORTS.length];
+    const values = workspaceConfig.sorts.map((option) => option.value);
+    const next = values[(values.indexOf(sort) + 1) % values.length];
     chooseSort(next);
-  }, [chooseSort, sort]);
+  }, [chooseSort, sort, workspaceConfig.sorts]);
   const queryData = useCallback(() => {
     if (!activeJob) void runJob("query");
   }, [activeJob, runJob]);
+
+  const closeDetail = useCallback(() => {
+    setSelectedTicketId(null);
+    setSelectedRowId(null);
+  }, []);
+
+  const chooseWorkspace = useCallback((next: WorkspaceKey) => {
+    if (next === workspace) return;
+    dashboardRequest.current += 1;
+    setWorkspace(next);
+    setDashboard(null);
+    setTicket(null);
+    setSelectedTicketId(null);
+    setSelectedRowId(null);
+    setColumnsOpen(false);
+  }, [workspace]);
+
+  const selectServiceRequest = useCallback((ticketId: string) => {
+    setSelectedTicketId(ticketId);
+    setSelectedRowId(ticketId);
+  }, []);
+
+  const selectSparePart = useCallback((row: SparePartSummary) => {
+    setSelectedTicketId(row.ticketId);
+    setSelectedRowId(row.rowId);
+  }, []);
 
   useGlobalCommands({
     disabled: operationsOpen || settingsOpen,
@@ -253,11 +373,13 @@ export default function App() {
   }
 
   return (
-    <main className={`app-shell ${selectedId ? "with-detail" : ""}`}>
+    <main className={`app-shell ${selectedTicketId ? "with-detail" : ""}`} data-workspace={workspace}>
       <TopBar
-        version={bootstrap?.version || "3.0.0"}
-        detailOpen={Boolean(selectedId)}
+        version={bootstrap?.version || "3.1.0"}
+        detailOpen={Boolean(selectedTicketId)}
+        workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
+        onWorkspaceChange={chooseWorkspace}
         onOperations={() => setOperationsOpen(true)}
         onSettings={() => setSettingsOpen(true)}
         onTheme={() => setTheme((current) => current === "dark" ? "light" : "dark")}
@@ -270,20 +392,25 @@ export default function App() {
         onSettings={() => setSettingsOpen(true)}
       />
       <JobBanner jobs={jobs} onCancel={stopJob} onOpenActivity={() => setOperationsOpen(true)} />
-      <StatsBar stats={dashboard?.stats || null} />
+      <StatsBar dashboard={dashboard} />
       <section className="dashboard-toolbar">
         <label className="search-box">
           <span>⌕</span>
-          <input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search SR, summary, handler, site…" />
-          {search && <button type="button" onClick={() => setSearch("")} aria-label="Clear search">×</button>}
+          <input
+            ref={searchRef}
+            value={search}
+            onChange={(event) => updateWorkspacePreference({ search: event.target.value })}
+            placeholder={workspaceConfig.searchPlaceholder}
+          />
+          {search && <button type="button" onClick={() => updateWorkspacePreference({ search: "" })} aria-label="Clear search">×</button>}
         </label>
         <div className="sort-control" role="group" aria-label="Dashboard sorting">
           <label>Sort
-          <select aria-label="Sort field" value={sort} onChange={(event) => chooseSort(event.target.value as SortMode)}>
-            {SORTS.map((option) => <option value={option} key={option}>{option}</option>)}
+          <select aria-label="Sort field" value={sort} onChange={(event) => chooseSort(event.target.value)}>
+            {workspaceConfig.sorts.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
           </select>
           </label>
-          <select aria-label="Sort direction" value={direction} onChange={(event) => setDirection(event.target.value as SortDirection)}>
+          <select aria-label="Sort direction" value={direction} onChange={(event) => updateWorkspacePreference({ direction: event.target.value as SortDirection })}>
             <option value="asc">↑ Ascending</option>
             <option value="desc">↓ Descending</option>
           </select>
@@ -304,18 +431,29 @@ export default function App() {
         </div>
       </section>
       <section className="workspace">
-        <TicketGrid
-          tickets={dashboard?.tickets || []}
-          columns={visibleColumns}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          onCloseDetail={() => setSelectedId(null)}
-        />
+        {dashboard?.workspace === "spare-parts" ? (
+          <SparePartsGrid
+            rows={dashboard.spareParts}
+            columns={visibleColumns}
+            selectedRowId={selectedRowId}
+            onSelect={selectSparePart}
+            onCloseDetail={closeDetail}
+          />
+        ) : (
+          <TicketGrid
+            tickets={dashboard?.workspace === "service-requests" ? dashboard.tickets : []}
+            columns={visibleColumns}
+            selectedId={selectedTicketId}
+            onSelect={selectServiceRequest}
+            onCloseDetail={closeDetail}
+          />
+        )}
         <TicketDetail
           ticket={ticket}
           loading={ticketLoading}
+          initialTab={workspace === "spare-parts" ? "spares" : "overview"}
           templates={templates}
-          onClose={() => setSelectedId(null)}
+          onClose={closeDetail}
           onSave={saveLocalFields}
           onGenerateMop={(ticketId, template) => runJob("mop", { ticketId, template })}
         />
@@ -328,7 +466,7 @@ export default function App() {
         <span>S Sort</span>
         <span>M Operations</span>
         <span>R Query</span>
-        <span className="footer-state">{activeJob ? activeJob.message : `Local · ${bootstrap?.polling.intervalMinutes ?? 15} min query`}</span>
+        <span className="footer-state">{activeJob ? activeJob.message : `${workspaceConfig.label} · Local · ${bootstrap?.polling.intervalMinutes ?? 15} min query`}</span>
       </footer>
       {operationsOpen && (
         <OperationsModal

@@ -13,6 +13,8 @@ flowchart TD
     Service --> Edit["Pendings edit transaction"]
     Service --> Core["Reconcile / publish / mail / MOP"]
     Core --> Store["Transactional Markdown store"]
+    Store --> Views["SR / Spare Parts projections"]
+    Closed["Validated Closed.xlsx"] --> Views
 ```
 
 The browser is replaceable presentation. `ApplicationService` is the use-case
@@ -44,6 +46,12 @@ A dashboard GET reads only committed Markdown and state. A browser load never
 calls startup or source reconciliation. Source reads enter through a startup,
 scheduled query, or manual job. The job manager serializes these with publish,
 restore, email, MOP, and browser-edit mutations.
+
+The dashboard endpoint accepts a validated workspace key. Each workspace owns
+its schema and sort vocabulary, but a selected row resolves to the same ticket
+detail endpoint. This registry boundary allows Other Tasks and Rectifications
+to be added later without making Spare Parts or Service Requests special cases
+inside the persistence model.
 
 Server-Sent Events are short local long-polls containing job/configuration/data
 events. The UI updates visible activity immediately and rereads committed data

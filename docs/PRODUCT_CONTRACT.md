@@ -45,6 +45,17 @@ Consequences:
     preferences.
 12. Work and Spare Parts editors own a fixed action row above the global command
     strip; scrolling their content never moves or overlaps either command rail.
+13. Top-level work is organized as extensible workspaces. Service Requests and
+    Spare Parts share the same dense interaction grammar without sharing
+    incompatible sort, search, or column preferences.
+14. The Spare Parts workspace displays one row per normalized part. Current
+    rows open the parent SR's editor; finalized rows open a read-only archive.
+    A presentation row never becomes an independently writable record.
+15. SR is mandatory, always visible, and pinned as the literal first dashboard
+    column. Saved browser preferences cannot hide or displace it.
+16. Finalized SR hardware remains visible in Spare Parts under the same SR.
+    Closed rows are visibly read-only and cannot invoke Pendings edits or MOP
+    generation.
 
 ## Authority invariants
 
@@ -68,6 +79,13 @@ Consequences:
 10. Multiple damaged devices and parts are represented by the normalized
     `Spare Parts` worksheet and `local.spare_parts`; flat compatibility cells
     must never become a competing nested-data authority.
+11. Spare Part Request workbooks are generated outputs only. Their configured
+    destination is excluded from every startup, Query, import, reconciliation,
+    and recovery scan.
+12. Every spare-parts row belongs to exactly one valid eight-digit SR. Current
+    rows are owned by Pendings/Markdown; finalized rows are read from the
+    validated append-only Closed.xlsx archive and cannot become a second
+    writable source.
 
 ## Runtime invariants
 

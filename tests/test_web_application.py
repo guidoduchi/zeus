@@ -21,10 +21,15 @@ from tests.test_zeus2 import pending_row, write_managed
 from zeus2.application.edits import PendingsConflictError, edit_ticket_through_pendings
 from zeus2.application.errors import ValidationError
 from zeus2.application.jobs import EventBroker, JobManager
-from zeus2.application.serialization import dashboard_payload, ticket_revision
+from zeus2.application.serialization import (
+    dashboard_payload,
+    spare_parts_dashboard_payload,
+    ticket_revision,
+)
 from zeus2.application.service import ApplicationService
 from zeus2.config import save_config
 from zeus2.excel_export import (
+    publish_operational_workbooks,
     recreate_pendings_from_database,
     recover_pendings_recreation,
 )
@@ -208,6 +213,188 @@ class PendingsFirstSourceTests(WebFixture):
         self.assertEqual(updated["local"]["fields"]["Planned Date"], "2026-08-21")
         self.assertEqual(updated["local"]["fields"]["Spare"], "Y")
         self.assertEqual(updated["local"]["spare_parts"], spare_parts)
+
+        spare_dashboard = spare_parts_dashboard_payload(
+            self.store, sort="bom", direction="asc"
+        )
+        self.assertEqual(spare_dashboard["workspace"], "spare-parts")
+        self.assertEqual(spare_dashboard["stats"], {
+            "tickets": 1,
+            "currentTickets": 1,
+            "closedTickets": 0,
+            "devices": 2,
+            "parts": 3,
+            "withBom": 3,
+            "missingBom": 0,
+            "newSnRecorded": 2,
+        })
+        self.assertEqual(
+            [row["rowId"] for row in spare_dashboard["spareParts"]],
+            ["12345678:1:1", "12345678:1:2", "12345678:2:1"],
+        )
+        self.assertEqual(spare_dashboard["columns"][0]["key"], "ticketId")
+        self.assertTrue(
+            all(row["ticketId"] == "12345678" for row in spare_dashboard["spareParts"])
+        )
+        descending_sr = spare_parts_dashboard_payload(
+            self.store, sort="sr", direction="desc"
+        )
+        self.assertEqual(
+            [row["rowId"] for row in descending_sr["spareParts"]],
+            ["12345678:1:1", "12345678:1:2", "12345678:2:1"],
+        )
+        self.assertEqual(
+            spare_dashboard["spareParts"][2]["part"],
+            "Memory",
+        )
+        filtered = spare_parts_dashboard_payload(self.store, search="FAULTY-2")
+        self.assertEqual(
+            [row["bom"] for row in filtered["spareParts"]],
+            ["BOM-9001"],
+        )
+
+    def test_spare_parts_export_folder_is_configurable_but_never_queried(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        export_directory = self.root / "spare-exports"
+        export_directory.mkdir()
+        external_workbook = export_directory / "request-draft.xlsx"
+        external_workbook.write_bytes(b"not an importable workbook")
+
+        service = ApplicationService(self.store)
+        try:
+            payload = service.save_settings({
+                "paths.spare_parts_export_directory": str(export_directory),
+            })
+            setting = next(
+                item
+                for item in payload["settings"]
+                if item["key"] == "paths.spare_parts_export_directory"
+            )
+            self.assertEqual(setting["value"], str(export_directory.resolve()))
+            self.assertTrue(setting["status"]["writeOnly"])
+            self.assertIn("Export-only", setting["status"]["message"])
+
+            query = run_startup(self.store)
+            self.assertEqual(
+                external_workbook.read_bytes(),
+                b"not an importable workbook",
+            )
+            self.assertFalse(
+                any("request-draft" in message for message in query.warnings)
+            )
+        finally:
+            service.stop()
+
+    def test_finalized_spare_parts_remain_grouped_under_their_sr(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        before = self.store.read_ticket("12345678")
+        edit_ticket_through_pendings(
+            self.store,
+            "12345678",
+            {
+                "Spare Parts": [
+                    {
+                        "device": "server-closed",
+                        "model": "2288H V5",
+                        "parts": [
+                            {
+                                "slot": "Slot 3",
+                                "part": "Disk",
+                                "bom": "BOM-CLOSED",
+                                "faulty_sn": "FAULTY-CLOSED",
+                                "new_sn": None,
+                            }
+                        ],
+                    }
+                ]
+            },
+            expected_revision=ticket_revision(before),
+        )
+        closing = self.store.read_ticket("12345678")
+        closing["lifecycle"]["status"] = "closure_pending"
+        with self.store.transaction("test-finalized-spare-parts", {}) as staging:
+            self.store.write_ticket_bundle(staging, closing)
+        publish_operational_workbooks(
+            self.store,
+            self.books,
+            create_missing=True,
+        )
+        self.assertFalse(self.store.ticket_file("12345678").exists())
+
+        service = ApplicationService(self.store)
+        try:
+            dashboard = service.dashboard(
+                workspace="spare-parts",
+                sort="sr",
+                direction="desc",
+                search="",
+            )
+            self.assertEqual(dashboard["columns"][0]["key"], "ticketId")
+            self.assertEqual(dashboard["stats"]["currentTickets"], 0)
+            self.assertEqual(dashboard["stats"]["closedTickets"], 1)
+            self.assertEqual(len(dashboard["spareParts"]), 1)
+            row = dashboard["spareParts"][0]
+            self.assertEqual(row["ticketId"], "12345678")
+            self.assertEqual(row["lifecycle"], "closed")
+            self.assertTrue(row["readOnly"])
+            self.assertEqual(row["source"], "closed")
+
+            detail = service.ticket("12345678")
+            self.assertEqual(detail["ticketId"], "12345678")
+            self.assertEqual(detail["summary"], "Pendings alone builds Zeus")
+            self.assertTrue(detail["readOnly"])
+            self.assertEqual(detail["source"], "closed")
+            self.assertEqual(detail["spareParts"][0]["parts"][0]["bom"], "BOM-CLOSED")
+            with self.assertRaisesRegex(ValidationError, "finalized and read-only"):
+                service.edit_ticket(
+                    "12345678",
+                    changes={"Notes": "must not change"},
+                    expected_revision=detail["revision"],
+                )
+        finally:
+            service.stop()
+
+    def test_normalized_spare_part_rejects_a_missing_parent_sr(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        before = self.store.read_ticket("12345678")
+        edit_ticket_through_pendings(
+            self.store,
+            "12345678",
+            {
+                "Spare Parts": [
+                    {
+                        "device": "server-a",
+                        "model": "2288H V5",
+                        "parts": [
+                            {
+                                "slot": "Slot 1",
+                                "part": "Disk",
+                                "bom": "BOM-1",
+                                "faulty_sn": "FAULTY-1",
+                                "new_sn": None,
+                            }
+                        ],
+                    }
+                ]
+            },
+            expected_revision=ticket_revision(before),
+        )
+        path = self.books / "Pendings.xlsx"
+        workbook = load_workbook(path)
+        try:
+            workbook["Spare Parts"]["A2"] = None
+            workbook.save(path)
+        finally:
+            workbook.close()
+
+        with self.assertRaisesRegex(
+            WorkbookValidationError,
+            "Spare Parts row 2: ticket ID is blank or invalid",
+        ):
+            read_pendings(path)
 
     def test_spare_cannot_be_supplied_by_a_browser_edit(self) -> None:
         self.seed_pendings_only()
@@ -780,6 +967,19 @@ class WebServerTests(WebFixture):
         self.assertEqual(status, 200)
         self.assertEqual(dashboard["stats"]["active"], 1)  # type: ignore[index]
         self.assertEqual(index["instanceId"], "test-instance")
+        self.assertEqual(audit_before, audit_after)
+
+    def test_spare_parts_workspace_is_available_without_mutating_sources(self) -> None:
+        audit_before = self.store.audit_file.read_text(encoding="utf-8")
+        status, payload, _ = self.read_json(
+            "/api/dashboard?workspace=spare-parts&sort=sr&direction=desc&search="
+        )
+        audit_after = self.store.audit_file.read_text(encoding="utf-8")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["workspace"], "spare-parts")
+        self.assertIn("spareParts", payload)
+        self.assertNotIn("tickets", payload)
         self.assertEqual(audit_before, audit_after)
 
     def test_ticket_patch_returns_the_complete_detail_contract(self) -> None:

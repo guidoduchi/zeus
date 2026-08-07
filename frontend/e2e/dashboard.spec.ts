@@ -21,6 +21,55 @@ test("the dashboard owns wheel scrolling and opens the ticket panel", async ({ p
   await expect(page.getByRole("button", { name: "Work fields" })).toBeVisible();
 });
 
+test("Service Requests and Spare Parts switch as independent management views", async ({ page }) => {
+  await page.goto("/");
+  const serviceRequests = page.getByRole("button", { name: "Service Requests" });
+  const spareParts = page.getByRole("button", { name: "Spare Parts" });
+  await expect(serviceRequests).toHaveAttribute("aria-pressed", "true");
+
+  await spareParts.click();
+  await expect(spareParts).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Spare Parts summary")).toContainText("Parts 34");
+  await expect(page.getByRole("columnheader", { name: "BOM" })).toBeVisible();
+  await expect(page.getByPlaceholder("Search SR, device, part, BOM, serial, site…")).toBeVisible();
+
+  const spareRows = page.locator("[data-row-id]");
+  await expect(spareRows.first()).toBeVisible();
+  expect(await spareRows.count()).toBe(34);
+  await spareRows.first().click();
+  const detail = page.getByRole("complementary", { name: /SR \d{8} detail/ });
+  await expect(detail).toBeVisible();
+  await expect(detail.getByRole("button", { name: /^Spare Parts/ })).toHaveClass(/active/);
+  await expect(detail.getByRole("button", { name: /Add damaged part/ })).toBeVisible();
+
+  await serviceRequests.click();
+  await expect(serviceRequests).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByPlaceholder("Search SR, summary, handler, site…")).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Emails" })).toBeVisible();
+});
+
+test("Spare Parts keeps SR first and preserves finalized SR ownership", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Spare Parts" }).click();
+  const headers = page.locator(".grid-header [role=columnheader]");
+  await expect(headers.first()).toHaveText("SR");
+
+  const search = page.getByPlaceholder("Search SR, device, part, BOM, serial, site…");
+  await search.fill("39400002");
+  const archived = page.locator('[data-row-id="39400002:1:1"]');
+  await expect(archived).toBeVisible();
+  await expect(archived).toHaveAttribute("data-ticket-id", "39400002");
+  await expect(archived).toHaveAttribute("data-read-only", "true");
+  await archived.click();
+
+  const detail = page.getByRole("complementary", { name: "SR 39400002 detail" });
+  await expect(detail.getByText("Closed · read-only")).toBeVisible();
+  await expect(detail.getByText(/remain assigned to this SR/i)).toBeVisible();
+  await expect(detail.getByLabel("Device 1 part 1 BOM (part number)")).toBeDisabled();
+  await expect(detail.getByRole("button", { name: /Save through Pendings/ })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: /Add damaged part/ })).toHaveCount(0);
+});
+
 test("field choices persist and a manual source query is visible", async ({ page }) => {
   await page.goto("/");
   const query = page.getByRole("button", { name: /Query data/ });

@@ -11,6 +11,7 @@ interface TemplateOption {
 interface Props {
   ticket: TicketDetailType | null;
   loading: boolean;
+  initialTab?: Tab;
   templates: TemplateOption[];
   onClose: () => void;
   onSave: (ticketId: string, revision: string, changes: Record<string, unknown>) => Promise<void>;
@@ -91,8 +92,8 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
       <div className="edit-tab-scroll">
         <div className="tab-content work-tab">
           <div className="source-contract">
-            <strong>Pendings remains authoritative.</strong>
-            <span>Save writes the validated workbook first, then imports the same values into Markdown.</span>
+            <strong>{ticket.readOnly ? "Finalized SR archive." : "Pendings remains authoritative."}</strong>
+            <span>{ticket.readOnly ? "These values are preserved from Closed.xlsx and cannot be changed from the site." : "Save writes the validated workbook first, then imports the same values into Markdown."}</span>
           </div>
           <div className="work-form">
             {WORK_FIELDS.map((field) => {
@@ -100,7 +101,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
                 return (
                   <label className="form-field full" key={field}>
                     <span>{field}</span>
-                    <textarea rows={7} value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} />
+                    <textarea rows={7} value={draft[field] || ""} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)} />
                   </label>
                 );
               }
@@ -108,7 +109,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
                 return (
                   <label className="form-field" key={field}>
                     <span>{field}</span>
-                    <input type="date" value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} />
+                    <input type="date" value={draft[field] || ""} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)} />
                   </label>
                 );
               }
@@ -116,7 +117,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
                 return (
                   <label className="form-field" key={field}>
                     <span>{field}</span>
-                    <select value={draft[field] || "N"} onChange={(event) => setField(field, event.target.value)}>
+                    <select value={draft[field] || "N"} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)}>
                       <option value="N">N — Not completed</option>
                       <option value="Y">Y — Completed</option>
                       <option value="P">P — Attempted, issue pending</option>
@@ -128,7 +129,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
               return (
                 <label className="form-field" key={field}>
                   <span>{field}</span>
-                  <input value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} placeholder="—" />
+                  <input value={draft[field] || ""} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)} placeholder="—" />
                 </label>
               );
             })}
@@ -136,10 +137,12 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
         </div>
       </div>
       <div className="inline-actions edit-actions">
-        <span>{changedCount ? `${changedCount} unsaved field(s)` : "No unsaved changes"}</span>
-        <button type="button" className="primary-button" disabled={!changedCount || saving} onClick={save}>
-          {saving ? "Saving…" : "Save through Pendings"}
-        </button>
+        <span>{ticket.readOnly ? "Closed SR · read-only archive" : changedCount ? `${changedCount} unsaved field(s)` : "No unsaved changes"}</span>
+        {!ticket.readOnly && (
+          <button type="button" className="primary-button" disabled={!changedCount || saving} onClick={save}>
+            {saving ? "Saving…" : "Save through Pendings"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -230,8 +233,8 @@ function SparePartsTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { 
       <div className="edit-tab-scroll">
         <div className="tab-content spare-parts-tab">
           <div className="source-contract">
-            <strong>The Spare Parts worksheet remains authoritative.</strong>
-            <span>Each damaged device can contain multiple parts. Compatibility columns and the export-only Spare tag are generated automatically.</span>
+            <strong>{ticket.readOnly ? `SR ${ticket.ticketId} is finalized.` : "The Spare Parts worksheet remains authoritative."}</strong>
+            <span>{ticket.readOnly ? "Its devices and parts remain assigned to this SR through the validated Closed.xlsx archive." : "Each damaged device can contain multiple parts. Compatibility columns and the export-only Spare tag are generated automatically."}</span>
           </div>
           {!devices.length && (
             <div className="empty-spares">
@@ -244,16 +247,16 @@ function SparePartsTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { 
               <article className="spare-device" key={`device-${deviceIndex}`}>
                 <header>
                   <strong>Damaged device {deviceIndex + 1}</strong>
-                  <button type="button" className="text-button danger-text" onClick={() => setDevices((current) => current.filter((_, index) => index !== deviceIndex))}>Remove device</button>
+                  {!ticket.readOnly && <button type="button" className="text-button danger-text" onClick={() => setDevices((current) => current.filter((_, index) => index !== deviceIndex))}>Remove device</button>}
                 </header>
                 <div className="device-fields">
                   <label className="form-field">
                     <span>Device</span>
-                    <input aria-label={`Device ${deviceIndex + 1} name`} value={device.device} onChange={(event) => updateDevice(deviceIndex, "device", event.target.value)} placeholder="Hostname or equipment ID" />
+                    <input aria-label={`Device ${deviceIndex + 1} name`} value={device.device} disabled={ticket.readOnly} onChange={(event) => updateDevice(deviceIndex, "device", event.target.value)} placeholder="Hostname or equipment ID" />
                   </label>
                   <label className="form-field">
                     <span>Model</span>
-                    <input aria-label={`Device ${deviceIndex + 1} model`} value={device.model} onChange={(event) => updateDevice(deviceIndex, "model", event.target.value)} placeholder="Equipment model" />
+                    <input aria-label={`Device ${deviceIndex + 1} model`} value={device.model} disabled={ticket.readOnly} onChange={(event) => updateDevice(deviceIndex, "model", event.target.value)} placeholder="Equipment model" />
                   </label>
                 </div>
                 <div className="part-list">
@@ -261,7 +264,7 @@ function SparePartsTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { 
                     <section className="spare-part" key={`part-${partIndex}`}>
                       <header>
                         <strong>Part {partIndex + 1}</strong>
-                        <button type="button" className="text-button danger-text" onClick={() => setDevices((current) => current.map((candidate, index) => index !== deviceIndex ? candidate : ({ ...candidate, parts: candidate.parts.filter((_, position) => position !== partIndex) })))}>Remove part</button>
+                        {!ticket.readOnly && <button type="button" className="text-button danger-text" onClick={() => setDevices((current) => current.map((candidate, index) => index !== deviceIndex ? candidate : ({ ...candidate, parts: candidate.parts.filter((_, position) => position !== partIndex) })))}>Remove part</button>}
                       </header>
                       <div className="part-fields">
                         {([
@@ -273,25 +276,27 @@ function SparePartsTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { 
                         ] as Array<[keyof SparePart, string]>).map(([field, label]) => (
                           <label className="form-field" key={field}>
                             <span>{label}</span>
-                            <input aria-label={`Device ${deviceIndex + 1} part ${partIndex + 1} ${label}`} value={part[field]} onChange={(event) => updatePart(deviceIndex, partIndex, field, event.target.value)} placeholder="—" />
+                            <input aria-label={`Device ${deviceIndex + 1} part ${partIndex + 1} ${label}`} value={part[field]} disabled={ticket.readOnly} onChange={(event) => updatePart(deviceIndex, partIndex, field, event.target.value)} placeholder="—" />
                           </label>
                         ))}
                       </div>
                     </section>
                   ))}
                 </div>
-                <button type="button" className="secondary-button add-part" onClick={() => setDevices((current) => current.map((candidate, index) => index === deviceIndex ? ({ ...candidate, parts: [...candidate.parts, emptyPart()] }) : candidate))}>+ Add damaged part</button>
+                {!ticket.readOnly && <button type="button" className="secondary-button add-part" onClick={() => setDevices((current) => current.map((candidate, index) => index === deviceIndex ? ({ ...candidate, parts: [...candidate.parts, emptyPart()] }) : candidate))}>+ Add damaged part</button>}
               </article>
             ))}
           </div>
-          <button type="button" className="secondary-button add-device" onClick={() => setDevices((current) => [...current, { device: "", model: "", parts: [emptyPart()] }])}>+ Add damaged device</button>
+          {!ticket.readOnly && <button type="button" className="secondary-button add-device" onClick={() => setDevices((current) => [...current, { device: "", model: "", parts: [emptyPart()] }])}>+ Add damaged device</button>}
         </div>
       </div>
       <div className="inline-actions edit-actions">
-        <span>{changed ? `${cleaned.length} device(s), ${partCount} part(s) · unsaved` : `${cleaned.length} device(s), ${partCount} part(s)`}</span>
-        <button type="button" className="primary-button" disabled={!changed || saving} onClick={save}>
-          {saving ? "Saving…" : "Save through Pendings"}
-        </button>
+        <span>{ticket.readOnly ? `${cleaned.length} device(s), ${partCount} part(s) · closed SR archive` : changed ? `${cleaned.length} device(s), ${partCount} part(s) · unsaved` : `${cleaned.length} device(s), ${partCount} part(s)`}</span>
+        {!ticket.readOnly && (
+          <button type="button" className="primary-button" disabled={!changed || saving} onClick={save}>
+            {saving ? "Saving…" : "Save through Pendings"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -359,7 +364,7 @@ function MopsTab({ ticket, templates, onGenerateMop }: { ticket: TicketDetailTyp
             {templates.map((option) => <option value={option.path} key={option.path}>{option.name}</option>)}
           </select>
         </label>
-        <button type="button" className="primary-button" disabled={!template} onClick={() => onGenerateMop(ticket.ticketId, template)}>Generate next version</button>
+        <button type="button" className="primary-button" disabled={!template || ticket.readOnly} onClick={() => onGenerateMop(ticket.ticketId, template)}>Generate next version</button>
       </div>
       <div className="section-heading"><strong>Generated MOPs</strong><span>{ticket.mops.length}</span></div>
       <div className="file-list">
@@ -373,9 +378,9 @@ function MopsTab({ ticket, templates, onGenerateMop }: { ticket: TicketDetailTyp
   );
 }
 
-export function TicketDetail({ ticket, loading, templates, onClose, onSave, onGenerateMop }: Props) {
-  const [tab, setTab] = useState<Tab>("overview");
-  useEffect(() => setTab("overview"), [ticket?.ticketId]);
+export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onGenerateMop }: Props) {
+  const [tab, setTab] = useState<Tab>(initialTab);
+  useEffect(() => setTab(initialTab), [initialTab, ticket?.ticketId]);
   if (loading && !ticket) return <aside className="detail-panel"><div className="detail-loading">Reading ticket…</div></aside>;
   if (!ticket) return null;
   const tabs: Array<[Tab, string, number | null]> = [
@@ -390,7 +395,7 @@ export function TicketDetail({ ticket, loading, templates, onClose, onSave, onGe
     <aside className="detail-panel" aria-label={`SR ${ticket.ticketId} detail`}>
       <header className="detail-header">
         <div>
-          <span>SR {ticket.ticketId}</span>
+          <span>SR {ticket.ticketId}{ticket.readOnly && <small className="archive-badge">Closed · read-only</small>}</span>
           <h2>{ticket.summary || "No problem summary"}</h2>
         </div>
         <button type="button" className="icon-button" onClick={onClose} aria-label="Close ticket detail">×</button>

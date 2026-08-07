@@ -564,10 +564,20 @@ def read_closed(path: Path) -> ManagedWorkbook:
                 duplicates.append(ticket_id)
                 continue
             local, _ = _local_from_row(worksheet, row_number, mapping)
+            protected = {
+                column: _clean_value(
+                    _cell_value(worksheet, row_number, mapping, column)
+                )
+                for column in UPSTREAM_COLUMNS
+            }
+            protected["SRNo"] = ticket_id
+            id_cell = worksheet.cell(row=row_number, column=mapping["SRNo"])
             records[ticket_id] = {
                 "ticket_id": ticket_id,
+                "upstream_fields": protected,
                 "row_number": row_number,
                 "local": local,
+                "sr_url": id_cell.hyperlink.target if id_cell.hyperlink else None,
             }
         if duplicates:
             raise WorkbookValidationError(

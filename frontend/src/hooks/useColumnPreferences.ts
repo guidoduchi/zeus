@@ -15,10 +15,10 @@ function defaults(definitions: ColumnDefinition[]): StoredPreferences {
   };
 }
 
-function readStored(definitions: ColumnDefinition[]): StoredPreferences {
+function readStored(definitions: ColumnDefinition[], storageKey: string): StoredPreferences {
   const fallback = defaults(definitions);
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<StoredPreferences>;
     const storedOrder = Array.isArray(parsed.order)
@@ -37,6 +37,11 @@ function readStored(definitions: ColumnDefinition[]): StoredPreferences {
     for (const key of fallback.order) {
       if (!order.includes(key)) order.push(key);
     }
+    if (known.has("ticketId")) {
+      const ticketIndex = order.indexOf("ticketId");
+      if (ticketIndex >= 0) order.splice(ticketIndex, 1);
+      order.unshift("ticketId");
+    }
     const visible = storedVisible.filter((key) => known.has(key));
     if (!visible.length) visible.push(...fallback.visible);
     for (const column of definitions) {
@@ -51,8 +56,12 @@ function readStored(definitions: ColumnDefinition[]): StoredPreferences {
   }
 }
 
-export function useColumnPreferences(definitions: ColumnDefinition[]) {
-  const [preferences, setPreferences] = useState<StoredPreferences>(() => readStored(definitions));
+export function useColumnPreferences(definitions: ColumnDefinition[], storageKey = STORAGE_KEY) {
+  const [preferences, setPreferences] = useState<StoredPreferences>(() => readStored(definitions, storageKey));
+
+  useEffect(() => {
+    setPreferences(readStored(definitions, storageKey));
+  }, [storageKey]);
 
   useEffect(() => {
     if (!definitions.length) return;
@@ -62,6 +71,11 @@ export function useColumnPreferences(definitions: ColumnDefinition[]) {
       const order = current.order.filter((key) => known.has(key));
       for (const column of definitions) {
         if (!order.includes(column.key)) order.push(column.key);
+      }
+      if (known.has("ticketId")) {
+        const ticketIndex = order.indexOf("ticketId");
+        if (ticketIndex >= 0) order.splice(ticketIndex, 1);
+        order.unshift("ticketId");
       }
       const visible = current.visible.filter((key) => known.has(key));
       if (!visible.length) visible.push(...defaults(definitions).visible);
@@ -76,8 +90,8 @@ export function useColumnPreferences(definitions: ColumnDefinition[]) {
   }, [definitions]);
 
   useEffect(() => {
-    if (definitions.length) localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
-  }, [definitions.length, preferences]);
+    if (definitions.length) localStorage.setItem(storageKey, JSON.stringify(preferences));
+  }, [definitions.length, preferences, storageKey]);
 
   const ordered = useMemo(() => {
     const byKey = new Map(definitions.map((column) => [column.key, column]));
@@ -100,10 +114,12 @@ export function useColumnPreferences(definitions: ColumnDefinition[]) {
   }, []);
 
   const move = useCallback((key: string, direction: -1 | 1) => {
+    if (key === "ticketId") return;
     setPreferences((current) => {
       const index = current.order.indexOf(key);
       const target = index + direction;
       if (index < 0 || target < 0 || target >= current.order.length) return current;
+      if (current.order[target] === "ticketId") return current;
       const order = [...current.order];
       [order[index], order[target]] = [order[target], order[index]];
       return { ...current, order };

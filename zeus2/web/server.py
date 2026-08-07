@@ -166,12 +166,15 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, payload)
             return
         if path == "/api/dashboard":
-            sort = query.get("sort", ["report"])[0]
+            workspace = query.get("workspace", ["service-requests"])[0]
+            default_sort = "sr" if workspace == "spare-parts" else "report"
+            sort = query.get("sort", [default_sort])[0]
             direction = query.get("direction", [None])[0]
             search = query.get("search", [""])[0]
             self._send_json(
                 HTTPStatus.OK,
                 self.server.service.dashboard(
+                    workspace=workspace,
                     sort=sort,
                     direction=direction,
                     search=search,

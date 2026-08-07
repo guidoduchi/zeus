@@ -34,8 +34,8 @@ export function ColumnChooser({ columns, visibleKeys, onToggle, onMove, onReset,
                 <span>{label}</span>
               </label>
               <div className="reorder-buttons">
-                <button type="button" disabled={index === 0} onClick={() => onMove(column.key, -1)} aria-label={`Move ${label} up`}>↑</button>
-                <button type="button" disabled={index === columns.length - 1} onClick={() => onMove(column.key, 1)} aria-label={`Move ${label} down`}>↓</button>
+                <button type="button" disabled={column.key === "ticketId" || index === 0 || columns[index - 1]?.key === "ticketId"} onClick={() => onMove(column.key, -1)} aria-label={`Move ${label} up`}>↑</button>
+                <button type="button" disabled={column.key === "ticketId" || index === columns.length - 1} onClick={() => onMove(column.key, 1)} aria-label={`Move ${label} down`}>↓</button>
               </div>
             </div>
           );

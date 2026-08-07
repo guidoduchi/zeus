@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.1.0 - Unreleased
+
+- Added an extensible top-level workspace switcher. Service Requests retains
+  the existing ticket dashboard, while Spare Parts presents one dense
+  management row per normalized damaged part.
+- Made the two workspaces independent browser views with their own search,
+  sort field, sort direction, visible fields, and field order preferences.
+- Made every Spare Parts row resolve back to its parent SR and open directly in
+  the normalized Spare Parts editor. Pendings remains the mutation authority;
+  the new dashboard is a Markdown projection, not a second database.
+- Added Spare Parts counters for affected tickets, devices, parts, BOM
+  coverage, and recorded replacement serial numbers.
+- Added a nullable Spare Parts export-folder setting to the web and console
+  configuration. The destination is one-way by contract: Query, startup, and
+  reconciliation never read generated request workbooks from it.
+- Established the 3.1 export boundary without guessing the pending Spare Part
+  Request XLSX schema. File generation will be completed against the agreed
+  columns and layout.
+- Pinned SR as the first non-optional column in every workspace and made it the
+  permanent owner of every damaged-device/part row.
+- Extended the Spare Parts projection across lifecycle finalization: current
+  SRs remain editable through Pendings, while finalized SR parts remain
+  visible and read-only through the validated Closed.xlsx archive.
+
 ## 3.0.0 - 2026-08-07
 
 - Replaced the interactive terminal dashboard with a bundled React/TypeScript

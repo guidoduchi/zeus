@@ -60,7 +60,7 @@ goto :failed
 
 :installed
 echo.
-echo Zeus 3.0.0 setup completed.
+echo Zeus 3.1.0 setup completed.
 echo Run run_zeus.bat to start.
 pause
 exit /b 0

@@ -1,7 +1,11 @@
+import type { WorkspaceKey } from "../types";
+
 interface Props {
   version: string;
   detailOpen: boolean;
+  workspace: WorkspaceKey;
   stagedMessages: number;
+  onWorkspaceChange: (workspace: WorkspaceKey) => void;
   onOperations: () => void;
   onSettings: () => void;
   onTheme: () => void;
@@ -10,7 +14,9 @@ interface Props {
 export function TopBar({
   version,
   detailOpen,
+  workspace,
   stagedMessages,
+  onWorkspaceChange,
   onOperations,
   onSettings,
   onTheme,
@@ -19,9 +25,27 @@ export function TopBar({
     <header className="top-bar">
       <div className="top-title">
         <span className="bolt" aria-hidden="true">ϟ</span>
-        <strong>ZEUS {version || "3.0.0"}</strong>
+        <strong>ZEUS {version || "3.1.0"}</strong>
         <span className="top-separator">|</span>
-        <span>{detailOpen ? "Dashboard / Detail" : "Dashboard"}</span>
+        <nav className="workspace-switcher" aria-label="Zeus workspace">
+          <button
+            type="button"
+            className={workspace === "service-requests" ? "active" : ""}
+            aria-pressed={workspace === "service-requests"}
+            onClick={() => onWorkspaceChange("service-requests")}
+          >
+            Service Requests
+          </button>
+          <button
+            type="button"
+            className={workspace === "spare-parts" ? "active" : ""}
+            aria-pressed={workspace === "spare-parts"}
+            onClick={() => onWorkspaceChange("spare-parts")}
+          >
+            Spare Parts
+          </button>
+        </nav>
+        {detailOpen && <span className="detail-crumb">/ Detail</span>}
         {stagedMessages > 0 && <span className="staged-pill">Email staged {stagedMessages}</span>}
       </div>
       <div className="top-actions">

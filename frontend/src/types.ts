@@ -1,4 +1,5 @@
 export type Risk = "none" | "grey" | "yellow" | "red";
+export type WorkspaceKey = "service-requests" | "spare-parts";
 
 export interface ColumnDefinition {
   key: string;
@@ -9,6 +10,7 @@ export interface ColumnDefinition {
 }
 
 export interface TicketSummary {
+  rowId?: string;
   ticketId: string;
   revision: string;
   lifecycle: string;
@@ -52,15 +54,67 @@ export interface DashboardStats {
   pendingClosure: number;
 }
 
-export interface DashboardPayload {
+interface DashboardPayloadBase {
   datasetRevision: number;
   sort: string;
   direction: "asc" | "desc";
   search: string;
-  stats: DashboardStats;
-  tickets: TicketSummary[];
   columns: ColumnDefinition[];
 }
+
+export interface ServiceRequestsDashboardPayload extends DashboardPayloadBase {
+  workspace: "service-requests";
+  stats: DashboardStats;
+  tickets: TicketSummary[];
+}
+
+export interface SparePartSummary {
+  rowId: string;
+  ticketId: string;
+  revision: string;
+  lifecycle: string;
+  done: string;
+  plannedDate: string;
+  plannedDays: number | null;
+  plannedState: string;
+  plannedColor: Risk | null;
+  site: string;
+  cloud: string;
+  deviceNumber: number;
+  partNumber: number | null;
+  device: string;
+  model: string;
+  slot: string;
+  part: string;
+  bom: string;
+  bomColor: Risk | null;
+  faultySn: string;
+  newSn: string;
+  summary: string;
+  risk: Risk;
+  hasPart: boolean;
+  readOnly: boolean;
+  source: "current" | "closed";
+}
+
+export interface SparePartsStats {
+  tickets: number;
+  currentTickets: number;
+  closedTickets: number;
+  devices: number;
+  parts: number;
+  withBom: number;
+  missingBom: number;
+  newSnRecorded: number;
+}
+
+export interface SparePartsDashboardPayload extends DashboardPayloadBase {
+  workspace: "spare-parts";
+  stats: SparePartsStats;
+  spareParts: SparePartSummary[];
+}
+
+export type DashboardPayload = ServiceRequestsDashboardPayload | SparePartsDashboardPayload;
 
 export interface EmailMessage {
   messageKey: string | null;
@@ -117,6 +171,8 @@ export interface TicketDetail extends TicketSummary {
   updatedAt: string | null;
   history: HistoryEvent[];
   mops: MopFile[];
+  readOnly: boolean;
+  source: "current" | "closed";
 }
 
 export interface Job {

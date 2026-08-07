@@ -61,9 +61,28 @@ const detail: TicketDetailType = {
   updatedAt: "2026-08-06",
   history: [],
   mops: [],
+  readOnly: false,
+  source: "current",
 };
 
 describe("TicketDetail", () => {
+  it("opens directly in the Spare Parts editor from that management view", () => {
+    render(
+      <TicketDetail
+        ticket={detail}
+        loading={false}
+        initialTab="spares"
+        templates={[]}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        onGenerateMop={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /add damaged device/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /^Spare Parts/ })).toHaveClass("active");
+  });
+
   it("renders email content as escaped plain text and toggles full history", async () => {
     const user = userEvent.setup();
     const { container } = render(
@@ -164,5 +183,42 @@ describe("TicketDetail", () => {
     expect(styles).toMatch(/\.bounded-edit-tab\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto[^}]*overflow:\s*hidden/s);
     expect(styles).toMatch(/\.detail-scroll\.bounded-edit-scroll\s*\{[^}]*overflow:\s*hidden/s);
     expect(styles).not.toMatch(/\.sticky-actions/);
+  });
+
+  it("shows finalized spare parts under their SR without edit controls", () => {
+    const archived: TicketDetailType = {
+      ...detail,
+      lifecycle: "closed",
+      readOnly: true,
+      source: "closed",
+      spareParts: [{
+        device: "server-closed",
+        model: "2288H V5",
+        parts: [{
+          slot: "Slot 3",
+          part: "Disk",
+          bom: "BOM-CLOSED",
+          faulty_sn: "FAULTY-CLOSED",
+          new_sn: null,
+        }],
+      }],
+    };
+    render(
+      <TicketDetail
+        ticket={archived}
+        loading={false}
+        initialTab="spares"
+        templates={[]}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        onGenerateMop={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Closed · read-only")).toBeVisible();
+    expect(screen.getByText(/remain assigned to this SR/i)).toBeVisible();
+    expect(screen.getByLabelText("Device 1 part 1 BOM (part number)")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Save through Pendings/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Add damaged part/ })).not.toBeInTheDocument();
   });
 });

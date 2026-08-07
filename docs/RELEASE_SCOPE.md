@@ -1,7 +1,15 @@
-# Zeus 3.0.0 release scope
+# Zeus 3.1.0 release scope
 
 Included:
 
+- an extensible Service Requests / Spare Parts workspace switcher with
+  independent search, sort, direction, and field preferences;
+- a dense one-row-per-part Spare Parts management projection that opens the
+  parent SR's normalized editor and never becomes a second authority;
+- mandatory SR ownership with SR pinned as the first column, plus read-only
+  continuity for finalized spare-parts rows through validated Closed.xlsx;
+- a configurable, nullable, one-way Spare Parts export destination that is
+  excluded from all source queries and imports;
 - bundled React/TypeScript master-detail interface served by Python;
 - strict `127.0.0.1` binding, local Host/Origin/CSRF controls, and no CORS;
 - browser launch, Windows notification-area lifecycle, clean restart/exit, and
@@ -40,7 +48,9 @@ Deliberately excluded:
 - direct Markdown work-field editing;
 - draggable column resizing;
 - arbitrary/custom managed Excel columns or formulas;
+- the final Spare Part Request XLSX columns/layout until its format is agreed;
 - email subjects, bodies, or attachments in Excel or the dashboard grid;
 - new Outlook, direct OST parsing, sending, moving, deleting, or marking mail;
-- closed-ticket search outside `Closed.xlsx`;
+- closed Service Request management outside `Closed.xlsx` (the Spare Parts
+  workspace exposes only its archived non-email hardware projection);
 - ticket identifiers other than exactly eight decimal digits.

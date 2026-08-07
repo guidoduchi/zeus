@@ -5,6 +5,7 @@ import type {
   Job,
   SettingsPayload,
   TicketDetail,
+  WorkspaceKey,
 } from "./types";
 
 let csrfToken = "";
@@ -46,8 +47,13 @@ export async function getBootstrap(): Promise<BootstrapPayload> {
   return payload;
 }
 
-export function getDashboard(sort: string, direction: "asc" | "desc", search: string): Promise<DashboardPayload> {
-  const query = new URLSearchParams({ sort, direction, search });
+export function getDashboard(
+  workspace: WorkspaceKey,
+  sort: string,
+  direction: "asc" | "desc",
+  search: string,
+): Promise<DashboardPayload> {
+  const query = new URLSearchParams({ workspace, sort, direction, search });
   return request<DashboardPayload>(`/api/dashboard?${query}`);
 }
 

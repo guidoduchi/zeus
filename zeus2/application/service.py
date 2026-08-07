@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
@@ -13,11 +14,13 @@ from ..excel_export import (
     publish_operational_workbooks,
     restore_pendings_backup,
 )
+from ..excel_import import read_closed, validate_closed_against_index
 from ..mail import fetch_and_commit_outlook, synchronize_staged_email
 from ..mop import generate_mop
 from ..reconcile import sync_newest_advanced_search
 from ..startup import StartupResult, reconcile_advanced_and_new_mail, run_startup
 from ..store import StoreError, ZeusStore
+from ..tickets import empty_email
 from ..utils import iso_now, normalize_ticket_id
 from .edits import edit_ticket_through_pendings
 from .errors import (
@@ -29,8 +32,10 @@ from .errors import (
 from .jobs import EventBroker, JobContext, JobManager
 from .serialization import (
     DEFAULT_SORT_DIRECTIONS,
+    SPARE_PART_DEFAULT_SORT_DIRECTIONS,
     dashboard_payload,
     serialize_ticket_detail,
+    spare_parts_dashboard_payload,
 )
 from .settings import outlook_candidates, settings_payload, update_settings
 
@@ -58,6 +63,9 @@ class ApplicationService:
         self.jobs = JobManager(self.broker)
         self._operation_lock = threading.Lock()
         self._revision_lock = threading.Lock()
+        self._closed_archive_lock = threading.Lock()
+        self._closed_archive_signature: tuple[Any, ...] | None = None
+        self._closed_archive_cache: tuple[dict[str, Any], ...] = ()
         self._dataset_revision = 1
         self._started = False
         self._stopping = threading.Event()
@@ -173,34 +181,134 @@ class ApplicationService:
             },
         }
 
+    def _closed_archive_tickets(self) -> tuple[dict[str, Any], ...]:
+        """Read finalized non-email ticket data through a stat-keyed cache."""
+
+        index = self.store.closed_index()
+        indexed_ids = tuple(
+            sorted((str(value) for value in index.get("ticket_ids", [])), reverse=True)
+        )
+        directory = self.store.configured_directory("workbook_directory")
+        closed_path = directory / "Closed.xlsx" if directory is not None else None
+        if closed_path is None or not closed_path.is_file():
+            if indexed_ids:
+                raise ValidationError(
+                    "Closed.xlsx is missing, so Zeus cannot show finalized Spare Parts records",
+                    details={"missing": "Closed.xlsx", "closedSRs": len(indexed_ids)},
+                )
+            with self._closed_archive_lock:
+                self._closed_archive_signature = None
+                self._closed_archive_cache = ()
+            return ()
+
+        stat = closed_path.stat()
+        signature = (
+            str(closed_path),
+            stat.st_mtime_ns,
+            stat.st_size,
+            indexed_ids,
+            index.get("validated_at"),
+            index.get("workbook_sha256"),
+        )
+        with self._closed_archive_lock:
+            if signature == self._closed_archive_signature:
+                return self._closed_archive_cache
+            workbook = read_closed(closed_path)
+            validate_closed_against_index(workbook, index)
+            tickets: list[dict[str, Any]] = []
+            for ticket_id, record in workbook.records.items():
+                tickets.append(
+                    {
+                        "ticket_id": ticket_id,
+                        "lifecycle": {
+                            "status": "closed",
+                            "source": "Closed.xlsx",
+                        },
+                        "upstream": {
+                            "fields": deepcopy(record.get("upstream_fields") or {}),
+                            "sr_url": record.get("sr_url"),
+                        },
+                        "local": deepcopy(record.get("local") or {}),
+                        "email": empty_email(ticket_id),
+                        "mop": {"latest": None, "versions": 0},
+                        "updated_at": None,
+                    }
+                )
+            self._closed_archive_signature = signature
+            self._closed_archive_cache = tuple(tickets)
+            return self._closed_archive_cache
+
+    def _closed_archive_ticket(self, ticket_id: str) -> dict[str, Any] | None:
+        return next(
+            (
+                ticket
+                for ticket in self._closed_archive_tickets()
+                if ticket["ticket_id"] == ticket_id
+            ),
+            None,
+        )
+
     def dashboard(
         self,
         *,
+        workspace: str = "service-requests",
         sort: str,
         search: str,
         direction: str | None = None,
     ) -> dict[str, Any]:
-        if sort not in {"report", "sr", "planned", "email", "age", "severity", "status"}:
-            raise ValidationError(f"Unsupported dashboard sort: {sort}")
-        direction = direction or DEFAULT_SORT_DIRECTIONS[sort]
+        workspaces = {
+            "service-requests": (
+                {"report", "sr", "planned", "email", "age", "severity", "status"},
+                DEFAULT_SORT_DIRECTIONS,
+                dashboard_payload,
+            ),
+            "spare-parts": (
+                {"sr", "planned", "site", "cloud", "device", "part", "bom"},
+                SPARE_PART_DEFAULT_SORT_DIRECTIONS,
+                spare_parts_dashboard_payload,
+            ),
+        }
+        definition = workspaces.get(workspace)
+        if definition is None:
+            raise ValidationError(f"Unsupported Zeus workspace: {workspace}")
+        sorts, default_directions, serializer = definition
+        if sort not in sorts:
+            raise ValidationError(
+                f"Unsupported {workspace} sort: {sort}"
+            )
+        direction = direction or default_directions[sort]
         if direction not in {"asc", "desc"}:
             raise ValidationError(f"Unsupported dashboard sort direction: {direction}")
-        return dashboard_payload(
-            self.store,
-            sort=sort,
-            direction=direction,
-            search=search,
-            dataset_revision=self.dataset_revision,
-        )
+        arguments: dict[str, Any] = {
+            "sort": sort,
+            "direction": direction,
+            "search": search,
+            "dataset_revision": self.dataset_revision,
+        }
+        if workspace == "spare-parts":
+            arguments["closed_tickets"] = self._closed_archive_tickets()
+        return serializer(self.store, **arguments)
 
     def ticket(self, ticket_id: str) -> dict[str, Any]:
+        normalized_ticket_id = normalize_ticket_id(ticket_id)
         try:
-            ticket = self.store.read_ticket(normalize_ticket_id(ticket_id))
-        except (StoreError, ValueError) as exc:
-            raise NotFoundError(f"Ticket {ticket_id} was not found") from exc
+            ticket = self.store.read_ticket(normalized_ticket_id)
+        except StoreError as exc:
+            ticket = self._closed_archive_ticket(normalized_ticket_id)
+            if ticket is None:
+                raise NotFoundError(f"Ticket {ticket_id} was not found") from exc
+            detail = serialize_ticket_detail(
+                ticket,
+                self.store.config,
+                read_only=True,
+                source="closed",
+            )
+            detail["history"] = []
+            detail["mops"] = []
+            return detail
         detail = serialize_ticket_detail(ticket, self.store.config)
-        detail["history"] = self.ticket_history(ticket_id)
-        detail["mops"] = self.list_mops(ticket_id)
+        detail["history"] = self.ticket_history(normalized_ticket_id)
+        detail["mops"] = self.list_mops(normalized_ticket_id)
         return detail
 
     def edit_ticket(
@@ -211,6 +319,11 @@ class ApplicationService:
         expected_revision: str,
     ) -> dict[str, Any]:
         normalized_ticket_id = normalize_ticket_id(ticket_id)
+        if not self.store.ticket_file(normalized_ticket_id).is_file():
+            if self._closed_archive_ticket(normalized_ticket_id) is not None:
+                raise ValidationError(
+                    f"SR {normalized_ticket_id} is finalized and read-only in Closed.xlsx"
+                )
         if not self._operation_lock.acquire(blocking=False):
             raise BusyError("Another Zeus operation is changing data. Try again when it finishes.")
         try:
@@ -476,6 +589,7 @@ class ApplicationService:
             "advanced_search_directory",
             "outlook_store_path",
             "template_directory",
+            "spare_parts_export_directory",
         ):
             path = self.store.configured_directory(key)
             result["paths"][key] = {

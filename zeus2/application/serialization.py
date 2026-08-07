@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import hashlib
 from copy import deepcopy
-from typing import Any
+from typing import Any, Iterable
 
 from ..aging import aging_for_ticket, report_sort_key
 from ..mail import strip_quoted_history
 from ..store import ZeusStore
 from ..tickets import normalize_local
-from ..utils import json_dumps, parse_date
+from ..utils import json_dumps, normalize_ticket_id, parse_date
 
 
 COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
-    {"key": "risk", "label": "", "width": 18, "default": True},
     {"key": "ticketId", "label": "SR", "width": 94, "default": True},
+    {"key": "risk", "label": "", "width": 18, "default": True},
     {"key": "lifecycle", "label": "Life", "width": 108, "default": True},
     {"key": "done", "label": "Done", "width": 58, "default": True},
     {"key": "plannedDate", "label": "Planned", "width": 116, "default": True},
@@ -32,6 +32,24 @@ COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "device", "label": "Device", "width": 150, "default": False},
 )
 
+SPARE_PART_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
+    {"key": "ticketId", "label": "SR", "width": 94, "default": True},
+    {"key": "risk", "label": "", "width": 18, "default": True},
+    {"key": "plannedDate", "label": "Planned", "width": 116, "default": True},
+    {"key": "site", "label": "Site", "width": 110, "default": True},
+    {"key": "cloud", "label": "Cloud", "width": 130, "default": True},
+    {"key": "device", "label": "Device", "width": 165, "default": True},
+    {"key": "model", "label": "Model", "width": 145, "default": True},
+    {"key": "slot", "label": "Slot", "width": 105, "default": True},
+    {"key": "part", "label": "Part", "width": 150, "default": True},
+    {"key": "bom", "label": "BOM", "width": 150, "default": True},
+    {"key": "faultySn", "label": "Faulty SN", "width": 155, "default": True},
+    {"key": "newSn", "label": "New SN", "width": 155, "default": True},
+    {"key": "lifecycle", "label": "Life", "width": 108, "default": False},
+    {"key": "done", "label": "Done", "width": 58, "default": False},
+    {"key": "summary", "label": "Summary", "width": 320, "default": False, "flex": True},
+)
+
 DEFAULT_SORT_DIRECTIONS = {
     "report": "asc",
     "sr": "desc",
@@ -40,6 +58,16 @@ DEFAULT_SORT_DIRECTIONS = {
     "age": "desc",
     "severity": "asc",
     "status": "asc",
+}
+
+SPARE_PART_DEFAULT_SORT_DIRECTIONS = {
+    "sr": "desc",
+    "planned": "asc",
+    "site": "asc",
+    "cloud": "asc",
+    "device": "asc",
+    "part": "asc",
+    "bom": "asc",
 }
 
 
@@ -86,6 +114,7 @@ def serialize_ticket_summary(
         if device.get("model")
     ]
     return {
+        "rowId": ticket["ticket_id"],
         "ticketId": ticket["ticket_id"],
         "revision": ticket_revision(ticket),
         "lifecycle": ticket.get("lifecycle", {}).get("status") or "unknown",
@@ -123,6 +152,26 @@ def serialize_ticket_summary(
     }
 
 
+def serialize_archived_ticket_summary(
+    ticket: dict[str, Any], config: dict[str, Any]
+) -> dict[str, Any]:
+    """Serialize a finalized SR without applying live-ticket warning colors."""
+
+    result = serialize_ticket_summary(ticket, config)
+    result.update(
+        {
+            "lifecycle": "closed",
+            "plannedColor": None,
+            "ticketAgeColor": None,
+            "emailInactivityDays": None,
+            "emailLabel": "Archived",
+            "emailColor": None,
+            "risk": "grey",
+        }
+    )
+    return result
+
+
 def _message_payload(message: dict[str, Any]) -> dict[str, Any]:
     raw_body = str(message.get("body") or "")
     detected_reply, detected_history, detected_lines = strip_quoted_history(
@@ -158,9 +207,17 @@ def _message_payload(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def serialize_ticket_detail(
-    ticket: dict[str, Any], config: dict[str, Any]
+    ticket: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    read_only: bool = False,
+    source: str = "current",
 ) -> dict[str, Any]:
-    result = serialize_ticket_summary(ticket, config)
+    result = (
+        serialize_archived_ticket_summary(ticket, config)
+        if read_only
+        else serialize_ticket_summary(ticket, config)
+    )
     email = ticket.get("email", {})
     prepared_local = normalize_local(ticket.get("local"))
     local_fields = deepcopy(prepared_local.get("fields", {}))
@@ -190,6 +247,8 @@ def serialize_ticket_detail(
             "mop": deepcopy(ticket.get("mop") or {"latest": None, "versions": 0}),
             "lifecycleDetails": deepcopy(ticket.get("lifecycle") or {}),
             "updatedAt": ticket.get("updated_at"),
+            "readOnly": read_only,
+            "source": source,
         }
     )
     return result
@@ -262,6 +321,7 @@ def dashboard_payload(
         no_email += int(facts.communication_inactivity_days is None)
 
     return {
+        "workspace": "service-requests",
         "datasetRevision": dataset_revision,
         "sort": sort,
         "direction": direction,
@@ -279,4 +339,176 @@ def dashboard_payload(
         },
         "tickets": [serialize_ticket_summary(ticket, config) for ticket in ordered],
         "columns": [deepcopy(column) for column in COLUMN_DEFINITIONS],
+    }
+
+
+def _spare_part_rows(
+    tickets: Iterable[dict[str, Any]],
+    config: dict[str, Any],
+    *,
+    read_only: bool = False,
+    source: str = "current",
+) -> list[dict[str, Any]]:
+    """Flatten normalized ticket hardware without creating another authority.
+
+    The row identifiers are presentation identities only.  Every mutation still
+    targets the parent SR and crosses the Pendings-first edit transaction.
+    Device-only records remain visible as incomplete rows so the management
+    view can never hide normalized data merely because its first part has not
+    been filled yet.
+    """
+
+    rows: list[dict[str, Any]] = []
+    for ticket in tickets:
+        ticket_id = normalize_ticket_id(ticket.get("ticket_id"))
+        prepared_local = normalize_local(ticket.get("local"))
+        local = prepared_local.get("fields", {})
+        summary = (
+            serialize_archived_ticket_summary(ticket, config)
+            if read_only
+            else serialize_ticket_summary(ticket, config)
+        )
+        for device_index, device in enumerate(
+            prepared_local.get("spare_parts", []), start=1
+        ):
+            parts = list(device.get("parts") or []) or [None]
+            for part_index, part in enumerate(parts, start=1):
+                part = part or {}
+                bom = str(part.get("bom") or "").strip()
+                row = {
+                    "rowId": f"{ticket_id}:{device_index}:{part_index}",
+                    "ticketId": ticket_id,
+                    "revision": summary["revision"],
+                    "lifecycle": summary["lifecycle"],
+                    "done": summary["done"],
+                    "plannedDate": summary["plannedDate"],
+                    "plannedDays": summary["plannedDays"],
+                    "plannedState": summary["plannedState"],
+                    "plannedColor": summary["plannedColor"],
+                    "site": local.get("Site") or "—",
+                    "cloud": local.get("Cloud") or "—",
+                    "deviceNumber": device_index,
+                    "partNumber": part_index if part else None,
+                    "device": device.get("device") or "—",
+                    "model": device.get("model") or "—",
+                    "slot": part.get("slot") or "—",
+                    "part": part.get("part") or "—",
+                    "bom": bom or "—",
+                    "bomColor": None if bom else "yellow",
+                    "faultySn": part.get("faulty_sn") or "—",
+                    "newSn": part.get("new_sn") or "—",
+                    "summary": summary["summary"],
+                    "risk": summary["risk"],
+                    "hasPart": bool(part),
+                    "readOnly": read_only,
+                    "source": source,
+                }
+                rows.append(row)
+    return rows
+
+
+def _spare_part_search_text(row: dict[str, Any]) -> str:
+    return "\n".join(
+        str(value)
+        for key, value in row.items()
+        if key not in {"revision", "risk", "plannedColor", "bomColor"}
+        and value not in (None, "", "—")
+    ).casefold()
+
+
+def _spare_part_sort_value(row: dict[str, Any], mode: str) -> Any:
+    if mode == "sr":
+        return int(row["ticketId"])
+    if mode == "planned":
+        return row.get("plannedDays")
+    value = str(row.get(mode) or "").casefold()
+    return None if value in {"", "—"} else value
+
+
+def spare_parts_dashboard_payload(
+    store: ZeusStore,
+    *,
+    sort: str = "sr",
+    direction: str | None = None,
+    search: str = "",
+    dataset_revision: int = 0,
+    closed_tickets: Iterable[dict[str, Any]] = (),
+) -> dict[str, Any]:
+    """Return SR-owned hardware from current Markdown and finalized Closed rows."""
+
+    direction = direction or SPARE_PART_DEFAULT_SORT_DIRECTIONS.get(sort, "asc")
+    current_tickets = list(store.iter_tickets())
+    archived_tickets = list(closed_tickets)
+    current_ids = {
+        normalize_ticket_id(ticket.get("ticket_id")) for ticket in current_tickets
+    }
+    archived_ids = {
+        normalize_ticket_id(ticket.get("ticket_id")) for ticket in archived_tickets
+    }
+    duplicated = sorted(current_ids & archived_ids, reverse=True)
+    if duplicated:
+        raise ValueError(
+            "Spare Parts cannot project an SR as both current and closed: "
+            + ", ".join(duplicated[:20])
+        )
+    all_rows = _spare_part_rows(current_tickets, store.config) + _spare_part_rows(
+        archived_tickets,
+        store.config,
+        read_only=True,
+        source="closed",
+    )
+    query = search.strip().casefold()
+    rows = (
+        [row for row in all_rows if query in _spare_part_search_text(row)]
+        if query
+        else list(all_rows)
+    )
+    # Stable two-stage sorting keeps devices and parts in hierarchy order even
+    # when the selected primary field is descending.  Missing values remain at
+    # the bottom in either direction.
+    rows.sort(
+        key=lambda row: (
+            int(row["ticketId"]),
+            int(row.get("deviceNumber") or 0),
+            int(row.get("partNumber") or 0),
+        )
+    )
+    present = [row for row in rows if _spare_part_sort_value(row, sort) is not None]
+    missing = [row for row in rows if _spare_part_sort_value(row, sort) is None]
+    present.sort(
+        key=lambda row: _spare_part_sort_value(row, sort),
+        reverse=direction == "desc",
+    )
+    rows = present + missing
+
+    tickets = {row["ticketId"] for row in all_rows}
+    current_part_tickets = {
+        row["ticketId"] for row in all_rows if not row["readOnly"]
+    }
+    closed_part_tickets = {
+        row["ticketId"] for row in all_rows if row["readOnly"]
+    }
+    devices = {
+        (row["ticketId"], row["deviceNumber"])
+        for row in all_rows
+    }
+    actual_parts = [row for row in all_rows if row["hasPart"]]
+    return {
+        "workspace": "spare-parts",
+        "datasetRevision": dataset_revision,
+        "sort": sort,
+        "direction": direction,
+        "search": search,
+        "stats": {
+            "tickets": len(tickets),
+            "currentTickets": len(current_part_tickets),
+            "closedTickets": len(closed_part_tickets),
+            "devices": len(devices),
+            "parts": len(actual_parts),
+            "withBom": sum(row["bom"] != "—" for row in actual_parts),
+            "missingBom": sum(row["bom"] == "—" for row in actual_parts),
+            "newSnRecorded": sum(row["newSn"] != "—" for row in actual_parts),
+        },
+        "spareParts": rows,
+        "columns": [deepcopy(column) for column in SPARE_PART_COLUMN_DEFINITIONS],
     }

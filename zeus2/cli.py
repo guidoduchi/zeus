@@ -1454,6 +1454,11 @@ def _directory_preview(spec: SettingSpec, directory: Path, config: dict[str, Any
         return f"Matching workbooks: {len(matches)}; latest by name: {latest}"
     if spec.key == "paths.template_directory":
         return f"Word templates found: {sum(1 for _ in directory.glob('*.docx'))}"
+    if spec.key == "paths.spare_parts_export_directory":
+        return (
+            "Export-only destination; Zeus will not import these files. "
+            f"Excel workbooks found: {sum(1 for _ in directory.glob('*.xlsx'))}"
+        )
     return ""
 
 
@@ -1712,7 +1717,13 @@ def _doctor(store: ZeusStore) -> dict[str, Any]:
         result["tickets"] = sum(1 for _ in store.iter_ticket_ids())
     except Exception as exc:
         result["store"] = f"error: {exc}"
-    for key in ("workbook_directory", "advanced_search_directory", "outlook_store_path"):
+    for key in (
+        "workbook_directory",
+        "advanced_search_directory",
+        "outlook_store_path",
+        "template_directory",
+        "spare_parts_export_directory",
+    ):
         path = store.configured_directory(key)
         result["paths"][key] = str(path) if path else "not configured"
     return result

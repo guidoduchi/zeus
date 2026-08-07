@@ -41,6 +41,7 @@ from zeus2.cli import (
     main,
 )
 from zeus2.config import (
+    SETTING_SPECS,
     ensure_config,
     load_config,
     prepare_outlook_store_path,
@@ -332,7 +333,12 @@ class UtilityAndConfigTests(ZeusCase):
     def test_configuration_menu_lists_items_and_changes_only_the_selection(self) -> None:
         before = self.store.config
         output = StringIO()
-        with patch("builtins.input", side_effect=["6", "30", ""]):
+        poll_index = next(
+            index
+            for index, spec in enumerate(SETTING_SPECS, start=1)
+            if spec.key == "advanced_search.poll_interval_minutes"
+        )
+        with patch("builtins.input", side_effect=[str(poll_index), "30", ""]):
             with redirect_stdout(output):
                 _interactive_config(self.store)
 

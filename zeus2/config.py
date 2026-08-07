@@ -18,12 +18,13 @@ OUTLOOK_STORE_SUFFIXES = {".ost", ".pst"}
 # Runtime markers (processed filenames, hashes and successful operation times)
 # live in current/state.json and are never accepted from this file.
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 4,
+    "schema_version": 5,
     "paths": {
         "workbook_directory": None,
         "advanced_search_directory": None,
         "outlook_store_path": None,
         "template_directory": None,
+        "spare_parts_export_directory": None,
     },
     "advanced_search": {
         "glob": "Advanced Search*.xlsx",
@@ -108,6 +109,14 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Paths",
         "directory",
         "Optional default folder for MOP templates.",
+        nullable=True,
+    ),
+    SettingSpec(
+        "paths.spare_parts_export_directory",
+        "Spare Parts export folder",
+        "Paths",
+        "directory",
+        "Destination for generated Spare Part Request workbooks. Zeus writes exports here but never imports them.",
         nullable=True,
     ),
     SettingSpec(
@@ -367,7 +376,7 @@ def _migrate_legacy_keys(saved: dict[str, Any]) -> dict[str, Any]:
     migrated.pop("updatefile_dir", None)
     migrated.pop("mail", None)
     paths.pop("update_directory", None)
-    migrated["schema_version"] = 4
+    migrated["schema_version"] = 5
     return migrated
 
 
@@ -474,7 +483,7 @@ def load_config(home: Path) -> dict[str, Any]:
     migrated = _migrate_legacy_keys(saved)
     _assert_known_structure(migrated)
     config = deep_merge(DEFAULT_CONFIG, migrated)
-    config["schema_version"] = 4
+    config["schema_version"] = 5
     _validate(config)
     return config
 
@@ -484,7 +493,7 @@ def save_config(home: Path, config: dict[str, Any]) -> Path:
     resolved_home.mkdir(parents=True, exist_ok=True)
     _assert_known_structure(config)
     prepared = deep_merge(DEFAULT_CONFIG, config)
-    prepared["schema_version"] = 4
+    prepared["schema_version"] = 5
     _validate(prepared, validate_paths=True)
     path = config_path(resolved_home)
     atomic_write_json(path, prepared)
