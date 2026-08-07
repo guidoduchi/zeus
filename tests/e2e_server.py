@@ -2,13 +2,58 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import tempfile
 from pathlib import Path
 
-from tests.test_zeus2 import pending_row, write_managed
+from openpyxl import Workbook
+
+# Playwright starts this file directly from ``frontend/``.  Put the checkout at
+# the front of sys.path so the fixture always exercises this branch, even when
+# another Zeus build is installed in the runner environment.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from zeus2.config import save_config
 from zeus2.main import main
 from zeus2.store import ZeusStore
+from zeus2.tickets import LOCAL_COLUMNS, PENDING_COLUMNS
+
+
+def pending_row(ticket_id: str, **values: object) -> dict[str, object]:
+    """Build an independent Pendings fixture for the installed-app browser test."""
+
+    summary = values.pop("summary", None)
+    row: dict[str, object] = {
+        "SRNo": ticket_id,
+        "Problem Summary": summary or f"Ticket {ticket_id}",
+        "Report Date": "2026-07-01 10:00:00",
+        "Customer Contact": "Customer",
+        "Customer Severity": values.pop("severity", "Minor"),
+        "Product": "Product",
+        "Current Handler": "Handler A",
+        "Status": "L1-Work in Progress",
+        "ResolveBy": "2026-08-20 10:00:00",
+        "Resolve By Suspend": "2026-08-25 10:00:00",
+        **{column: None for column in LOCAL_COLUMNS},
+        "Done?": "N",
+    }
+    row.update(values)
+    return row
+
+
+def write_managed(path: Path, rows: list[dict[str, object]]) -> None:
+    """Write the minimal valid workbook consumed by the browser fixture."""
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Pendings"
+    worksheet.append(list(PENDING_COLUMNS))
+    for row in rows:
+        worksheet.append([row.get(column) for column in PENDING_COLUMNS])
+    workbook.save(path)
+    workbook.close()
 
 
 def prepare_fixture(root: Path) -> Path:

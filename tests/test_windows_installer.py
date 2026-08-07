@@ -17,6 +17,7 @@ WINDOWS_WORKFLOW = (
 )
 PROJECT_FILE = Path(__file__).resolve().parents[1] / "pyproject.toml"
 VERSION_FILE = Path(__file__).resolve().parents[1] / "zeus2" / "version.py"
+E2E_SERVER = Path(__file__).resolve().parent / "e2e_server.py"
 
 
 class WindowsInstallerRegressionTests(unittest.TestCase):
@@ -92,6 +93,14 @@ class WindowsLauncherRegressionTests(unittest.TestCase):
         self.assertIn("npm ci", workflow)
         self.assertIn("npm run build", workflow)
         self.assertIn("npm run test", workflow)
+        self.assertIn("npm run test:e2e", workflow)
+
+    def test_browser_fixture_is_independent_of_the_unit_test_modules(self) -> None:
+        """Playwright starts this file directly from the frontend directory."""
+
+        fixture = E2E_SERVER.read_text(encoding="utf-8")
+        self.assertNotIn("from tests.", fixture)
+        self.assertIn("sys.path.insert(0, str(PROJECT_ROOT))", fixture)
 
     def test_stop_launcher_delegates_to_the_verified_instance_registry(self) -> None:
         script = STOP_SCRIPT.read_text(encoding="utf-8")
