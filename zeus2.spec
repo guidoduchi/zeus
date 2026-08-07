@@ -13,7 +13,7 @@ a = Analysis(
     ["zeus_entry.py"],
     pathex=["."],
     binaries=[],
-    datas=[],
+    datas=[("zeus2/web/static", "zeus2/web/static")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -35,6 +35,6 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
 )

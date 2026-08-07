@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeus-ticket-ops"
-version = "2.0.3"
-description = "Read-only ticket dashboard with safe Excel, Advanced Search, and Outlook synchronization"
+version = "3.0.0"
+description = "Strictly local web workstation for safe Excel, Advanced Search, and optional Outlook ticket operations"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Franco" }]
@@ -19,7 +19,11 @@ outlook = ["pywin32>=306; platform_system == 'Windows'"]
 build = ["pyinstaller>=6,<7"]
 
 [project.scripts]
-zeus = "zeus2.cli:main"
+zeus = "zeus2.main:main"
 
-[tool.setuptools]
-packages = ["zeus2"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["zeus2*"]
+
+[tool.setuptools.package-data]
+"zeus2.web" = ["static/index.html", "static/assets/*"]

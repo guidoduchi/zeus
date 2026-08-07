@@ -1,5 +1,31 @@
 # Changelog
 
+## 3.0.0 - 2026-08-07
+
+- Replaced the interactive terminal dashboard with a bundled React/TypeScript
+  master-detail web interface while preserving the CLI's dense, semantic
+  information shape rather than drawing a fake terminal.
+- Added a strictly local Python server, default-browser launch, native Windows
+  tray controls, verified singleton registry, graceful restart/exit, and
+  `zeus_stop.bat` for exact multi-instance shutdown.
+- Made Pendings a complete clean-PC bootstrap source: it can rebuild Markdown
+  and the dashboard without Closed, Advanced Search, or Outlook.
+- Added conflict-safe browser editing that checks ticket and workbook versions,
+  writes Pendings first, validates a staged workbook, backs up and atomically
+  replaces it, then imports the same values into Markdown.
+- Added fixed, configurable dashboard columns with Severity by default,
+  browser-local order/visibility/theme/sort preferences, separate list/detail
+  scrolling, and retained keyboard commands.
+- Added visible serialized jobs for startup, scheduled/manual data queries,
+  publishing, Outlook, recovery, diagnostics, and MOP generation. Browser page
+  refreshes remain read-only.
+- Kept Outlook fully optional and disabled all email work when no valid store is
+  selected, with visible nonfatal notices.
+- Retained non-interactive CLI commands, Python 3.13/3.14 compatibility, local
+  Markdown transactions, publishing/recovery, and privacy boundaries.
+- Added React unit tests, real Chrome/Edge interaction coverage, local HTTP
+  security regressions, wheel/static bundle checks, and packaged-asset tests.
+
 ## 2.0.3 - 2026-08-06
 
 - Made every automatic Outlook operation nonfatal. Transient COM, RPC,

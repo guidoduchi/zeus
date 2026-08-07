@@ -10,8 +10,8 @@ class ReadOnlyTicketError(PermissionError):
 
 
 READ_ONLY_MESSAGE = (
-    "Zeus 2.0.3 is read-only for ticket work data. Edit recognized local "
-    "fields in Pendings.xlsx; Zeus imports them at the next startup."
+    "Direct Markdown ticket edits are forbidden. Edit recognized local fields "
+    "through the Zeus web panel or in Pendings.xlsx; both paths keep Pendings authoritative."
 )
 
 

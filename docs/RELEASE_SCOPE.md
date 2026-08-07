@@ -1,37 +1,36 @@
-# Zeus 2.0.3 release scope
+# Zeus 3.0.0 release scope
 
 Included:
 
-- exact eight-digit SR validation;
-- permanent startup Pendings import with field ownership and protected-cell
-  baseline validation;
-- filename/timestamp/hash Advanced Search discovery and reconciliation;
-- deferred `closure_pending` lifecycle and verified final deletion;
-- self-contained Markdown ticket records;
-- separate Outlook fetch staging and scheduled/after-fetch synchronization;
-- cumulative email deduplication, newest-N full bodies, incremental overlap,
-  cancellation, and full-history rebuild;
-- read-only arrow-key dashboard, partial Ctrl+F search, details, sorting, and
-  operations menu;
-- two-sheet Pendings output, append-only Closed output, paired rollback and
-  backups;
-- per-cell fill/font preservation, reordered known columns, and literal-only
-  workbook validation;
-- configurable calendar-day report thresholds and midnight refresh;
-- crash-safe Pendings-backup restore;
-- versioned MOP output generation;
-- Windows setup and PyInstaller build scripts;
-- nonfatal Outlook startup recovery with local-only diagnostics;
-- verified native/VT mouse transport and crash-visible launching;
-- Windows CI coverage for Python 3.13 and Python 3.14.
+- bundled React/TypeScript master-detail interface served by Python;
+- strict `127.0.0.1` binding, local Host/Origin/CSRF controls, and no CORS;
+- browser launch, Windows notification-area lifecycle, clean restart/exit, and
+  verified multi-instance `zeus_stop.bat` shutdown;
+- Pendings-only database bootstrap without Closed, Advanced Search, or Outlook;
+- safe Pendings-first browser edits with optimistic ticket and workbook
+  conflict detection, candidate validation, backups, rollback, and audit;
+- independent ticket-list and detail scrolling; no whole-page scrolling;
+- fixed-width columns with locally persisted visibility and order controls;
+- severity in the default dense dashboard plus every original CLI fact;
+- locally persisted dark/light theme and sorting;
+- visible serialized startup, scheduled, and manual source-query work;
+- page refreshes that never trigger a source query;
+- optional Outlook behavior that is disabled clearly and nonfatally when no
+  valid store exists;
+- the full Advanced Search, closure, Outlook, publishing, recovery, MOP, aging,
+  and Markdown transaction behavior inherited from 2.0.3;
+- retained non-interactive command-line automation;
+- Python 3.13/3.14 Windows CI, React unit tests, real Chrome/Edge interaction tests,
+  wheel/static-asset verification, and a PyInstaller path.
 
 Deliberately excluded:
 
-- editing ticket work fields in the CLI;
-- arbitrary/custom Excel columns;
-- formulas in managed workbooks;
-- email bodies, subjects, or attachments in Excel;
-- new Outlook, direct OST parsing, shared-mailbox lookup by name, sending,
-  moving, deleting, or marking messages;
+- a network/LAN/cloud server mode;
+- an interactive terminal dashboard;
+- direct Markdown work-field editing;
+- draggable column resizing;
+- arbitrary/custom managed Excel columns or formulas;
+- email subjects, bodies, or attachments in Excel or the dashboard grid;
+- new Outlook, direct OST parsing, sending, moving, deleting, or marking mail;
 - closed-ticket search outside `Closed.xlsx`;
-- ticket ID formats other than eight decimal digits.
+- ticket identifiers other than exactly eight decimal digits.

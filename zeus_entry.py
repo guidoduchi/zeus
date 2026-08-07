@@ -1,6 +1,5 @@
-from zeus2.cli import main
+from zeus2.main import main
 
 
 if __name__ == "__main__":
-    main()
-
+    raise SystemExit(main())

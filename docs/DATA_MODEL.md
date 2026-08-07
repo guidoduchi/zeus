@@ -1,53 +1,76 @@
-# Zeus 2.0.3 data model
+# Zeus 3 data model
 
 ## Authority boundaries
 
-| Record area | Sole writer |
+| Record area | Authoritative writer |
 |---|---|
-| `upstream.fields` | Advanced Search reconciliation |
-| `local.fields` | validated Pendings import/restore |
+| `upstream.fields` | Advanced Search reconciliation, or the protected snapshot carried by Pendings when rebuilding from Pendings alone |
+| `local.fields` | validated Pendings import/restore/web-edit transaction |
 | `local.presentation.cell_styles` | validated Pendings import/restore |
 | `lifecycle` | Advanced Search reconciliation and verified publication |
-| `email` | email synchronization |
+| `email` | optional Outlook staging and synchronization |
 | `mop` | MOP output generation |
 
-Every ticket lives at `current/tickets/<SRNo>/<SRNo>.md`. The first Markdown
-line contains a base64-encoded JSON record marker; the rest is a rendered human
-view of the same record. A staged transaction always rewrites both together.
+Every current ticket lives at `current/tickets/<SRNo>/<SRNo>.md`. The first
+Markdown line carries a base64-encoded JSON record marker; the remaining text
+is a rendered human view of that exact record. A staged transaction rewrites
+both together.
 
-Lifecycle status is either `active` or `closure_pending`. Finalized closed
-tickets do not remain in the Markdown database; their non-email fields are
-appended to `Closed.xlsx` and the ID is retained in `closed_index.json`.
+Lifecycle is `active` or `closure_pending`. Finalized tickets no longer remain
+in the Markdown database; their non-email fields are appended to `Closed.xlsx`
+and the ID remains in `closed_index.json`.
+
+## Pendings-first bootstrap
+
+Pendings includes protected columns as an integrity snapshot plus the local
+work columns it owns. When no Markdown database exists, a valid Pendings file
+can seed both areas and produce the complete dashboard. Advanced Search later
+refreshes protected fields and lifecycle without overwriting local fields.
+
+Closed is not required to import Pendings. When present it is validated and
+indexed. Advanced Search is not required to show Pendings-derived tickets.
+Outlook is never required to build or query the database.
+
+## Browser edit transaction
+
+A web edit is a Pendings transaction, not a direct Markdown mutation. Its
+preconditions are the ticket revision and the SHA-256 of the last imported
+Pendings file. A mismatch produces a conflict before any value is written.
+
+The candidate workbook is written and validated off to the side. Zeus then
+creates a recoverable original copy, replaces Pendings atomically, imports that
+file through the existing reconciliation path, and writes the audit event. If
+the Markdown import fails, the workbook backup is atomically restored.
 
 ## State markers
 
-`state.json` contains system-managed markers:
+`state.json` contains system-owned markers:
 
-- last processed Advanced Search full filename, embedded timestamp, SHA-256,
-  processed time, and row count;
-- Pendings import result and last protected-field snapshot;
-- last successful full email fetch and email synchronization timestamps;
-- initial/full-scan and staged-update status.
+- newest processed Advanced Search filename, timestamp, SHA-256, row count,
+  and processing time;
+- Pendings import SHA-256, result, and protected-field snapshot;
+- successful email fetch and synchronization times;
+- full-scan, staged-message, publication, and recovery status.
 
-Configuration contains user choices only. Runtime markers are never imported
-from the configuration file.
+Configuration contains user choices only. Runtime markers are never accepted
+from the configuration API.
 
 ## Transaction boundary
 
-All Markdown records, state, `closed_index.json`, and email staging comprise the
-`current/` transaction boundary. A mutation copies this tree beneath the same
-writable data root, validates it, swaps it atomically, and records an audit
-event. Staging beneath the data root preserves Windows ACL inheritance and
-avoids Python 3.13 temporary-directory permission failures.
+Markdown records, `state.json`, `closed_index.json`, and email staging form the
+`current/` transaction boundary. A mutation copies this tree below the same
+writable data root, validates it, swaps it atomically, and appends a local audit
+event. Keeping staging below the data root preserves Windows ACL inheritance
+and avoids cross-volume replacement failures.
 
-Workbook publication and Pendings restore add explicit journals. Startup either
-finishes a verified swap or discards an uncommitted preparation before ordinary
-Pendings import begins.
+Workbook publication, Pendings restore, and web edits add their own backup or
+journal boundary. Startup recovers a verified operation or discards its
+uncommitted preparation before ordinary import begins.
 
 ## Email privacy
 
-Email staging contains only messages matched to active IDs. Synced ticket
+Email staging contains only messages associated with active IDs. Synced ticket
 records retain cumulative seen-message hashes and the newest configured message
-bodies. Closure deletes the entire ticket directory, removes any staged
-association, and purges internal whole-state ZIP snapshots. Operational
-workbooks and their backups never contain email subjects or bodies.
+bodies. Final closure removes the ticket directory, staged associations, and
+internal whole-state snapshots that could preserve those bodies. Operational
+workbooks and workbook backups never contain subjects or bodies.

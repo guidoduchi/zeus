@@ -1,14 +1,15 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-set "ZEUS_EXE=%~dp0.venv\Scripts\zeus.exe"
+cd /d "%~dp0"
+set "ZEUS_PYTHON=%CD%\.venv\Scripts\python.exe"
 
-if not exist "%ZEUS_EXE%" (
+if not exist "%ZEUS_PYTHON%" (
   echo Zeus is not installed yet. Run setup_windows.bat first.
   pause
   exit /b 1
 )
 
-"%ZEUS_EXE%" %*
+"%ZEUS_PYTHON%" -m zeus2 serve --console --no-tray %*
 set "ZEUS_EXIT=%ERRORLEVEL%"
 
 if "%ZEUS_EXIT%"=="0" exit /b 0

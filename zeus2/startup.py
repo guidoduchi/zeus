@@ -44,7 +44,8 @@ def _workbook_paths(store: ZeusStore) -> tuple[Path | None, Path | None, Path | 
 
 
 def _email_ready(store: ZeusStore) -> bool:
-    return store.configured_directory("outlook_store_path") is not None
+    path = store.configured_directory("outlook_store_path")
+    return bool(path and path.is_file())
 
 
 def _record_email_warning(
@@ -252,7 +253,15 @@ def run_startup(
                 except Exception as exc:
                     _record_email_warning(store, result, "EMAIL SYNC WARNING", exc)
     elif result.advanced_search_valid and not _email_ready(store):
-        result.notices.append("Email fetching is disabled until an Outlook store path is configured.")
+        configured = store.config.get("paths", {}).get("outlook_store_path")
+        if configured:
+            result.notices.append(
+                "Email tasks were skipped because the configured Outlook store is unavailable."
+            )
+        else:
+            result.notices.append(
+                "Email fetching is disabled until an Outlook store path is configured."
+            )
 
     email_state = store.state().get("email_state", {})
     result.email_updates_pending = int(email_state.get("staged_message_count") or 0) > 0

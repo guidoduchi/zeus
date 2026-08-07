@@ -8,6 +8,7 @@ from pathlib import Path
 SETUP_SCRIPT = Path(__file__).resolve().parents[1] / "setup_windows.bat"
 RUN_SCRIPT = Path(__file__).resolve().parents[1] / "run_zeus.bat"
 CONSOLE_RUNNER = Path(__file__).resolve().parents[1] / "run_zeus_console.bat"
+STOP_SCRIPT = Path(__file__).resolve().parents[1] / "zeus_stop.bat"
 WINDOWS_WORKFLOW = (
     Path(__file__).resolve().parents[1]
     / ".github"
@@ -64,20 +65,15 @@ class WindowsInstallerRegressionTests(unittest.TestCase):
 
 
 class WindowsLauncherRegressionTests(unittest.TestCase):
-    def test_terminal_starting_directory_cannot_end_with_a_quoted_backslash(self) -> None:
-        """Keep ``%~dp0`` from corrupting Windows Terminal's arguments."""
+    def test_default_launcher_uses_pythonw_and_local_web_server(self) -> None:
+        """The default launch must not depend on a console or Node runtime."""
 
         script = RUN_SCRIPT.read_text(encoding="utf-8")
 
-        self.assertNotIn('-d "%~dp0"', script)
-        self.assertNotIn('--startingDirectory "%~dp0"', script)
-        self.assertIn('set "ZEUS_ROOT=%CD%"', script)
-        self.assertIn(
-            'set "ZEUS_EXE=%ZEUS_ROOT%\\.venv\\Scripts\\zeus.exe"',
-            script,
-        )
-        self.assertIn('--startingDirectory "%ZEUS_ROOT%"', script)
-        self.assertIn("run_zeus_console.bat", script)
+        self.assertIn("pythonw.exe", script)
+        self.assertIn("-m zeus2 serve", script)
+        self.assertNotIn("wt.exe", script)
+        self.assertNotIn("node", script.lower())
 
     def test_unexpected_exit_keeps_diagnostics_visible(self) -> None:
         """The detached terminal must remain useful when Zeus exits nonzero."""
@@ -93,12 +89,22 @@ class WindowsLauncherRegressionTests(unittest.TestCase):
         self.assertIn('"3.13"', workflow)
         self.assertIn('"3.14"', workflow)
         self.assertIn("python -m unittest discover -s tests -v", workflow)
+        self.assertIn("npm ci", workflow)
+        self.assertIn("npm run build", workflow)
+        self.assertIn("npm run test", workflow)
 
-    def test_release_version_is_2_0_3_everywhere(self) -> None:
+    def test_stop_launcher_delegates_to_the_verified_instance_registry(self) -> None:
+        script = STOP_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("-m zeus2 stop", script)
+        self.assertNotIn("taskkill", script.lower())
+        self.assertNotIn("python.exe /f", script.lower())
+
+    def test_release_version_is_3_0_0_everywhere(self) -> None:
         project = tomllib.loads(PROJECT_FILE.read_text(encoding="utf-8"))
-        self.assertEqual(project["project"]["version"], "2.0.3")
-        self.assertIn('__version__ = "2.0.3"', VERSION_FILE.read_text(encoding="utf-8"))
-        self.assertIn("Zeus 2.0.3", RUN_SCRIPT.read_text(encoding="utf-8"))
+        self.assertEqual(project["project"]["version"], "3.0.0")
+        self.assertEqual(project["project"]["scripts"]["zeus"], "zeus2.main:main")
+        self.assertIn('__version__ = "3.0.0"', VERSION_FILE.read_text(encoding="utf-8"))
+        self.assertIn("Zeus 3.0.0", SETUP_SCRIPT.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

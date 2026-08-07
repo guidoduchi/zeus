@@ -18,7 +18,7 @@ OUTLOOK_STORE_SUFFIXES = {".ost", ".pst"}
 # Runtime markers (processed filenames, hashes and successful operation times)
 # live in current/state.json and are never accepted from this file.
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 3,
+    "schema_version": 4,
     "paths": {
         "workbook_directory": None,
         "advanced_search_directory": None,
@@ -50,6 +50,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "excel": {
         "portal_url_template": None,
         "backup_retention_count": 10,
+    },
+    "web": {
+        "port": 8765,
+        "open_browser": True,
+        "system_tray": True,
     },
 }
 
@@ -114,10 +119,10 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         "advanced_search.poll_interval_minutes",
-        "Advanced Search check interval",
-        "Advanced Search",
+        "Data query interval",
+        "Data sources",
         "integer",
-        "Minutes between checks while Zeus is open; 0 disables live checks.",
+        "Minutes between Pendings-first source queries while Zeus is open; 0 disables scheduled queries.",
         minimum=0,
     ),
     SettingSpec(
@@ -172,7 +177,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Aging basis",
         "Aging",
         "locked",
-        "Zeus 2.0.3 always uses calendar days.",
+        "Zeus uses calendar days.",
         editable=False,
     ),
     SettingSpec(
@@ -245,6 +250,28 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "integer",
         "Number of paired workbook backups Zeus retains.",
         minimum=1,
+    ),
+    SettingSpec(
+        "web.port",
+        "Local web port",
+        "Application",
+        "integer",
+        "Preferred localhost port. Zeus selects another local port if it is occupied.",
+        minimum=1024,
+    ),
+    SettingSpec(
+        "web.open_browser",
+        "Open browser on launch",
+        "Application",
+        "boolean",
+        "Open Zeus in the default browser after its local server is ready.",
+    ),
+    SettingSpec(
+        "web.system_tray",
+        "System-tray controller",
+        "Application",
+        "boolean",
+        "Keep Open, Logs, Restart, and Exit controls in the Windows notification area.",
     ),
 )
 
@@ -340,7 +367,7 @@ def _migrate_legacy_keys(saved: dict[str, Any]) -> dict[str, Any]:
     migrated.pop("updatefile_dir", None)
     migrated.pop("mail", None)
     paths.pop("update_directory", None)
-    migrated["schema_version"] = 3
+    migrated["schema_version"] = 4
     return migrated
 
 
@@ -403,7 +430,7 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
 
     aging = config.get("aging", {})
     if aging.get("calendar_days") is not True:
-        raise ValueError("aging.calendar_days is fixed to true in Zeus 2.0.3")
+        raise ValueError("aging.calendar_days is fixed to true in Zeus")
     for key in (
         "communication_yellow_days",
         "communication_red_days",
@@ -431,6 +458,13 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
     if retention < 1:
         raise ValueError("excel.backup_retention_count must be at least 1")
 
+    port = _require_integer(config, "web.port")
+    if not 1024 <= port <= 65535:
+        raise ValueError("web.port must be between 1024 and 65535")
+    for key in ("open_browser", "system_tray"):
+        if not isinstance(config.get("web", {}).get(key), bool):
+            raise ValueError(f"web.{key} must be true or false")
+
 
 def load_config(home: Path) -> dict[str, Any]:
     path = config_path(home)
@@ -440,7 +474,7 @@ def load_config(home: Path) -> dict[str, Any]:
     migrated = _migrate_legacy_keys(saved)
     _assert_known_structure(migrated)
     config = deep_merge(DEFAULT_CONFIG, migrated)
-    config["schema_version"] = 3
+    config["schema_version"] = 4
     _validate(config)
     return config
 
@@ -450,7 +484,7 @@ def save_config(home: Path, config: dict[str, Any]) -> Path:
     resolved_home.mkdir(parents=True, exist_ok=True)
     _assert_known_structure(config)
     prepared = deep_merge(DEFAULT_CONFIG, config)
-    prepared["schema_version"] = 3
+    prepared["schema_version"] = 4
     _validate(prepared, validate_paths=True)
     path = config_path(resolved_home)
     atomic_write_json(path, prepared)
@@ -548,7 +582,7 @@ def set_dotted(config: dict[str, Any], dotted_key: str, value: Any) -> None:
     if spec is None:
         raise ValueError(f"Unknown configuration setting: {dotted_key or '(blank)'}")
     if not spec.editable:
-        raise ValueError(f"{dotted_key} is fixed in Zeus 2.0.3")
+        raise ValueError(f"{dotted_key} is fixed in Zeus")
     parts = dotted_key.split(".")
     cursor: dict[str, Any] = config
     for part in parts[:-1]:
@@ -571,7 +605,7 @@ def coerce_setting_value(
     if spec is None:
         raise ValueError(f"Unknown configuration setting: {dotted_key or '(blank)'}")
     if not spec.editable:
-        raise ValueError(f"{dotted_key} is fixed in Zeus 2.0.3")
+        raise ValueError(f"{dotted_key} is fixed in Zeus")
     text = str(value or "").strip()
     if spec.nullable and text.lower() in {"", "-", "none", "null"}:
         return None

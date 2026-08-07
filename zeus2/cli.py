@@ -1802,7 +1802,7 @@ def interactive(store: ZeusStore) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="zeus", description="Zeus 2.0.3 ticket workstation")
+    parser = argparse.ArgumentParser(prog="zeus", description="Zeus legacy non-interactive commands")
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command")
 

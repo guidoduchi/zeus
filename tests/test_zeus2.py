@@ -340,7 +340,7 @@ class UtilityAndConfigTests(ZeusCase):
         self.assertEqual(after["advanced_search"]["poll_interval_minutes"], 30)
         self.assertEqual(after["email"], before["email"])
         rendered = output.getvalue()
-        self.assertIn("Advanced Search check interval", rendered)
+        self.assertIn("Data query interval", rendered)
         self.assertIn("Outlook mailbox store", rendered)
         self.assertNotIn('"schema_version"', rendered)
 
@@ -906,7 +906,7 @@ class InterfaceRegressionTests(ZeusCase):
         tui._handle_mouse(MouseEvent(10, email_rows[0], "click", button="left"))
         self.assertEqual(tui.email_selected, 0)
 
-    def test_sgr_mouse_input_and_fullscreen_launcher_contract(self) -> None:
+    def test_sgr_mouse_input_contract(self) -> None:
         self.assertEqual(
             _parse_sgr_mouse("[<0;12;7M"),
             MouseEvent(12, 7, "click", button="left"),
@@ -915,10 +915,6 @@ class InterfaceRegressionTests(ZeusCase):
             _parse_sgr_mouse("[<64;4;9M"),
             MouseEvent(4, 9, "wheel", delta=1),
         )
-        launcher = (Path(__file__).resolve().parents[1] / "run_zeus.bat").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("wt.exe --window new --fullscreen", launcher)
 
     def test_windows_terminal_enables_click_and_wheel_transport(self) -> None:
         """Windows Terminal must be asked to send mouse events, not just parse them."""

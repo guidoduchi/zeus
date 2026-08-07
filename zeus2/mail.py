@@ -916,6 +916,6 @@ def sync_outlook(
 ) -> dict[str, Any]:
     if mailbox:
         raise MailSyncError(
-            "Zeus 2.0.3 selects Outlook by configured store path, not mailbox name"
+            "Zeus selects Outlook by configured store path, not mailbox name"
         )
     return fetch_and_commit_outlook(store)
