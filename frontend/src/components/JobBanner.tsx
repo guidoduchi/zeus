@@ -13,7 +13,7 @@ export function JobBanner({ jobs, onCancel, onOpenActivity }: Props) {
     ? Math.max(0, Math.min(100, Math.round((active.current / active.total) * 100)))
     : null;
   return (
-    <section className="job-banner" aria-live="polite">
+    <section className="job-banner" aria-label="Active operation" aria-live="polite">
       <span className="pulse" aria-hidden="true" />
       <strong>{active.label}</strong>
       <span className="job-stage">{active.message}</span>

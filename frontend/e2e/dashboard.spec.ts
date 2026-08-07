@@ -35,9 +35,10 @@ test("field choices persist and a manual source query is visible", async ({ page
     return Array.isArray(saved.visible) && saved.visible.includes("severity");
   })).toBe(false);
   await page.reload();
+  await expect(page.getByRole("columnheader", { name: "SR" })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: "Severity" })).toHaveCount(0);
 
   await query.click();
   await page.getByRole("button", { name: "Operations" }).click();
-  await expect(page.getByText("Querying data sources", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Active operation").getByText("Querying data sources", { exact: true })).toBeVisible();
 });

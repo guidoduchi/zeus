@@ -127,7 +127,7 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_REQUEST,
                 {"error": {"code": "invalid_request", "message": str(exc), "details": {}}},
             )
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
         except Exception as exc:
             log_path = record_exception(

@@ -24,4 +24,20 @@ describe("dashboard field preferences", () => {
     ]);
     expect(JSON.parse(localStorage.getItem("zeus3.dashboard.columns") || "{}").visible).toContain("handler");
   });
+
+  it("preserves saved visibility while the dashboard schema loads", () => {
+    localStorage.setItem("zeus3.dashboard.columns", JSON.stringify({
+      order: ["ticketId", "severity", "summary", "handler"],
+      visible: ["ticketId", "summary"],
+    }));
+    const { result, rerender } = renderHook(
+      ({ columns }) => useColumnPreferences(columns),
+      { initialProps: { columns: [] as ColumnDefinition[] } },
+    );
+
+    rerender({ columns: definitions });
+
+    expect(result.current.visibleKeys).toEqual(["ticketId", "summary"]);
+    expect(result.current.visibleColumns.map((column) => column.key)).toEqual(["ticketId", "summary"]);
+  });
 });

@@ -21,13 +21,25 @@ function readStored(definitions: ColumnDefinition[]): StoredPreferences {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<StoredPreferences>;
+    const storedOrder = Array.isArray(parsed.order)
+      ? parsed.order.filter((key): key is string => typeof key === "string")
+      : [];
+    const storedVisible = Array.isArray(parsed.visible)
+      ? parsed.visible.filter((key): key is string => typeof key === "string")
+      : [];
+    // App bootstrap renders once before the dashboard schema arrives. Preserve
+    // the raw known-later keys through that render so a reload cannot replace a
+    // user's saved choices with defaults.
+    if (!definitions.length) return { order: storedOrder, visible: storedVisible };
     const known = new Set(definitions.map((column) => column.key));
-    const order = (parsed.order || []).filter((key) => known.has(key));
+    const order = storedOrder.filter((key) => known.has(key));
     for (const key of fallback.order) {
       if (!order.includes(key)) order.push(key);
     }
-    const visible = (parsed.visible || []).filter((key) => known.has(key));
-    return { order, visible: visible.length ? visible : fallback.visible };
+    const visible = storedVisible.filter((key) => known.has(key));
+    if (!visible.length) visible.push(...fallback.visible);
+    if (known.has("ticketId") && !visible.includes("ticketId")) visible.unshift("ticketId");
+    return { order, visible };
   } catch {
     return fallback;
   }
@@ -45,7 +57,9 @@ export function useColumnPreferences(definitions: ColumnDefinition[]) {
         if (!order.includes(column.key)) order.push(column.key);
       }
       const visible = current.visible.filter((key) => known.has(key));
-      return { order, visible: visible.length ? visible : defaults(definitions).visible };
+      if (!visible.length) visible.push(...defaults(definitions).visible);
+      if (known.has("ticketId") && !visible.includes("ticketId")) visible.unshift("ticketId");
+      return { order, visible };
     });
   }, [definitions]);
 
