@@ -5,11 +5,11 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+from .diagnostics import record_exception
 from .excel_export import recover_pendings_restore, recover_publication
 from .excel_import import WorkbookValidationError
 from .mail import (
     MailFetchCancelled,
-    MailSyncError,
     fetch_and_commit_outlook,
     interval_due,
     synchronize_staged_email,
@@ -45,6 +45,19 @@ def _workbook_paths(store: ZeusStore) -> tuple[Path | None, Path | None, Path | 
 
 def _email_ready(store: ZeusStore) -> bool:
     return store.configured_directory("outlook_store_path") is not None
+
+
+def _record_email_warning(
+    store: ZeusStore,
+    result: StartupResult,
+    label: str,
+    error: BaseException,
+) -> None:
+    log_path = getattr(error, "diagnostic_log_path", None)
+    if log_path is None:
+        log_path = record_exception(store.config_home, label, error)
+    details = f" Diagnostic log: {log_path}" if log_path is not None else ""
+    result.warnings.append(f"{label} — {error}.{details}")
 
 
 def _fetch_new_tickets(
@@ -84,8 +97,13 @@ def _fetch_new_tickets(
         )
     except MailFetchCancelled:
         result.notices.append("New-ticket email history fetch was cancelled; nothing was committed.")
-    except MailSyncError as exc:
-        result.warnings.append(f"New-ticket email history failed: {exc}")
+    except Exception as exc:
+        _record_email_warning(
+            store,
+            result,
+            "NEW-TICKET EMAIL WARNING",
+            exc,
+        )
 
 
 def reconcile_advanced_and_new_mail(
@@ -198,8 +216,8 @@ def run_startup(
                 result.notices.append(
                     "Automatic email fetch was cancelled; the dashboard opened and no fetch timestamp changed."
                 )
-            except MailSyncError as exc:
-                result.warnings.append(f"EMAIL FETCH WARNING — {exc}")
+            except Exception as exc:
+                _record_email_warning(store, result, "EMAIL FETCH WARNING", exc)
         elif new_ticket_ids:
             _fetch_new_tickets(
                 store,
@@ -231,8 +249,8 @@ def run_startup(
             ):
                 try:
                     result.operations["email_sync"] = synchronize_staged_email(store)
-                except MailSyncError as exc:
-                    result.warnings.append(f"EMAIL SYNC WARNING — {exc}")
+                except Exception as exc:
+                    _record_email_warning(store, result, "EMAIL SYNC WARNING", exc)
     elif result.advanced_search_valid and not _email_ready(store):
         result.notices.append("Email fetching is disabled until an Outlook store path is configured.")
 

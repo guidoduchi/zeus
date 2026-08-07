@@ -29,6 +29,7 @@ from .config import (
     scan_outlook_store_files,
     set_dotted,
 )
+from .diagnostics import diagnostic_log_path, record_exception
 from .excel_export import (
     WorkbookPublicationError,
     list_pendings_backups,
@@ -38,6 +39,7 @@ from .excel_export import (
 )
 from .mail import (
     MailFetchCancelled,
+    MailSyncError,
     fetch_and_commit_outlook,
     strip_quoted_history,
     synchronize_staged_email,
@@ -295,6 +297,13 @@ class MouseEvent:
     delta: int = 0
 
 
+@dataclass(frozen=True)
+class TerminalCapabilities:
+    mouse_enabled: bool
+    transport: str
+    warning: str | None = None
+
+
 def _parse_sgr_mouse(sequence: str) -> MouseEvent | None:
     match = SGR_MOUSE.match(sequence)
     if not match:
@@ -313,6 +322,80 @@ def _parse_sgr_mouse(sequence: str) -> MouseEvent | None:
     if button_code & 3 == 0:
         return MouseEvent(int(x), int(y), "click", button="left")
     return None
+
+
+ESCAPE_KEYS = {
+    "[A": "up",
+    "[B": "down",
+    "[D": "left",
+    "[C": "right",
+    "[5~": "pageup",
+    "[6~": "pagedown",
+    "[H": "home",
+    "[F": "end",
+    "[1~": "home",
+    "[4~": "end",
+    "OA": "up",
+    "OB": "down",
+    "OD": "left",
+    "OC": "right",
+    "OH": "home",
+    "OF": "end",
+}
+
+
+def _decode_escape_sequence(sequence: str) -> str | MouseEvent:
+    mouse = _parse_sgr_mouse(sequence)
+    if mouse is not None:
+        return mouse
+    return ESCAPE_KEYS.get(sequence, "escape")
+
+
+ENABLE_PROCESSED_INPUT = 0x0001
+ENABLE_LINE_INPUT = 0x0002
+ENABLE_ECHO_INPUT = 0x0004
+ENABLE_WINDOW_INPUT = 0x0008
+ENABLE_MOUSE_INPUT = 0x0010
+ENABLE_QUICK_EDIT_MODE = 0x0040
+ENABLE_EXTENDED_FLAGS = 0x0080
+ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+ENABLE_PROCESSED_OUTPUT = 0x0001
+ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+
+
+def _windows_console_mode_plan(
+    input_mode: int,
+    output_mode: int,
+) -> tuple[int, int, int]:
+    """Return the forced transition, interactive input, and output modes.
+
+    Windows enables ``ENABLE_MOUSE_INPUT`` by default.  Re-applying an already
+    enabled bit can be a no-op through ConPTY, so Zeus first clears mouse/VT
+    input and then enables both native records and VT input explicitly.
+    """
+
+    transition_input = (
+        (input_mode | ENABLE_EXTENDED_FLAGS)
+        & ~ENABLE_MOUSE_INPUT
+        & ~ENABLE_QUICK_EDIT_MODE
+        & ~ENABLE_VIRTUAL_TERMINAL_INPUT
+    )
+    interactive_input = (
+        input_mode
+        | ENABLE_EXTENDED_FLAGS
+        | ENABLE_WINDOW_INPUT
+        | ENABLE_MOUSE_INPUT
+        | ENABLE_VIRTUAL_TERMINAL_INPUT
+    ) & ~(
+        ENABLE_PROCESSED_INPUT
+        | ENABLE_LINE_INPUT
+        | ENABLE_ECHO_INPUT
+        | ENABLE_QUICK_EDIT_MODE
+    )
+    interactive_output = (
+        output_mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    )
+    return transition_input, interactive_input, interactive_output
 
 
 _WINDOWS_CONSOLE_API: dict[str, Any] | None = None
@@ -383,7 +466,9 @@ def _windows_console_api() -> dict[str, Any]:
     kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
     kernel32.GetStdHandle.restype = wintypes.HANDLE
     kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetConsoleMode.restype = wintypes.BOOL
     kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.SetConsoleMode.restype = wintypes.BOOL
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.ReadConsoleInputW.argtypes = [
         wintypes.HANDLE,
@@ -407,27 +492,79 @@ def _windows_console_api() -> dict[str, Any]:
     return _WINDOWS_CONSOLE_API
 
 
+def _get_console_mode(api: dict[str, Any], handle: Any) -> int:
+    mode = api["wintypes"].DWORD()
+    if not api["kernel32"].GetConsoleMode(
+        handle, api["ctypes"].byref(mode)
+    ):
+        raise OSError("GetConsoleMode failed")
+    return int(mode.value)
+
+
+def _set_console_mode(api: dict[str, Any], handle: Any, mode: int) -> None:
+    if not api["kernel32"].SetConsoleMode(handle, mode):
+        raise OSError("SetConsoleMode failed")
+
+
+def _read_windows_record(api: dict[str, Any], timeout_ms: int) -> Any | None:
+    kernel32 = api["kernel32"]
+    if kernel32.WaitForSingleObject(api["stdin"], max(0, timeout_ms)) != 0:
+        return None
+    record = api["INPUT_RECORD"]()
+    count = api["wintypes"].DWORD()
+    if not kernel32.ReadConsoleInputW(
+        api["stdin"], api["ctypes"].byref(record), 1, api["ctypes"].byref(count)
+    ):
+        return None
+    return record if int(count.value) else None
+
+
+def _read_windows_vt_sequence(api: dict[str, Any], deadline: float) -> str:
+    sequence = ""
+    while len(sequence) < 64:
+        remaining = min(20, max(0, int((deadline - time.monotonic()) * 1000)))
+        if remaining <= 0:
+            break
+        record = _read_windows_record(api, remaining)
+        if record is None:
+            break
+        if record.EventType != 1 or not record.Event.KeyEvent.bKeyDown:
+            continue
+        character = str(record.Event.KeyEvent.Char.UnicodeChar or "")
+        if not character:
+            continue
+        sequence += character
+        if sequence in ESCAPE_KEYS:
+            break
+        if sequence.startswith("[<") and sequence[-1:] in {"M", "m"}:
+            break
+        if sequence.startswith("[") and sequence.endswith("~"):
+            break
+    return sequence
+
+
 def _read_windows_event(timeout: float) -> str | MouseEvent | None:
     api = _windows_console_api()
     ctypes = api["ctypes"]
-    wintypes = api["wintypes"]
     kernel32 = api["kernel32"]
     deadline = time.monotonic() + timeout
     while True:
         remaining = max(0, int((deadline - time.monotonic()) * 1000))
-        if kernel32.WaitForSingleObject(api["stdin"], remaining) != 0:
-            return None
-        record = api["INPUT_RECORD"]()
-        count = wintypes.DWORD()
-        if not kernel32.ReadConsoleInputW(
-            api["stdin"], ctypes.byref(record), 1, ctypes.byref(count)
-        ):
+        record = _read_windows_record(api, remaining)
+        if record is None:
             return None
         if record.EventType == 1:
             event = record.Event.KeyEvent
             if not event.bKeyDown:
                 continue
             virtual_key = int(event.wVirtualKeyCode)
+            character = str(event.Char.UnicodeChar or "")
+            if character == "\x1b" and virtual_key != 0x1B:
+                return _decode_escape_sequence(
+                    _read_windows_vt_sequence(
+                        api, max(deadline, time.monotonic() + 0.05)
+                    )
+                )
             mapped = {
                 0x26: "up",
                 0x28: "down",
@@ -443,12 +580,17 @@ def _read_windows_event(timeout: float) -> str | MouseEvent | None:
             }.get(virtual_key)
             if mapped:
                 return mapped
-            character = str(event.Char.UnicodeChar or "")
             control = int(event.dwControlKeyState) & 0x000C
             if control and virtual_key == 0x46:
                 return "ctrl-f"
             if control and virtual_key == 0x43:
                 return "ctrl-c"
+            if character == "\x06":
+                return "ctrl-f"
+            if character == "\x03":
+                return "ctrl-c"
+            if character == "\x1b":
+                return "escape"
             if character and ord(character) >= 32:
                 return character
         elif record.EventType == 2:
@@ -476,31 +618,68 @@ def _read_windows_event(timeout: float) -> str | MouseEvent | None:
 @contextmanager
 def _terminal_mode() -> Any:
     if not sys.stdin.isatty():
-        yield
+        yield TerminalCapabilities(False, "none")
         return
     if os.name == "nt":
+        api: dict[str, Any] | None = None
+        original_input: int | None = None
+        original_output: int | None = None
         try:
             api = _windows_console_api()
-            mode = api["wintypes"].DWORD()
-        except Exception:
-            yield
-            return
-        if not api["kernel32"].GetConsoleMode(
-            api["stdin"], api["ctypes"].byref(mode)
-        ):
-            yield
-            return
-        original = int(mode.value)
-        # Mouse + resize events, with Quick Edit disabled while Zeus owns the
-        # full-screen interface.  The exact original mode is restored.
-        interactive = (original | 0x0008 | 0x0010 | 0x0080) & ~0x0040
-        if not api["kernel32"].SetConsoleMode(api["stdin"], interactive):
-            yield
+            original_input = _get_console_mode(api, api["stdin"])
+            original_output = _get_console_mode(api, api["stdout"])
+            transition, interactive, output = _windows_console_mode_plan(
+                original_input, original_output
+            )
+            _set_console_mode(api, api["stdout"], output)
+            _set_console_mode(api, api["stdin"], transition)
+            _set_console_mode(api, api["stdin"], interactive)
+            verified_input = _get_console_mode(api, api["stdin"])
+            verified_output = _get_console_mode(api, api["stdout"])
+            required_input = (
+                ENABLE_MOUSE_INPUT
+                | ENABLE_WINDOW_INPUT
+                | ENABLE_EXTENDED_FLAGS
+                | ENABLE_VIRTUAL_TERMINAL_INPUT
+            )
+            forbidden_input = (
+                ENABLE_QUICK_EDIT_MODE | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT
+            )
+            required_output = (
+                ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            )
+            if (
+                verified_input & required_input != required_input
+                or verified_input & forbidden_input
+                or verified_output & required_output != required_output
+            ):
+                raise OSError("Windows console rejected the interactive mouse mode")
+        except Exception as exc:
+            if api is not None:
+                try:
+                    if original_input is not None:
+                        _set_console_mode(api, api["stdin"], original_input)
+                    if original_output is not None:
+                        _set_console_mode(api, api["stdout"], original_output)
+                except Exception:
+                    pass
+            yield TerminalCapabilities(
+                False,
+                "sgr-fallback",
+                f"Mouse transport could not be verified ({exc}); keyboard navigation remains available.",
+            )
             return
         try:
-            yield
+            yield TerminalCapabilities(True, "windows-records+vt")
         finally:
-            api["kernel32"].SetConsoleMode(api["stdin"], original)
+            try:
+                assert api is not None
+                assert original_input is not None
+                assert original_output is not None
+                _set_console_mode(api, api["stdin"], original_input)
+                _set_console_mode(api, api["stdout"], original_output)
+            except Exception:
+                pass
         return
     import termios
     import tty
@@ -509,15 +688,15 @@ def _terminal_mode() -> Any:
     original = termios.tcgetattr(descriptor)
     try:
         tty.setcbreak(descriptor)
-        yield
+        yield TerminalCapabilities(True, "sgr")
     finally:
         termios.tcsetattr(descriptor, termios.TCSADRAIN, original)
 
 
 @contextmanager
 def _screen_mode() -> Any:
-    mouse_on = "" if os.name == "nt" else "\033[?1000h\033[?1006h"
-    mouse_off = "" if os.name == "nt" else "\033[?1000l\033[?1006l"
+    mouse_on = "\033[?1000h\033[?1006h"
+    mouse_off = "\033[?1000l\033[?1006l"
     sys.stdout.write(
         "\033[?1049h\033[?25l" + mouse_on + "\033[2J\033[3J\033[H"
     )
@@ -570,9 +749,23 @@ def _read_key(timeout: float = 0.25) -> str | MouseEvent | None:
                         "G": "home",
                         "O": "end",
                     }.get(msvcrt.getwch(), "unknown")
+                if char == "\x1b":
+                    sequence = ""
+                    sequence_deadline = time.monotonic() + 0.05
+                    while len(sequence) < 64 and time.monotonic() < sequence_deadline:
+                        if not msvcrt.kbhit():
+                            time.sleep(0.001)
+                            continue
+                        sequence += msvcrt.getwch()
+                        if sequence in ESCAPE_KEYS:
+                            break
+                        if sequence.startswith("[<") and sequence[-1:] in {"M", "m"}:
+                            break
+                        if sequence.startswith("[") and sequence.endswith("~"):
+                            break
+                    return _decode_escape_sequence(sequence)
                 return {
                     "\r": "enter",
-                    "\x1b": "escape",
                     "\x08": "backspace",
                     "\x06": "ctrl-f",
                     "\x03": "ctrl-c",
@@ -586,21 +779,7 @@ def _read_key(timeout: float = 0.25) -> str | MouseEvent | None:
         sequence = ""
         while select.select([sys.stdin], [], [], 0.01)[0]:
             sequence += sys.stdin.read(1)
-        mouse = _parse_sgr_mouse(sequence)
-        if mouse is not None:
-            return mouse
-        return {
-            "[A": "up",
-            "[B": "down",
-            "[D": "left",
-            "[C": "right",
-            "[5~": "pageup",
-            "[6~": "pagedown",
-            "[H": "home",
-            "[F": "end",
-            "[1~": "home",
-            "[4~": "end",
-        }.get(sequence, "escape")
+        return _decode_escape_sequence(sequence)
     return {
         "\n": "enter",
         "\r": "enter",
@@ -1217,7 +1396,10 @@ class ZeusTUI:
         if os.name == "nt":
             os.system("")  # enable ANSI processing on supported Windows consoles
         _request_console_fullscreen()
-        with _terminal_mode(), _screen_mode():
+        with _terminal_mode() as terminal, _screen_mode():
+            if terminal.warning:
+                self.status = terminal.warning
+                self.dirty = True
             while True:
                 current_size = self._screen_size()
                 if current_size != self._last_screen_size:
@@ -1519,7 +1701,12 @@ def _first_run_setup(store: ZeusStore) -> None:
 
 
 def _doctor(store: ZeusStore) -> dict[str, Any]:
-    result: dict[str, Any] = {"store": "ok", "paths": {}, "tickets": 0}
+    result: dict[str, Any] = {
+        "store": "ok",
+        "paths": {},
+        "tickets": 0,
+        "diagnostic_log": str(diagnostic_log_path(store.config_home)),
+    }
     try:
         store.validate_current(store.current)
         result["tickets"] = sum(1 for _ in store.iter_ticket_ids())
@@ -1589,7 +1776,13 @@ def _run_action(store: ZeusStore, action: str) -> bool:
             _interactive_config(store)
         elif action == "doctor":
             _json_print(_doctor(store))
-    except (ValueError, StoreError, WorkbookPublicationError, MailFetchCancelled, OSError) as exc:
+    except (
+        ValueError,
+        StoreError,
+        WorkbookPublicationError,
+        MailSyncError,
+        OSError,
+    ) as exc:
         print(f"\nERROR: {exc}")
     input("\nPress Enter to return to Zeus...")
     return True
@@ -1609,7 +1802,7 @@ def interactive(store: ZeusStore) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="zeus", description="Zeus 2.0.2 ticket workstation")
+    parser = argparse.ArgumentParser(prog="zeus", description="Zeus 2.0.3 ticket workstation")
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command")
 
@@ -1669,8 +1862,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    store = create_store()
+    store: ZeusStore | None = None
     try:
+        store = create_store()
         if args.command is None:
             return interactive(store)
         if args.command == "startup":
@@ -1763,7 +1957,11 @@ def main(argv: list[str] | None = None) -> int:
         print("Cancelled; no incomplete operation was committed.", file=sys.stderr)
         return 130
     except Exception as exc:
+        home = store.config_home if store is not None else application_home()
+        log_path = record_exception(home, f"command: {args.command or 'interactive'}", exc)
         print(f"ERROR: {exc}", file=sys.stderr)
+        if log_path is not None:
+            print(f"Diagnostic log: {log_path}", file=sys.stderr)
         return 1
 
 

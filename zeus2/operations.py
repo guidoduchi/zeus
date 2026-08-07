@@ -10,7 +10,7 @@ class ReadOnlyTicketError(PermissionError):
 
 
 READ_ONLY_MESSAGE = (
-    "Zeus 2.0.2 is read-only for ticket work data. Edit recognized local "
+    "Zeus 2.0.3 is read-only for ticket work data. Edit recognized local "
     "fields in Pendings.xlsx; Zeus imports them at the next startup."
 )
 

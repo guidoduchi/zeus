@@ -1,4 +1,4 @@
-# Zeus 2.0.2 release scope
+# Zeus 2.0.3 release scope
 
 Included:
 
@@ -20,7 +20,10 @@ Included:
 - configurable calendar-day report thresholds and midnight refresh;
 - crash-safe Pendings-backup restore;
 - versioned MOP output generation;
-- Windows setup and PyInstaller build scripts.
+- Windows setup and PyInstaller build scripts;
+- nonfatal Outlook startup recovery with local-only diagnostics;
+- verified native/VT mouse transport and crash-visible launching;
+- Windows CI coverage for Python 3.13 and Python 3.14.
 
 Deliberately excluded:
 

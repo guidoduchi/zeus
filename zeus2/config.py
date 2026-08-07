@@ -172,7 +172,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Aging basis",
         "Aging",
         "locked",
-        "Zeus 2.0.2 always uses calendar days.",
+        "Zeus 2.0.3 always uses calendar days.",
         editable=False,
     ),
     SettingSpec(
@@ -403,7 +403,7 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
 
     aging = config.get("aging", {})
     if aging.get("calendar_days") is not True:
-        raise ValueError("aging.calendar_days is fixed to true in Zeus 2.0.2")
+        raise ValueError("aging.calendar_days is fixed to true in Zeus 2.0.3")
     for key in (
         "communication_yellow_days",
         "communication_red_days",
@@ -548,7 +548,7 @@ def set_dotted(config: dict[str, Any], dotted_key: str, value: Any) -> None:
     if spec is None:
         raise ValueError(f"Unknown configuration setting: {dotted_key or '(blank)'}")
     if not spec.editable:
-        raise ValueError(f"{dotted_key} is fixed in Zeus 2.0.2")
+        raise ValueError(f"{dotted_key} is fixed in Zeus 2.0.3")
     parts = dotted_key.split(".")
     cursor: dict[str, Any] = config
     for part in parts[:-1]:
@@ -571,7 +571,7 @@ def coerce_setting_value(
     if spec is None:
         raise ValueError(f"Unknown configuration setting: {dotted_key or '(blank)'}")
     if not spec.editable:
-        raise ValueError(f"{dotted_key} is fixed in Zeus 2.0.2")
+        raise ValueError(f"{dotted_key} is fixed in Zeus 2.0.3")
     text = str(value or "").strip()
     if spec.nullable and text.lower() in {"", "-", "none", "null"}:
         return None

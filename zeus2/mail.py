@@ -13,6 +13,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any, Callable, Iterable
 
+from .diagnostics import record_exception
 from .store import ZeusStore
 from .utils import (
     atomic_write_json,
@@ -53,7 +54,7 @@ _OUTLOOK_EXECUTOR = ThreadPoolExecutor(
 
 
 class MailSyncError(RuntimeError):
-    pass
+    diagnostic_log_path: Path | None = None
 
 
 class MailFetchCancelled(MailSyncError):
@@ -815,7 +816,19 @@ def fetch_outlook_messages(
         cancel_event=cancel_event,
         progress=progress,
     )
-    return future.result()
+    try:
+        return future.result()
+    except (MailFetchCancelled, MailSyncError):
+        raise
+    except Exception as exc:
+        log_path = record_exception(store.config_home, "Outlook COM worker", exc)
+        details = f" Diagnostic log: {log_path}" if log_path is not None else ""
+        wrapped = MailSyncError(
+            "Classic Outlook was temporarily unavailable or could not be initialized."
+            f"{details}"
+        )
+        wrapped.diagnostic_log_path = log_path
+        raise wrapped from exc
 
 
 def fetch_and_commit_outlook(
@@ -903,6 +916,6 @@ def sync_outlook(
 ) -> dict[str, Any]:
     if mailbox:
         raise MailSyncError(
-            "Zeus 2.0.2 selects Outlook by configured store path, not mailbox name"
+            "Zeus 2.0.3 selects Outlook by configured store path, not mailbox name"
         )
     return fetch_and_commit_outlook(store)

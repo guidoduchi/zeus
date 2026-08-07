@@ -1,4 +1,4 @@
-# Zeus 2.0.2
+# Zeus 2.0.3
 
 Zeus is a local, read-only ticket dashboard around three deliberately separate
 sources of trust:
@@ -29,13 +29,15 @@ does not require Python 3.11 specifically when a newer version is installed.
 `run_zeus.bat` opens Zeus in a new full-screen Windows Terminal window. If
 Windows Terminal is unavailable, it falls back to a maximized classic console.
 The dashboard uses an alternate screen and erases scrollback on every redraw,
-so stale frames cannot be reached with the terminal scrollbar.
+so stale frames cannot be reached with the terminal scrollbar. If Zeus exits
+unexpectedly, the terminal remains open and points to the diagnostic log.
 
 Configuration and internal data are stored in `%LOCALAPPDATA%\Zeus`:
 
 ```text
 %LOCALAPPDATA%\Zeus\
 ├── zeus_config.json
+├── logs\zeus.log
 └── data\
     ├── current\
     │   ├── state.json
@@ -61,7 +63,7 @@ manual inspection outside Zeus.
 For the Outlook setting, enter a folder such as `D:\Email`. Zeus lists the
 `.ost`/`.pst` candidates with a selection marker. Selecting a candidate stores
 that exact file; selecting the checked candidate again deselects it, and option
-`0` disables Outlook email. Zeus 2.0.2 uses zero or one mailbox store at a time.
+`0` disables Outlook email. Zeus 2.0.3 uses zero or one mailbox store at a time.
 
 ## Startup behavior
 
@@ -80,6 +82,12 @@ Zeus performs this sequence without generating either workbook:
 If Pendings is invalid, Zeus preserves its database and continues with a
 prominent warning. If Advanced Search is invalid, local data remains visible
 but mailbox fetching is skipped because ticket eligibility is untrusted.
+
+Outlook is optional. A computer without work mail can leave the Outlook setting
+disabled and use Pendings, Advanced Search, reports, publishing, and MOP
+templates normally. If configured Outlook is still starting or COM/RPC access
+fails, Zeus records a warning and opens the dashboard; it does not terminate.
+The detailed traceback remains local at `%LOCALAPPDATA%\Zeus\logs\zeus.log`.
 
 While open, Zeus checks Advanced Search every 15 minutes by default and
 recalculates calendar-day aging after local midnight.
@@ -100,7 +108,10 @@ recalculates calendar-day aging after local midnight.
 
 The mouse wheel navigates the current view. A ticket row opens on click, a
 retained email row selects that email, and an operations-menu item runs on
-click. Keyboard and mouse selection stay synchronized.
+click. Keyboard and mouse selection stay synchronized. Zeus verifies Windows
+console mouse mode and accepts both classic `MOUSE_EVENT` records and Windows
+Terminal SGR mouse sequences. If activation cannot be verified, the footer
+reports it and keyboard navigation remains available.
 
 Search covers every existing Markdown record, including `closure_pending`
 tickets, and never searches `Closed.xlsx`.
@@ -261,3 +272,4 @@ build_windows.bat
 
 The executable is written to `dist\zeus.exe`. Outlook integration requires
 Windows, classic Outlook, and the locally installed `pywin32` dependency.
+GitHub CI runs the complete suite on `windows-latest` with Python 3.13 and 3.14.

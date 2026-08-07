@@ -1,4 +1,4 @@
-"""Zeus 2.0.2: a field-authority-safe service-request workstation."""
+"""Zeus 2.0.3: a field-authority-safe service-request workstation."""
 
 from .version import __version__
 

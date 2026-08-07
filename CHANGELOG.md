@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.0.3 - 2026-08-06
+
+- Made every automatic Outlook operation nonfatal. Transient COM, RPC,
+  namespace, store, and synchronization failures now become dashboard warnings
+  instead of closing Zeus.
+- Added a rotating local diagnostic log at
+  `%LOCALAPPDATA%\Zeus\logs\zeus.log`; unexpected exceptions retain their full
+  traceback without serializing ticket records or email bodies.
+- Added a console runner that keeps the terminal open after an unexpected exit
+  and points directly to the diagnostic log.
+- Fixed Windows Terminal mouse delivery by forcing a real console-mode
+  transition, enabling and verifying native mouse/window plus VT input, and
+  enabling SGR click/wheel reporting on Windows as well as Unix terminals.
+- Added dual mouse decoding: classic console `MOUSE_EVENT` records and Windows
+  Terminal SGR sequences now feed the same click/wheel handlers.
+- Added Windows compatibility CI for Python 3.13 and Python 3.14.
+- Added regressions for cold-Outlook startup failure, diagnostic persistence,
+  crash-visible launch behavior, Windows mouse transport, and the runtime
+  compatibility matrix.
+
 ## 2.0.2 - 2026-08-06
 
 - Fixed Windows Terminal startup after successful setup. The launcher now

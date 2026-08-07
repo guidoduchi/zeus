@@ -5,8 +5,9 @@ import os
 import re
 import tempfile
 import unittest
+from concurrent.futures import Future
 from copy import deepcopy
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
@@ -18,14 +19,26 @@ from openpyxl.styles import Font, PatternFill
 
 from zeus2.aging import aging_for_ticket, calculate_ticket_facts, report_sort_key
 from zeus2.cli import (
+    ENABLE_ECHO_INPUT,
+    ENABLE_EXTENDED_FLAGS,
+    ENABLE_LINE_INPUT,
+    ENABLE_MOUSE_INPUT,
+    ENABLE_QUICK_EDIT_MODE,
+    ENABLE_VIRTUAL_TERMINAL_INPUT,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    ENABLE_WINDOW_INPUT,
     MouseEvent,
     ZeusTUI,
+    _decode_escape_sequence,
     _display_width,
     _edit_outlook_store_setting,
     _first_run_setup,
     _interactive_config,
     _parse_sgr_mouse,
+    _screen_mode,
     _truncate_ansi,
+    _windows_console_mode_plan,
+    main,
 )
 from zeus2.config import (
     ensure_config,
@@ -53,6 +66,7 @@ from zeus2.mail import (
     _select_outlook_store,
     commit_fetched_messages,
     extract_ticket_ids,
+    fetch_outlook_messages,
     interval_due,
     strip_quoted_history,
     synchronize_staged_email,
@@ -657,6 +671,22 @@ class EmailTests(ZeusCase):
         self.assertEqual(email["total_received"] + email["total_sent"], 2)
         self.assertEqual(email["messages"], [])
 
+    def test_worker_failure_is_normalized_and_logged(self) -> None:
+        failed: Future[object] = Future()
+        failed.set_exception(RuntimeError("transient MAPI initialization failure"))
+
+        with patch("zeus2.mail._OUTLOOK_EXECUTOR.submit", return_value=failed):
+            with self.assertRaises(MailSyncError) as caught:
+                fetch_outlook_messages(self.store)
+
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+        self.assertIn("Classic Outlook", str(caught.exception))
+        diagnostic_log = self.home / "logs" / "zeus.log"
+        self.assertIn(
+            "transient MAPI initialization failure",
+            diagnostic_log.read_text(encoding="utf-8"),
+        )
+
     def test_reply_history_gets_a_compact_view_without_losing_the_raw_body(self) -> None:
         message = {
             "message_id": "reply-chain",
@@ -880,6 +910,46 @@ class InterfaceRegressionTests(ZeusCase):
             encoding="utf-8"
         )
         self.assertIn("wt.exe --window new --fullscreen", launcher)
+
+    def test_windows_terminal_enables_click_and_wheel_transport(self) -> None:
+        """Windows Terminal must be asked to send mouse events, not just parse them."""
+
+        output = StringIO()
+        with patch("zeus2.cli.os.name", "nt"), redirect_stdout(output):
+            with _screen_mode():
+                pass
+
+        rendered = output.getvalue()
+        self.assertIn("\033[?1000h", rendered)
+        self.assertIn("\033[?1006h", rendered)
+        self.assertIn("\033[?1000l", rendered)
+        self.assertIn("\033[?1006l", rendered)
+
+    def test_windows_mode_forces_transition_and_accepts_both_mouse_formats(self) -> None:
+        original_input = (
+            ENABLE_MOUSE_INPUT
+            | ENABLE_QUICK_EDIT_MODE
+            | ENABLE_LINE_INPUT
+            | ENABLE_ECHO_INPUT
+        )
+        transition, interactive, output = _windows_console_mode_plan(
+            original_input, 0
+        )
+
+        self.assertFalse(transition & ENABLE_MOUSE_INPUT)
+        self.assertFalse(transition & ENABLE_VIRTUAL_TERMINAL_INPUT)
+        self.assertTrue(transition & ENABLE_EXTENDED_FLAGS)
+        self.assertTrue(interactive & ENABLE_MOUSE_INPUT)
+        self.assertTrue(interactive & ENABLE_WINDOW_INPUT)
+        self.assertTrue(interactive & ENABLE_VIRTUAL_TERMINAL_INPUT)
+        self.assertFalse(interactive & ENABLE_QUICK_EDIT_MODE)
+        self.assertFalse(interactive & ENABLE_LINE_INPUT)
+        self.assertFalse(interactive & ENABLE_ECHO_INPUT)
+        self.assertTrue(output & ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+        self.assertEqual(
+            _decode_escape_sequence("[<65;4;9M"),
+            MouseEvent(4, 9, "wheel", delta=-1),
+        )
 
 
 class AgingTests(ZeusCase):
@@ -1118,6 +1188,46 @@ class StartupAndReadOnlyTests(ZeusCase):
         self.assertEqual(
             self.store.read_ticket("12345678")["upstream"]["fields"]["Problem Summary"],
             "Updated online",
+        )
+
+    def test_transient_outlook_startup_failure_is_nonfatal_and_logged(self) -> None:
+        """A cold Outlook/COM failure must not close the Zeus dashboard."""
+
+        self.seed([pending_row("12345678")])
+        mailbox = self.root / "mailbox.ost"
+        mailbox.touch()
+        config = self.store.config
+        config["paths"]["outlook_store_path"] = str(mailbox)
+        config["email"]["fetch_interval_days"] = -1
+        self.store.save_config(config)
+
+        with patch(
+            "zeus2.startup.fetch_and_commit_outlook",
+            side_effect=RuntimeError("RPC server unavailable during Outlook warm-up"),
+        ):
+            result = run_startup(self.store)
+
+        self.assertTrue(
+            any("EMAIL FETCH WARNING" in warning for warning in result.warnings)
+        )
+        diagnostic_log = self.home / "logs" / "zeus.log"
+        self.assertTrue(diagnostic_log.is_file())
+        self.assertIn("RPC server unavailable", diagnostic_log.read_text(encoding="utf-8"))
+
+    def test_top_level_failure_reports_the_persistent_log(self) -> None:
+        stderr = StringIO()
+        with (
+            patch("zeus2.cli.create_store", return_value=self.store),
+            patch("zeus2.cli.interactive", side_effect=RuntimeError("dashboard crash")),
+            redirect_stderr(stderr),
+        ):
+            exit_code = main([])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Diagnostic log:", stderr.getvalue())
+        self.assertIn(
+            "dashboard crash",
+            (self.home / "logs" / "zeus.log").read_text(encoding="utf-8"),
         )
 
     def test_app_side_ticket_edits_are_forbidden(self) -> None:
