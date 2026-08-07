@@ -104,3 +104,48 @@ test("saving through Pendings keeps the workstation mounted", async ({ page }, t
   await expect(page.getByLabel("Planned Date")).toHaveValue(plannedDate);
   await expect(page.getByLabel("Spare")).toHaveValue("Y");
 });
+
+test("legacy reply chains stay compact inside bounded email panes", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('[data-ticket-id="39400001"]').click();
+  const detail = page.getByRole("complementary", { name: "SR 39400001 detail" });
+  await detail.getByRole("button", { name: /Emails/ }).click();
+
+  const list = detail.getByRole("listbox", { name: "Retained email replies" });
+  const reader = detail.locator(".email-reader");
+  const body = reader.locator("pre");
+  await expect(list).toBeVisible();
+  await expect(reader).toBeVisible();
+  await expect(body).toContainText("Newest field response: the DIMM alarm is clear.");
+  await expect(body).not.toContainText("Quoted historical line 240");
+  await expect(detail.getByRole("button", { name: "Full thread" })).toBeVisible();
+
+  const compactGeometry = await detail.evaluate((panel) => {
+    const scroll = panel.querySelector<HTMLElement>(".email-detail-scroll");
+    const listElement = panel.querySelector<HTMLElement>(".email-list");
+    const readerElement = panel.querySelector<HTMLElement>(".email-reader");
+    if (!scroll || !listElement || !readerElement) throw new Error("Email panes missing");
+    const listBox = listElement.getBoundingClientRect();
+    const readerBox = readerElement.getBoundingClientRect();
+    const scrollBox = scroll.getBoundingClientRect();
+    return {
+      outerOverflow: getComputedStyle(scroll).overflowY,
+      outerFits: scroll.scrollHeight <= scroll.clientHeight + 1,
+      readerFollowsList: Math.abs(readerBox.top - listBox.bottom) <= 1,
+      readerFits: readerBox.bottom <= scrollBox.bottom + 1,
+    };
+  });
+  expect(compactGeometry).toEqual({
+    outerOverflow: "hidden",
+    outerFits: true,
+    readerFollowsList: true,
+    readerFits: true,
+  });
+
+  await detail.getByRole("button", { name: "Full thread" }).click();
+  await expect(body).toContainText("Quoted historical line 240");
+  await expect.poll(() => body.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await expect.poll(() => detail.locator(".email-detail-scroll").evaluate(
+    (element) => element.scrollHeight <= element.clientHeight + 1,
+  )).toBe(true);
+});

@@ -268,7 +268,7 @@ export function TicketDetail({ ticket, loading, templates, onClose, onSave, onGe
           </button>
         ))}
       </nav>
-      <div className="detail-scroll">
+      <div className={`detail-scroll${tab === "emails" ? " email-detail-scroll" : ""}`}>
         {tab === "overview" && (
           <div className="tab-content">
             <div className="fact-grid">

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TicketDetail } from "../components/TicketDetail";
 import type { TicketDetail as TicketDetailType } from "../types";
+import styles from "../styles.css?raw";
 
 const detail: TicketDetailType = {
   ticketId: "12345678",
@@ -67,6 +68,10 @@ describe("TicketDetail", () => {
       <TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} />,
     );
     await user.click(screen.getByRole("button", { name: /emails/i }));
+    expect(container.querySelector(".detail-scroll")).toHaveClass("email-detail-scroll");
+    expect(styles).toMatch(/\.detail-scroll\.email-detail-scroll\s*\{[^}]*overflow:\s*hidden/s);
+    expect(styles).toMatch(/\.email-layout\s*\{[^}]*height:\s*100%[^}]*overflow:\s*hidden/s);
+    expect(styles).toMatch(/\.email-reader\s*\{[^}]*overflow:\s*hidden/s);
     expect(screen.getByText("<b>new reply</b>")).toBeInTheDocument();
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("img")).toBeNull();

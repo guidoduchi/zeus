@@ -309,6 +309,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .detail-tabs button.active { color: var(--cyan); border-bottom-color: var(--cyan); background: var(--surface); }
 .detail-tabs small { margin-left: 5px; padding: 1px 4px; background: var(--line); color: var(--text); }
 .detail-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-color: var(--line-bright) var(--surface); }
+.detail-scroll.email-detail-scroll { overflow: hidden; }
 .detail-loading, .empty-panel { min-height: 90px; display: grid; place-content: center; color: var(--muted); text-align: center; padding: 20px; }
 .tab-content { padding: 10px; }
 .fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--line); background: var(--bg); }
@@ -357,13 +358,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .danger-button:hover { background: var(--red); color: white; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 
-.email-layout { min-height: 100%; display: grid; grid-template-rows: minmax(130px, 32%) minmax(220px, 1fr); }
+.email-layout { height: 100%; min-height: 0; display: grid; grid-template-rows: minmax(130px, 32%) minmax(0, 1fr); overflow: hidden; }
 .email-list { overflow: auto; border-bottom: 1px solid var(--line-bright); }
 .email-list button { width: 100%; min-height: 42px; display: grid; grid-template-columns: 120px 74px minmax(0, 1fr); align-items: center; gap: 7px; padding: 5px 8px; border: 0; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--text); text-align: left; cursor: pointer; }
 .email-list button:hover, .email-list button.selected { background: var(--selected-bg); color: var(--selected-text); }
 .email-list span, .email-list strong { font-size: 10px; }
 .email-list em { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-style: normal; }
-.email-reader { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; padding: 0; }
+.email-reader { min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; padding: 0; }
 .email-reader header { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
 .email-reader header div { display: grid; gap: 4px; min-width: 0; }
 .email-reader header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }

@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from zeus2.config import save_config
 from zeus2.main import main
+from zeus2.startup import run_startup
 from zeus2.store import ZeusStore
 from zeus2.tickets import LOCAL_COLUMNS, PENDING_COLUMNS
 
@@ -90,6 +91,42 @@ def prepare_fixture(root: Path) -> Path:
         for index in range(1, 35)
     ]
     write_managed(workbooks / "Pendings.xlsx", rows)
+    run_startup(store)
+    legacy = store.read_ticket("39400001")
+    quoted_lines = "\n".join(
+        f"Quoted historical line {index:03d}: prior diagnostic context"
+        for index in range(1, 241)
+    )
+    raw_body = (
+        "Newest field response: the DIMM alarm is clear.\n\n"
+        "Regards/Saludos cordiales,\n\n"
+        "De: Previous Engineer <previous@example.com>\n"
+        "Enviado el: lunes, 27 de julio de 2026 18:30\n"
+        "Para: Cloud Support <cloud@example.com>\n"
+        "CC: Operations <operations@example.com>\n"
+        "Asunto: RE: [SR 39400001] DIMM MCE error\n\n"
+        f"{quoted_lines}"
+    )
+    legacy["email"].update(
+        {
+            "total_received": 1,
+            "last_activity_at": "2026-07-27T18:30:14Z",
+            "last_direction": "received",
+            # Intentionally omit the compact-reply metadata.  This reproduces
+            # retained Zeus records created before the web workstation.
+            "messages": [
+                {
+                    "message_key": "legacy-browser-reply-chain",
+                    "timestamp": "2026-07-27T18:30:14Z",
+                    "direction": "received",
+                    "subject": "RE: [SR 39400001] DIMM MCE error",
+                    "sender": "field.engineer@example.com",
+                    "body": raw_body,
+                }
+            ],
+        }
+    )
+    store.write_ticket_bundle(store.current, legacy)
     return home
 
 

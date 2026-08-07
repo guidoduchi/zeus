@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Any
 
 from ..aging import aging_for_ticket, report_sort_key
+from ..mail import strip_quoted_history
 from ..store import ZeusStore
 from ..tickets import spare_from_bom
 from ..utils import json_dumps, parse_date
@@ -109,16 +110,36 @@ def serialize_ticket_summary(
 
 
 def _message_payload(message: dict[str, Any]) -> dict[str, Any]:
+    raw_body = str(message.get("body") or "")
+    detected_reply, detected_history, detected_lines = strip_quoted_history(
+        raw_body
+    )
+    stored_reply = message.get("latest_reply_body")
+    latest_reply = (
+        str(stored_reply)
+        if stored_reply is not None
+        else detected_reply if detected_history else None
+    )
+    history_hidden = bool(
+        detected_history
+        or (message.get("quoted_history_hidden") and latest_reply is not None)
+    )
     return {
         "messageKey": message.get("message_key"),
         "timestamp": message.get("timestamp"),
         "direction": message.get("direction"),
         "subject": message.get("subject") or "(no subject)",
         "sender": message.get("sender"),
-        "body": str(message.get("body") or ""),
-        "latestReplyBody": message.get("latest_reply_body"),
-        "quotedHistoryHidden": bool(message.get("quoted_history_hidden")),
-        "quotedHistoryLines": int(message.get("quoted_history_lines") or 0),
+        # The lossless Outlook body remains available for the explicit full
+        # thread view.  Older Markdown records predate the stored compact
+        # fields, so derive their safe display form at the API boundary too.
+        "body": raw_body,
+        "latestReplyBody": latest_reply,
+        "quotedHistoryHidden": history_hidden,
+        "quotedHistoryLines": max(
+            int(message.get("quoted_history_lines") or 0),
+            detected_lines,
+        ),
     }
 
 

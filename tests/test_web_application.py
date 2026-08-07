@@ -369,6 +369,48 @@ class JobManagerTests(unittest.TestCase):
 
 
 class ApplicationServiceContractTests(WebFixture):
+    def test_legacy_email_threads_are_compacted_without_resynchronizing(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        ticket = self.store.read_ticket("12345678")
+        raw_body = (
+            "Estimada Ingri,\n\n"
+            "De acuerdo, proceder con la suspensión.\n\n"
+            "Regards/Saludos cordiales,\n\n"
+            "De: Ingri Yoselin Herrera Vazquez <ingri@example.com>\n"
+            "Enviado el: lunes, 27 de julio de 2026 18:30\n"
+            "Para: TIC Karen Narvaez <karen@example.com>\n"
+            "CC: Cloud Support <cloud@example.com>\n"
+            "Asunto: RE: [SR 12345678] DIMM MCE error\n\n"
+            "Este es el historial anterior que debe permanecer preservado."
+        )
+        ticket["email"]["messages"] = [
+            {
+                "message_key": "legacy-reply-chain",
+                "timestamp": "2026-07-27T18:30:14Z",
+                "direction": "received",
+                "subject": "RE: [SR 12345678] DIMM MCE error",
+                "sender": "ingri@example.com",
+                "body": raw_body,
+            }
+        ]
+        self.store.write_ticket_bundle(self.store.current, ticket)
+
+        service = ApplicationService(self.store)
+        try:
+            message = service.ticket("12345678")["email"]["messages"][0]
+        finally:
+            service.stop()
+
+        self.assertEqual(
+            message["latestReplyBody"],
+            "Estimada Ingri,\n\nDe acuerdo, proceder con la suspensión.\n\n"
+            "Regards/Saludos cordiales,",
+        )
+        self.assertTrue(message["quotedHistoryHidden"])
+        self.assertGreaterEqual(message["quotedHistoryLines"], 6)
+        self.assertIn("historial anterior", message["body"])
+
     def test_web_edit_returns_a_complete_immediately_renderable_ticket(self) -> None:
         self.seed_pendings_only()
         run_startup(self.store)
