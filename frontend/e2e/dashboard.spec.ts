@@ -67,8 +67,8 @@ test("window commands and sort direction work outside editable fields", async ({
   await search.fill("");
   await page.locator(".stats-bar").click();
   await page.keyboard.press("m");
-  await expect(page.getByRole("dialog", { name: "Operations" })).toBeVisible();
-  await page.getByRole("button", { name: "Close Operations" }).click();
+  await expect(page.getByRole("dialog", { name: "Zeus operations" })).toBeVisible();
+  await page.getByRole("button", { name: "Close Zeus operations" }).click();
 
   await page.keyboard.press("r");
   await expect(page.getByLabel("Active operation").getByText("Querying data sources", { exact: true })).toBeVisible();
