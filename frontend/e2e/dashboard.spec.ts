@@ -43,17 +43,33 @@ test("field choices persist and a manual source query is visible", async ({ page
   await expect(page.getByLabel("Active operation").getByText("Querying data sources", { exact: true })).toBeVisible();
 });
 
-test("saving through Pendings keeps the workstation mounted", async ({ page }) => {
+test("saving through Pendings keeps the workstation mounted", async ({ page }, testInfo) => {
+  const browserLabel = testInfo.project.name;
+  const note = `Saved from the real browser regression (${browserLabel})`;
+  const bomValue = `BOM-${browserLabel.toUpperCase()}`;
+  const plannedDate = browserLabel === "edge" ? "2026-08-22" : "2026-08-21";
   await page.goto("/");
   await expect(page.getByRole("button", { name: /Query data/ })).toBeEnabled();
 
   await page.locator("[data-ticket-id]").first().click();
   await page.getByRole("button", { name: "Work fields" }).click();
-  await page.getByLabel("Notes").fill("Saved from the real browser regression");
+  const planned = page.getByLabel("Planned Date");
+  const bom = page.getByLabel("BOM");
+  const spare = page.getByLabel("Spare");
+  await expect(planned).toHaveAttribute("type", "date");
+  await expect(spare).not.toBeEditable();
+  await bom.fill("");
+  await expect(spare).toHaveValue("N");
+  await bom.fill(bomValue);
+  await expect(spare).toHaveValue("Y");
+  await planned.fill(plannedDate);
+  await page.getByLabel("Notes").fill(note);
   await page.getByRole("button", { name: /Save through Pendings/ }).click();
 
   await expect(page.getByText(/saved through Pendings\.xlsx/i)).toBeVisible();
   await expect(page.locator(".app-shell")).toBeVisible();
   await expect(page.getByRole("button", { name: "History" })).toBeVisible();
-  await expect(page.getByLabel("Notes")).toHaveValue("Saved from the real browser regression");
+  await expect(page.getByLabel("Notes")).toHaveValue(note);
+  await expect(page.getByLabel("Planned Date")).toHaveValue(plannedDate);
+  await expect(page.getByLabel("Spare")).toHaveValue("Y");
 });

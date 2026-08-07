@@ -33,6 +33,20 @@ const LOCAL_FIELDS = [
   "Done?",
   "Notes",
 ];
+const EDITABLE_LOCAL_FIELDS = LOCAL_FIELDS.filter((field) => field !== "Spare");
+
+function draftValue(field: string, value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (field === "Planned Date") {
+    const match = String(value).trim().match(/^(\d{4}-\d{2}-\d{2})/);
+    return match?.[1] || "";
+  }
+  return String(value);
+}
+
+function spareFromBom(value: unknown): "Y" | "N" {
+  return String(value ?? "").trim() ? "Y" : "N";
+}
 
 function display(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -57,15 +71,22 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    setDraft(Object.fromEntries(LOCAL_FIELDS.map((field) => [field, String(ticket.localFields[field] ?? "")] )));
+    setDraft(Object.fromEntries(
+      EDITABLE_LOCAL_FIELDS.map((field) => [field, draftValue(field, ticket.localFields[field])]),
+    ));
   }, [ticket]);
 
   const changes = useMemo(() => Object.fromEntries(
-    LOCAL_FIELDS
-      .filter((field) => String(ticket.localFields[field] ?? "") !== String(draft[field] ?? ""))
+    EDITABLE_LOCAL_FIELDS
+      .filter((field) => draftValue(field, ticket.localFields[field]) !== String(draft[field] ?? ""))
       .map((field) => [field, draft[field] === "" ? null : draft[field]]),
   ), [draft, ticket.localFields]);
   const changedCount = Object.keys(changes).length;
+  const derivedSpare = spareFromBom(draft.BOM);
+
+  function setField(field: string, value: string) {
+    setDraft((current) => ({ ...current, [field]: value }));
+  }
 
   async function save() {
     if (!changedCount) return;
@@ -91,7 +112,24 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
             return (
               <label className="form-field full" key={field}>
                 <span>{field}</span>
-                <textarea rows={7} value={draft[field] || ""} onChange={(event) => setDraft({ ...draft, [field]: event.target.value })} />
+                <textarea rows={7} value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} />
+              </label>
+            );
+          }
+          if (field === "Planned Date") {
+            return (
+              <label className="form-field" key={field}>
+                <span>{field}</span>
+                <input type="date" value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} />
+              </label>
+            );
+          }
+          if (field === "Spare") {
+            return (
+              <label className="form-field derived-field" key={field}>
+                <span>{field}</span>
+                <input value={derivedSpare} readOnly aria-label="Spare" aria-describedby="spare-derived-help" />
+                <small id="spare-derived-help">Automatic: Y when BOM has a value; otherwise N.</small>
               </label>
             );
           }
@@ -99,7 +137,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
             return (
               <label className="form-field" key={field}>
                 <span>{field}</span>
-                <select value={draft[field] || "N"} onChange={(event) => setDraft({ ...draft, [field]: event.target.value })}>
+                <select value={draft[field] || "N"} onChange={(event) => setField(field, event.target.value)}>
                   <option value="N">N — Not completed</option>
                   <option value="Y">Y — Completed</option>
                   <option value="P">P — Attempted, issue pending</option>
@@ -111,7 +149,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
           return (
             <label className="form-field" key={field}>
               <span>{field}</span>
-              <input value={draft[field] || ""} onChange={(event) => setDraft({ ...draft, [field]: event.target.value })} placeholder="—" />
+              <input value={draft[field] || ""} onChange={(event) => setField(field, event.target.value)} placeholder="—" />
             </label>
           );
         })}

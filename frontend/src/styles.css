@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   color: #e8edf2;
   background: #070909;
@@ -24,6 +25,7 @@
 }
 
 :root[data-theme="light"] {
+  color-scheme: light;
   color: #142025;
   background: #eef2f3;
   --bg: #eef2f3;
@@ -337,6 +339,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .form-field input, .form-field select { height: 31px; }
 .form-field textarea { resize: vertical; line-height: 1.45; }
+.derived-field input[readonly] { background: var(--surface-soft); color: var(--cyan); cursor: default; }
+.derived-field small { color: var(--muted); font-size: 9px; line-height: 1.35; }
 .inline-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; }
 .sticky-actions { position: sticky; bottom: -10px; margin: 12px -10px -10px; padding: 8px 10px; border-top: 1px solid var(--line); background: var(--surface-raised); }
 .primary-button, .danger-button, .modal-actions > button, .restore-row > button {

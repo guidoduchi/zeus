@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TicketDetail } from "../components/TicketDetail";
@@ -84,5 +84,34 @@ describe("TicketDetail", () => {
     await user.type(notes, "Web note");
     await user.click(screen.getByRole("button", { name: /save through pendings/i }));
     expect(onSave).toHaveBeenCalledWith("12345678", "revision", { Notes: "Web note" });
+  });
+
+  it("uses a calendar date and derives a read-only Spare tag from BOM", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={onSave} onGenerateMop={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /work fields/i }));
+
+    const planned = screen.getByLabelText("Planned Date");
+    const bom = screen.getByLabelText("BOM");
+    const spare = screen.getByLabelText("Spare");
+    expect(planned).toHaveAttribute("type", "date");
+    expect(planned).toHaveValue("");
+    expect(spare).toHaveAttribute("readonly");
+    expect(spare).toHaveValue("N");
+
+    await user.type(bom, "BOM-9000");
+    expect(spare).toHaveValue("Y");
+    await user.clear(bom);
+    expect(spare).toHaveValue("N");
+    await user.type(bom, "BOM-9000");
+    fireEvent.change(planned, { target: { value: "2026-08-21" } });
+    await user.click(screen.getByRole("button", { name: /save through pendings/i }));
+
+    expect(onSave).toHaveBeenCalledWith("12345678", "revision", {
+      "Planned Date": "2026-08-21",
+      BOM: "BOM-9000",
+    });
+    expect(onSave.mock.calls[0][2]).not.toHaveProperty("Spare");
   });
 });

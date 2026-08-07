@@ -6,7 +6,8 @@ from typing import Any
 
 from ..aging import aging_for_ticket, report_sort_key
 from ..store import ZeusStore
-from ..utils import json_dumps
+from ..tickets import spare_from_bom
+from ..utils import json_dumps, parse_date
 
 
 COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
@@ -116,12 +117,19 @@ def serialize_ticket_detail(
 ) -> dict[str, Any]:
     result = serialize_ticket_summary(ticket, config)
     email = ticket.get("email", {})
+    local_fields = deepcopy(ticket.get("local", {}).get("fields", {}))
+    planned_date = parse_date(local_fields.get("Planned Date"))
+    # Native browser date controls consume ISO calendar dates.  Invalid legacy
+    # labels such as ``Unplanned`` are represented by an empty date control;
+    # the summary still exposes the human-readable "Unplanned" label.
+    local_fields["Planned Date"] = planned_date.isoformat() if planned_date else None
+    local_fields["Spare"] = spare_from_bom(local_fields.get("BOM"))
     result.update(
         {
             "upstreamFields": deepcopy(
                 ticket.get("upstream", {}).get("fields", {})
             ),
-            "localFields": deepcopy(ticket.get("local", {}).get("fields", {})),
+            "localFields": local_fields,
             "email": {
                 "totalReceived": int(email.get("total_received") or 0),
                 "totalSent": int(email.get("total_sent") or 0),

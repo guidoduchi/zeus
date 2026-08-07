@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,7 @@ from ..excel_import import (
 )
 from ..reconcile import import_pendings
 from ..store import ZeusStore
-from ..tickets import LOCAL_COLUMNS, normalize_done
+from ..tickets import EDITABLE_LOCAL_COLUMNS, normalize_done, spare_from_bom
 from ..utils import parse_date, sha256_file
 from .errors import ConflictError, FeatureUnavailableError, ValidationError
 from .serialization import ticket_revision
@@ -33,7 +33,9 @@ class TicketRevisionConflictError(ConflictError):
 def _normalize_local_changes(changes: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(changes, dict) or not changes:
         raise ValidationError("Choose at least one Pendings field to update")
-    unknown = sorted(set(changes) - set(LOCAL_COLUMNS))
+    if "Spare" in changes:
+        raise ValidationError("Spare is derived from BOM and cannot be edited directly")
+    unknown = sorted(set(changes) - set(EDITABLE_LOCAL_COLUMNS))
     if unknown:
         raise ValidationError(
             "Only Pendings-owned fields can be edited in Zeus",
@@ -159,9 +161,21 @@ def edit_ticket_through_pendings(
 
     prepared = _normalize_local_changes(changes)
     existing = ticket.get("local", {}).get("fields", {})
+    effective_bom = prepared.get("BOM", existing.get("BOM"))
+    prepared["Spare"] = spare_from_bom(effective_bom)
     changed_fields = [
         key for key, value in prepared.items() if _comparable_cell(existing.get(key)) != _comparable_cell(value)
     ]
+    workbook_fields = managed.records[ticket_id]["local"]["fields"]
+    if (
+        _comparable_cell(workbook_fields.get("Spare"))
+        != _comparable_cell(prepared["Spare"])
+        and "Spare" not in changed_fields
+    ):
+        # A pre-3.0 workbook may contain a stale manually-entered Spare value.
+        # Repair it during the next authorized web transaction without ever
+        # accepting Spare as browser input.
+        changed_fields.append("Spare")
     if not changed_fields:
         return {
             "changed": False,
@@ -187,7 +201,10 @@ def edit_ticket_through_pendings(
             column_number = mapping.get(field)
             if column_number is None:
                 raise WorkbookValidationError(f"Pendings.xlsx is missing the {field} column")
-            worksheet.cell(row=row_number, column=column_number).value = prepared[field]
+            cell = worksheet.cell(row=row_number, column=column_number)
+            cell.value = prepared[field]
+            if field == "Planned Date" and isinstance(prepared[field], date):
+                cell.number_format = "yyyy-mm-dd"
 
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=".zeus-web-edit-",

@@ -10,6 +10,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from openpyxl import load_workbook
 import zeus2.main as main_module
 from tests.test_zeus2 import pending_row, write_managed
 from zeus2.application.edits import PendingsConflictError, edit_ticket_through_pendings
+from zeus2.application.errors import ValidationError
 from zeus2.application.jobs import EventBroker, JobManager
 from zeus2.application.serialization import dashboard_payload, ticket_revision
 from zeus2.application.service import ApplicationService
@@ -112,6 +114,65 @@ class PendingsFirstSourceTests(WebFixture):
         self.assertEqual(updated["local"]["fields"]["Notes"], "Changed from Zeus web")
         self.assertEqual(updated["local"]["fields"]["Done?"], "Y")
         self.assertTrue((self.books / "Zeus Backups" / "Web edits").is_dir())
+
+    def test_bom_derives_spare_and_calendar_date_in_workbook_and_markdown(self) -> None:
+        write_managed(
+            self.books / "Pendings.xlsx",
+            [
+                pending_row(
+                    "12345678",
+                    summary="Derived work fields",
+                    **{"BOM": None, "Spare": "Y"},
+                )
+            ],
+        )
+        run_startup(self.store)
+        before = self.store.read_ticket("12345678")
+        self.assertEqual(before["local"]["fields"]["Spare"], "N")
+
+        result = edit_ticket_through_pendings(
+            self.store,
+            "12345678",
+            {"BOM": "  BOM-9000  ", "Planned Date": "2026-08-21"},
+            expected_revision=ticket_revision(before),
+        )
+
+        self.assertEqual(result["changedFields"], ["BOM", "Planned Date", "Spare"])
+        workbook = load_workbook(self.books / "Pendings.xlsx", data_only=False)
+        try:
+            headers = [cell.value for cell in workbook.active[1]]
+            bom = workbook.active.cell(2, headers.index("BOM") + 1)
+            planned = workbook.active.cell(2, headers.index("Planned Date") + 1)
+            spare = workbook.active.cell(2, headers.index("Spare") + 1)
+            self.assertEqual(bom.value, "BOM-9000")
+            self.assertEqual(planned.value.date(), date(2026, 8, 21))
+            self.assertEqual(planned.number_format, "yyyy-mm-dd")
+            self.assertEqual(spare.value, "Y")
+        finally:
+            workbook.close()
+        updated = self.store.read_ticket("12345678")
+        self.assertEqual(updated["local"]["fields"]["Planned Date"], "2026-08-21")
+        self.assertEqual(updated["local"]["fields"]["Spare"], "Y")
+
+    def test_spare_cannot_be_supplied_by_a_browser_edit(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        before = self.store.read_ticket("12345678")
+        workbook_hash = sha256_file(self.books / "Pendings.xlsx")
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "Spare is derived from BOM and cannot be edited directly",
+        ):
+            edit_ticket_through_pendings(
+                self.store,
+                "12345678",
+                {"Spare": "Y"},
+                expected_revision=ticket_revision(before),
+            )
+
+        self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), workbook_hash)
+        self.assertEqual(self.store.read_ticket("12345678")["local"]["fields"]["Spare"], "N")
 
     def test_external_excel_change_blocks_web_edit_without_overwrite(self) -> None:
         self.seed_pendings_only()

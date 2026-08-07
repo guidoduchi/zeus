@@ -15,7 +15,7 @@ from .excel_import import (
     validate_pendings_against_state,
 )
 from .store import StoreError, ZeusStore
-from .tickets import UPSTREAM_COLUMNS, new_ticket, refresh_upstream
+from .tickets import UPSTREAM_COLUMNS, new_ticket, normalize_local, refresh_upstream
 from .utils import atomic_write_json, iso_now, sha256_file
 
 
@@ -83,12 +83,13 @@ def import_pendings(
                 "processed_at": timestamp,
             }
             for ticket_id, record in workbook.records.items():
+                local = normalize_local(record["local"])
                 ticket = new_ticket(
                     ticket_id,
                     record["upstream_fields"],
                     source,
                     sr_url=record.get("sr_url"),
-                    local=record["local"],
+                    local=local,
                     timestamp=timestamp,
                 )
                 store.write_ticket_bundle(staging, ticket)
@@ -96,8 +97,9 @@ def import_pendings(
         else:
             for ticket_id, record in workbook.records.items():
                 ticket = store.read_ticket(ticket_id, staging)
-                if ticket.get("local") != record["local"]:
-                    ticket["local"] = deepcopy(record["local"])
+                local = normalize_local(record["local"])
+                if ticket.get("local") != local:
+                    ticket["local"] = deepcopy(local)
                     ticket["updated_at"] = timestamp
                     store.write_ticket_bundle(staging, ticket)
                     changed_ids.append(ticket_id)

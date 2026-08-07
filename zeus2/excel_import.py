@@ -20,7 +20,7 @@ from .tickets import (
     empty_local,
     normalize_done,
 )
-from .utils import normalize_ticket_id, sha256_file, to_iso
+from .utils import normalize_ticket_id, parse_date, sha256_file, to_iso
 
 
 class WorkbookValidationError(ValueError):
@@ -232,9 +232,13 @@ def _local_from_row(
     local = empty_local()
     fields = local["fields"]
     for column in LOCAL_COLUMNS:
-        fields[column] = _clean_value(
+        value = _clean_value(
             _cell_value(worksheet, row_number, header_columns, column)
         )
+        if column == "Planned Date":
+            parsed = parse_date(value)
+            value = parsed.isoformat() if parsed else value
+        fields[column] = value
     fields["Done?"], corrected = normalize_done(fields.get("Done?"))
     styles: dict[str, dict[str, Any]] = {}
     for header, column_number in header_columns.items():

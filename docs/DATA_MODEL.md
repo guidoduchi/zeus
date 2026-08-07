@@ -5,7 +5,7 @@
 | Record area | Authoritative writer |
 |---|---|
 | `upstream.fields` | Advanced Search reconciliation, or the protected snapshot carried by Pendings when rebuilding from Pendings alone |
-| `local.fields` | validated Pendings import/restore/web-edit transaction |
+| `local.fields` | validated Pendings import/restore/web-edit transaction; `Spare` is derived from `BOM` |
 | `local.presentation.cell_styles` | validated Pendings import/restore |
 | `lifecycle` | Advanced Search reconciliation and verified publication |
 | `email` | optional Outlook staging and synchronization |
@@ -41,6 +41,12 @@ The candidate workbook is written and validated off to the side. Zeus then
 creates a recoverable original copy, replaces Pendings atomically, imports that
 file through the existing reconciliation path, and writes the audit event. If
 the Markdown import fails, the workbook backup is atomically restored.
+
+`Spare` remains a workbook and Markdown column for compatibility, but it is not
+an editable field. Normalization enforces `Y` when trimmed `BOM` content exists
+and `N` otherwise. A browser BOM edit writes both cells in the same workbook
+transaction. Planned dates cross the browser boundary as `YYYY-MM-DD` and are
+stored in Excel as date cells rather than free-form display text.
 
 ## State markers
 

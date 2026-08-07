@@ -36,6 +36,10 @@ LOCAL_COLUMNS = [
     "Done?",
 ]
 
+# ``Spare`` remains part of the Pendings/Markdown schema for compatibility and
+# reporting, but it is a derived value rather than user-entered work data.
+EDITABLE_LOCAL_COLUMNS = [column for column in LOCAL_COLUMNS if column != "Spare"]
+
 PENDING_COLUMNS = [
     "SRNo",
     "Problem Summary",
@@ -84,6 +88,28 @@ def normalize_done(value: Any) -> tuple[str, bool]:
     return "N", True
 
 
+def spare_from_bom(value: Any) -> str:
+    """Return the invariant Spare tag derived from whether BOM has a value."""
+
+    if value is None:
+        return "N"
+    return "Y" if str(value).strip() else "N"
+
+
+def normalize_local(local: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a complete local record with all system-owned invariants applied."""
+
+    prepared = deepcopy(local) if local is not None else {}
+    fields = prepared.setdefault("fields", {})
+    for column in LOCAL_COLUMNS:
+        fields.setdefault(column, None)
+    fields["Done?"] = normalize_done(fields.get("Done?"))[0]
+    fields["Spare"] = spare_from_bom(fields.get("BOM"))
+    prepared.setdefault("presentation", {"cell_styles": {}})
+    prepared.setdefault("mop_fields", {})
+    return prepared
+
+
 def workflow_from_code(value: Any) -> tuple[str, str]:
     code, _ = normalize_done(value)
     return WORKFLOW_CODE_TO_STATE[code], code
@@ -95,11 +121,7 @@ def workflow_code(ticket: dict[str, Any]) -> str:
 
 
 def empty_local() -> dict[str, Any]:
-    return {
-        "fields": {column: ("N" if column == "Done?" else None) for column in LOCAL_COLUMNS},
-        "presentation": {"cell_styles": {}},
-        "mop_fields": {},
-    }
+    return normalize_local(None)
 
 
 def empty_email(ticket_id: str) -> dict[str, Any]:
@@ -131,10 +153,7 @@ def new_ticket(
     current_time = timestamp or iso_now()
     fields = {column: upstream_fields.get(column) for column in UPSTREAM_COLUMNS}
     fields["SRNo"] = normalized
-    prepared_local = deepcopy(local) if local is not None else empty_local()
-    prepared_local.setdefault("fields", {})["Done?"] = normalize_done(
-        prepared_local.get("fields", {}).get("Done?")
-    )[0]
+    prepared_local = normalize_local(local)
     return {
         "schema_version": 2,
         "ticket_id": normalized,
@@ -189,4 +208,7 @@ def ticket_cell_value(ticket: dict[str, Any], column: str) -> Any:
         if column == "SRNo":
             return ticket["ticket_id"]
         return ticket.get("upstream", {}).get("fields", {}).get(column)
-    return ticket.get("local", {}).get("fields", {}).get(column)
+    local = ticket.get("local", {}).get("fields", {})
+    if column == "Spare":
+        return spare_from_bom(local.get("BOM"))
+    return local.get(column)

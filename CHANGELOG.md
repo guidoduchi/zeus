@@ -31,6 +31,12 @@
 - Made an absent optional Advanced Search workbook an informational skip rather
   than a failed-looking source warning; Pendings-only queries still complete and
   update the dashboard normally.
+- Made Spare a read-only invariant derived from BOM (`Y` when present, otherwise
+  `N`) across Pendings import, web edits, Markdown, and publication.
+- Replaced free-form Planned Date entry with a native browser calendar that
+  writes a canonical Excel date cell.
+- Made the Chrome/Edge save regression use browser-specific values so each
+  project exercises a real Pendings transaction.
 
 ## 2.0.3 - 2026-08-06
 

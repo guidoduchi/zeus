@@ -79,7 +79,7 @@ master/detail panel with:
 
 - lifecycle and aging facts;
 - protected Advanced Search fields;
-- editable Pendings-owned work fields;
+- editable Pendings-owned work fields plus derived work-state fields;
 - retained email replies with compact/full-thread viewing;
 - versioned MOP output;
 - ticket audit history.
@@ -105,12 +105,18 @@ for a new query. Neither side silently wins. If Excel has the workbook locked,
 Zeus asks the user to save and close it. Web-edit backups are retained under
 `Zeus Backups\Web edits`.
 
-Pendings-owned fields are:
+Browser-editable Pendings-owned fields are:
 
 ```text
 Planned Date, Site, Cloud, Model, Device, Slot, Part, BOM, Old SN, New SN,
-RelatedSR, Notes, Spare, Done?
+RelatedSR, Notes, Done?
 ```
+
+`Planned Date` uses the browser's calendar control and is written as a real
+Excel date. `Spare` is read-only in Zeus and is always derived from `BOM`:
+non-empty BOM = `Y`; empty BOM = `N`. The same invariant is applied when a
+Pendings workbook rebuilds the Markdown database, so a stale manual `Spare`
+cell cannot become application state.
 
 Protected fields are:
 
