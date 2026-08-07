@@ -115,6 +115,27 @@ def reconcile_advanced_and_new_mail(
     progress: Any = None,
 ) -> StartupResult:
     result = StartupResult()
+    directory = store.configured_directory("advanced_search_directory")
+    if directory is None:
+        result.notices.append(
+            "Advanced Search was skipped because its directory is not configured. "
+            "Pendings was imported normally."
+        )
+        return result
+    if directory.is_dir():
+        pattern = store.config.get("advanced_search", {}).get(
+            "glob", "Advanced Search*.xlsx"
+        )
+        available = any(
+            path.is_file() and not path.name.startswith("~$")
+            for path in directory.glob(str(pattern))
+        )
+        if not available:
+            result.notices.append(
+                "Advanced Search was skipped because no matching workbook is "
+                "currently available. Pendings was imported normally."
+            )
+            return result
     try:
         advanced = sync_newest_advanced_search(store)
         result.operations["advanced_search"] = advanced

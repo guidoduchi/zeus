@@ -71,6 +71,12 @@ class PendingsFirstSourceTests(WebFixture):
         result = run_startup(self.store)
 
         self.assertFalse(result.advanced_search_valid)
+        self.assertFalse(
+            any("ADVANCED SEARCH WARNING" in warning for warning in result.warnings)
+        )
+        self.assertTrue(
+            any("Advanced Search was skipped" in notice for notice in result.notices)
+        )
         self.assertFalse((self.books / "Closed.xlsx").exists())
         ticket = self.store.read_ticket("12345678")
         self.assertEqual(ticket["upstream"]["fields"]["Problem Summary"], "Pendings alone builds Zeus")
@@ -168,6 +174,27 @@ class JobManagerTests(unittest.TestCase):
 
 
 class ApplicationServiceContractTests(WebFixture):
+    def test_web_edit_returns_a_complete_immediately_renderable_ticket(self) -> None:
+        self.seed_pendings_only()
+        run_startup(self.store)
+        service = ApplicationService(self.store)
+        try:
+            before = service.ticket("12345678")
+            result = service.edit_ticket(
+                "12345678",
+                changes={"Notes": "Saved without unmounting React"},
+                expected_revision=before["revision"],
+            )
+
+            detail = result["ticket"]
+            self.assertEqual(detail["localFields"]["Notes"], "Saved without unmounting React")
+            self.assertIsInstance(detail["history"], list)
+            self.assertIsInstance(detail["mops"], list)
+            self.assertIn("email", detail)
+            self.assertIn("upstreamFields", detail)
+        finally:
+            service.stop()
+
     def test_scheduled_refresh_uses_the_full_pendings_first_query(self) -> None:
         service = ApplicationService(self.store)
         try:
@@ -179,6 +206,31 @@ class ApplicationServiceContractTests(WebFixture):
                 result = service._submit_scheduled_query()
             submit.assert_called_once_with("query", {"scheduled": True})
             self.assertEqual(result["kind"], "query")
+        finally:
+            service.stop()
+
+    def test_pendings_only_query_succeeds_when_advanced_search_is_absent(self) -> None:
+        self.seed_pendings_only()
+        service = ApplicationService(self.store)
+        try:
+            job = service.submit_job("query", {})
+            deadline = time.monotonic() + 3
+            snapshot = service.jobs.get(job["id"])
+            while snapshot and snapshot["status"] in {"queued", "running"}:
+                if time.monotonic() >= deadline:
+                    self.fail("Pendings-only query did not finish")
+                time.sleep(0.01)
+                snapshot = service.jobs.get(job["id"])
+
+            self.assertIsNotNone(snapshot)
+            self.assertEqual(snapshot["status"], "succeeded")
+            self.assertTrue(
+                any(
+                    "Advanced Search was skipped" in notice
+                    for notice in snapshot["result"]["notices"]
+                )
+            )
+            self.assertEqual(service.dashboard(sort="report", search="")["stats"]["active"], 1)
         finally:
             service.stop()
 
@@ -256,6 +308,33 @@ class WebServerTests(WebFixture):
         self.assertEqual(dashboard["stats"]["active"], 1)  # type: ignore[index]
         self.assertEqual(index["instanceId"], "test-instance")
         self.assertEqual(audit_before, audit_after)
+
+    def test_ticket_patch_returns_the_complete_detail_contract(self) -> None:
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        _, detail, _ = self.read_json("/api/tickets/12345678")
+        body = json.dumps(
+            {
+                "revision": detail["revision"],
+                "changes": {"Notes": "Complete API response"},
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.url + "/api/tickets/12345678/local",
+            data=body,
+            method="PATCH",
+            headers={
+                "Content-Type": "application/json",
+                "If-Match": str(detail["revision"]),
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            payload = json.loads(response.read())
+
+        edited = payload["ticket"]
+        self.assertEqual(edited["localFields"]["Notes"], "Complete API response")
+        self.assertIsInstance(edited["history"], list)
+        self.assertIsInstance(edited["mops"], list)
 
     def test_bundled_react_entrypoint_and_hashed_assets_are_served_locally(self) -> None:
         with urllib.request.urlopen(self.url + "/", timeout=3) as response:

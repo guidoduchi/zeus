@@ -199,12 +199,13 @@ class ApplicationService:
         changes: dict[str, Any],
         expected_revision: str,
     ) -> dict[str, Any]:
+        normalized_ticket_id = normalize_ticket_id(ticket_id)
         if not self._operation_lock.acquire(blocking=False):
             raise BusyError("Another Zeus operation is changing data. Try again when it finishes.")
         try:
             result = edit_ticket_through_pendings(
                 self.store,
-                normalize_ticket_id(ticket_id),
+                normalized_ticket_id,
                 changes,
                 expected_revision=expected_revision,
             )
@@ -215,7 +216,11 @@ class ApplicationService:
         return {
             "changed": bool(result.get("changed")),
             "changedFields": result.get("changedFields", []),
-            "ticket": serialize_ticket_detail(result["ticket"], self.store.config),
+            # The browser replaces its open detail with this response before
+            # the dataset event is processed.  Return the same complete shape
+            # as GET /api/tickets/<id>, including history and MOPs, so a
+            # successful edit can never leave React with a partial object.
+            "ticket": self.ticket(normalized_ticket_id),
         }
 
     def get_settings(self) -> dict[str, Any]:

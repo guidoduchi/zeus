@@ -25,6 +25,12 @@
   Markdown transactions, publishing/recovery, and privacy boundaries.
 - Added React unit tests, real Chrome/Edge interaction coverage, local HTTP
   security regressions, wheel/static bundle checks, and packaged-asset tests.
+- Corrected the first-test save path so its response remains a complete ticket
+  detail instead of unmounting React, and added an in-page recovery boundary for
+  any future display failure.
+- Made an absent optional Advanced Search workbook an informational skip rather
+  than a failed-looking source warning; Pendings-only queries still complete and
+  update the dashboard normally.
 
 ## 2.0.3 - 2026-08-06
 

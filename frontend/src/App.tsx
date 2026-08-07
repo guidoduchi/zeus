@@ -158,11 +158,9 @@ export default function App() {
   }, [reportError]);
 
   async function saveLocalFields(ticketId: string, revision: string, changes: Record<string, unknown>) {
+    let result: Awaited<ReturnType<typeof saveTicket>>;
     try {
-      const result = await saveTicket(ticketId, revision, changes);
-      setTicket(result.ticket);
-      await loadDashboard();
-      setToast({ tone: "success", message: `SR ${ticketId} saved through Pendings.xlsx` });
+      result = await saveTicket(ticketId, revision, changes);
     } catch (error) {
       if (error instanceof ApiError && error.code.includes("conflict")) {
         setToast({ tone: "error", message: `${error.message} No value was overwritten.` });
@@ -171,6 +169,21 @@ export default function App() {
         reportError(error);
       }
       throw error;
+    }
+
+    setTicket(result.ticket);
+    setToast({
+      tone: "success",
+      message: `SR ${ticketId} saved through Pendings.xlsx; the dashboard was updated from that workbook edit.`,
+    });
+    try {
+      await loadDashboard();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setToast({
+        tone: "error",
+        message: `SR ${ticketId} was saved successfully, but the dashboard reread failed: ${message}. Reloading the page is safe.`,
+      });
     }
   }
 

@@ -15,6 +15,8 @@ Included:
 - locally persisted dark/light theme and sorting;
 - visible serialized startup, scheduled, and manual source-query work;
 - page refreshes that never trigger a source query;
+- Pendings-only queries that succeed with an informational skip when no
+  Advanced Search workbook is available;
 - optional Outlook behavior that is disabled clearly and nonfatally when no
   valid store exists;
 - the full Advanced Search, closure, Outlook, publishing, recovery, MOP, aging,

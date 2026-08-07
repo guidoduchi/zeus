@@ -42,3 +42,18 @@ test("field choices persist and a manual source query is visible", async ({ page
   await page.getByRole("button", { name: "Operations" }).click();
   await expect(page.getByLabel("Active operation").getByText("Querying data sources", { exact: true })).toBeVisible();
 });
+
+test("saving through Pendings keeps the workstation mounted", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: /Query data/ })).toBeEnabled();
+
+  await page.locator("[data-ticket-id]").first().click();
+  await page.getByRole("button", { name: "Work fields" }).click();
+  await page.getByLabel("Notes").fill("Saved from the real browser regression");
+  await page.getByRole("button", { name: /Save through Pendings/ }).click();
+
+  await expect(page.getByText(/saved through Pendings\.xlsx/i)).toBeVisible();
+  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(page.getByRole("button", { name: "History" })).toBeVisible();
+  await expect(page.getByLabel("Notes")).toHaveValue("Saved from the real browser regression");
+});
