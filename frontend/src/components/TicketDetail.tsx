@@ -1,10 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   clearTicketDraft,
   readTicketDraft,
   writeTicketDraft,
 } from "../drafts";
 import { isEditingArea } from "../hooks/useGlobalCommands";
+import {
+  analyzeTicketDraft,
+  changedWorkFields,
+  cleanSpareParts,
+  emptyPart,
+  spareDraft,
+  workFieldValues,
+  WORK_FIELDS,
+  type DraftDevice,
+  type WorkDraft,
+} from "../ticketDraftModel";
 import type { EmailMessage, SpareDevice, SparePart, TicketDetail as TicketDetailType } from "../types";
 
 type Tab = "overview" | "work" | "spares" | "emails" | "mops" | "history";
@@ -25,25 +36,7 @@ interface Props {
   onExportSpareRequest?: (ticketId: string) => void;
 }
 
-const WORK_FIELDS = [
-  "Planned Date",
-  "Site",
-  "Cloud",
-  "RelatedSR",
-  "Done?",
-  "Notes",
-];
-
 const TAB_ORDER: Tab[] = ["overview", "work", "spares", "emails", "mops", "history"];
-
-function draftValue(field: string, value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (field === "Planned Date") {
-    const match = String(value).trim().match(/^(\d{4}-\d{2}-\d{2})/);
-    return match?.[1] || "";
-  }
-  return String(value);
-}
 
 function display(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -63,37 +56,17 @@ function FieldList({ fields }: { fields: Record<string, unknown> }) {
   );
 }
 
-function sameValue(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function workFieldValues(ticket: TicketDetailType): Record<string, string> {
-  return Object.fromEntries(
-    WORK_FIELDS.map((field) => [field, draftValue(field, ticket.localFields[field])]),
-  );
-}
-
-function changedWorkFields(
-  ticket: TicketDetailType,
-  draft: Record<string, string>,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    WORK_FIELDS
-      .filter((field) => draftValue(field, ticket.localFields[field]) !== String(draft[field] ?? ""))
-      .map((field) => [field, draft[field] === "" ? null : draft[field]]),
-  );
-}
-
 function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket: TicketDetailType }) {
-  const [draft, setDraft] = useState<Record<string, string>>(() => workFieldValues(ticket));
+  const [draft, setDraft] = useState<WorkDraft>(() => workFieldValues(ticket));
   const [draftRevision, setDraftRevision] = useState(ticket.revision);
   const [baseValue, setBaseValue] = useState<Record<string, string>>(() => workFieldValues(ticket));
   const [stale, setStale] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    if (saving) return;
     const current = workFieldValues(ticket);
-    const stored = readTicketDraft<Record<string, string>>(ticket.ticketId, "work");
+    const stored = readTicketDraft<WorkDraft>(ticket.ticketId, "work");
     if (!stored || !stored.value || typeof stored.value !== "object") {
       setDraft(current);
       setDraftRevision(ticket.revision);
@@ -101,22 +74,28 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
       setStale(false);
       return;
     }
-    const restored = { ...current, ...stored.value };
-    const serverWorkChanged = stored.revision !== ticket.revision && !sameValue(stored.baseValue, current);
-    const nextRevision = serverWorkChanged ? stored.revision : ticket.revision;
-    const nextBase = serverWorkChanged ? stored.baseValue : current;
-    setDraft(restored);
-    setDraftRevision(nextRevision);
-    setBaseValue(nextBase);
-    setStale(serverWorkChanged);
-    if (!serverWorkChanged && stored.revision !== ticket.revision) {
-      writeTicketDraft(ticket.ticketId, "work", {
-        revision: ticket.revision,
-        baseValue: current,
-        value: restored,
-      });
+    const analysis = analyzeTicketDraft(ticket, "work", stored);
+    if (!analysis) {
+      clearTicketDraft(ticket.ticketId, "work");
+      setDraft(current);
+      setDraftRevision(ticket.revision);
+      setBaseValue(current);
+      setStale(false);
+      return;
     }
-  }, [ticket.ticketId, ticket.revision]);
+    const rebased = analysis.rebased as typeof stored;
+    setDraft(rebased.value);
+    if (analysis.conflictFields.length) {
+      setDraftRevision(stored.revision);
+      setBaseValue(stored.baseValue);
+      setStale(true);
+    } else {
+      setDraftRevision(ticket.revision);
+      setBaseValue(current);
+      setStale(false);
+      if (stored.revision !== ticket.revision) writeTicketDraft(ticket.ticketId, "work", rebased);
+    }
+  }, [saving, ticket.ticketId, ticket.revision]);
 
   const changes = useMemo(() => changedWorkFields(ticket, draft), [draft, ticket]);
   const changedCount = Object.keys(changes).length;
@@ -146,16 +125,21 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
     setStale(false);
   }
 
-  function keepDraftOverCurrent() {
-    const current = workFieldValues(ticket);
+  function restoreDraft() {
+    const stored = readTicketDraft<WorkDraft>(ticket.ticketId, "work");
+    if (!stored) return;
+    const analysis = analyzeTicketDraft(ticket, "work", stored);
+    if (!analysis) {
+      discardDraft();
+      return;
+    }
+    if (!window.confirm(`Restore the protected changes for SR ${ticket.ticketId} over the latest Zeus values? This restores the draft for review; it does not save to the database.`)) return;
+    const rebased = analysis.rebased as typeof stored;
+    setDraft(rebased.value);
     setDraftRevision(ticket.revision);
-    setBaseValue(current);
+    setBaseValue(workFieldValues(ticket));
     setStale(false);
-    writeTicketDraft(ticket.ticketId, "work", {
-      revision: ticket.revision,
-      baseValue: current,
-      value: draft,
-    });
+    writeTicketDraft(ticket.ticketId, "work", rebased);
   }
 
   async function save() {
@@ -179,7 +163,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
             <strong>{ticket.readOnly ? "Finalized SR archive." : "Zeus is authoritative."}</strong>
             <span>{ticket.readOnly ? "These values are preserved from Closed.xlsx and cannot be changed from the site." : "Save writes these validated work fields directly to the local database. Workbooks change only when you export them."}</span>
           </div>
-          {stale && <div className="inline-warning">The database work fields changed after this draft began. Your draft is still safe. Choose whether to keep it over the current values or discard it.</div>}
+          {stale && <div className="inline-warning">The same database work fields changed after this draft began. Restore the protected changes over the latest values for review, or discard this draft. Restoring does not save.</div>}
           <div className="work-form">
             {WORK_FIELDS.map((field) => {
               const label = field === "Done?" ? "MW" : field;
@@ -227,7 +211,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
         {!ticket.readOnly && (
           <div className="inline-actions">
             {changedCount > 0 && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}
-            {stale && <button type="button" className="secondary-button" disabled={saving} onClick={keepDraftOverCurrent}>Keep my draft</button>}
+            {stale && <button type="button" className="secondary-button" disabled={saving} onClick={restoreDraft}>Restore changes</button>}
             <button type="button" className="primary-button" disabled={!changedCount || saving || stale} onClick={save}>
               {saving ? "Saving…" : "Save to Zeus"}
             </button>
@@ -238,52 +222,6 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
   );
 }
 
-type DraftPart = Record<keyof SparePart, string>;
-interface DraftDevice {
-  device: string;
-  model: string;
-  parts: DraftPart[];
-}
-
-function emptyPart(): DraftPart {
-  return { slot: "", part: "", bom: "", faulty_sn: "", new_sn: "" };
-}
-
-function spareDraft(value: SpareDevice[]): DraftDevice[] {
-  return value.map((device) => ({
-    device: device.device || "",
-    model: device.model || "",
-    parts: device.parts.map((part) => ({
-      slot: part.slot || "",
-      part: part.part || "",
-      bom: part.bom || "",
-      faulty_sn: part.faulty_sn || "",
-      new_sn: part.new_sn || "",
-    })),
-  }));
-}
-
-function cleanSpareParts(value: DraftDevice[] | SpareDevice[]): SpareDevice[] {
-  return value.flatMap((device) => {
-    const parts = device.parts.flatMap((part) => {
-      const cleaned: SparePart = {
-        slot: String(part.slot || "").trim() || null,
-        part: String(part.part || "").trim() || null,
-        bom: String(part.bom || "").trim() || null,
-        faulty_sn: String(part.faulty_sn || "").trim() || null,
-        new_sn: String(part.new_sn || "").trim() || null,
-      };
-      return Object.values(cleaned).some(Boolean) ? [cleaned] : [];
-    });
-    const cleaned: SpareDevice = {
-      device: String(device.device || "").trim() || null,
-      model: String(device.model || "").trim() || null,
-      parts,
-    };
-    return cleaned.device || cleaned.model || cleaned.parts.length ? [cleaned] : [];
-  });
-}
-
 function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ticket" | "onSave" | "onExportSpareRequest"> & { ticket: TicketDetailType }) {
   const [devices, setDevices] = useState<DraftDevice[]>(() => spareDraft(ticket.spareParts));
   const [draftRevision, setDraftRevision] = useState(ticket.revision);
@@ -291,6 +229,7 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
   const [stale, setStale] = useState(false);
   const [saving, setSaving] = useState(false);
   useEffect(() => {
+    if (saving) return;
     const current = cleanSpareParts(ticket.spareParts);
     const stored = readTicketDraft<DraftDevice[], SpareDevice[]>(ticket.ticketId, "spares");
     if (!stored || !Array.isArray(stored.value) || !Array.isArray(stored.baseValue)) {
@@ -300,21 +239,28 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
       setStale(false);
       return;
     }
-    const serverSparesChanged = stored.revision !== ticket.revision && !sameValue(stored.baseValue, current);
-    const nextRevision = serverSparesChanged ? stored.revision : ticket.revision;
-    const nextBase = serverSparesChanged ? stored.baseValue : current;
-    setDevices(stored.value);
-    setDraftRevision(nextRevision);
-    setBaseValue(nextBase);
-    setStale(serverSparesChanged);
-    if (!serverSparesChanged && stored.revision !== ticket.revision) {
-      writeTicketDraft(ticket.ticketId, "spares", {
-        revision: ticket.revision,
-        baseValue: current,
-        value: stored.value,
-      });
+    const analysis = analyzeTicketDraft(ticket, "spares", stored);
+    if (!analysis) {
+      clearTicketDraft(ticket.ticketId, "spares");
+      setDevices(spareDraft(ticket.spareParts));
+      setDraftRevision(ticket.revision);
+      setBaseValue(current);
+      setStale(false);
+      return;
     }
-  }, [ticket.ticketId, ticket.revision]);
+    const rebased = analysis.rebased as typeof stored;
+    setDevices(rebased.value);
+    if (analysis.conflictFields.length) {
+      setDraftRevision(stored.revision);
+      setBaseValue(stored.baseValue);
+      setStale(true);
+    } else {
+      setDraftRevision(ticket.revision);
+      setBaseValue(current);
+      setStale(false);
+      if (stored.revision !== ticket.revision) writeTicketDraft(ticket.ticketId, "spares", rebased);
+    }
+  }, [saving, ticket.ticketId, ticket.revision]);
 
   const cleaned = useMemo(() => cleanSpareParts(devices), [devices]);
   const changed = JSON.stringify(cleaned) !== JSON.stringify(cleanSpareParts(ticket.spareParts));
@@ -323,7 +269,7 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
   function updateDevices(update: (current: DraftDevice[]) => DraftDevice[]) {
     setDevices((current) => {
       const next = update(current);
-      if (!sameValue(cleanSpareParts(next), cleanSpareParts(ticket.spareParts))) {
+      if (JSON.stringify(cleanSpareParts(next)) !== JSON.stringify(cleanSpareParts(ticket.spareParts))) {
         writeTicketDraft(ticket.ticketId, "spares", {
           revision: draftRevision,
           baseValue,
@@ -358,16 +304,21 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
     setStale(false);
   }
 
-  function keepDraftOverCurrent() {
-    const current = cleanSpareParts(ticket.spareParts);
+  function restoreDraft() {
+    const stored = readTicketDraft<DraftDevice[], SpareDevice[]>(ticket.ticketId, "spares");
+    if (!stored) return;
+    const analysis = analyzeTicketDraft(ticket, "spares", stored);
+    if (!analysis) {
+      discardDraft();
+      return;
+    }
+    if (!window.confirm(`Restore the protected Spare Parts changes for SR ${ticket.ticketId} over the latest Zeus record? This restores the draft for review; it does not save to the database.`)) return;
+    const rebased = analysis.rebased as typeof stored;
+    setDevices(rebased.value);
     setDraftRevision(ticket.revision);
-    setBaseValue(current);
+    setBaseValue(cleanSpareParts(ticket.spareParts));
     setStale(false);
-    writeTicketDraft(ticket.ticketId, "spares", {
-      revision: ticket.revision,
-      baseValue: current,
-      value: devices,
-    });
+    writeTicketDraft(ticket.ticketId, "spares", rebased);
   }
 
   async function save() {
@@ -391,7 +342,7 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
             <strong>{ticket.readOnly ? `SR ${ticket.ticketId} is finalized.` : "Zeus stores the authoritative Spare Parts record."}</strong>
             <span>{ticket.readOnly ? "Its devices and parts remain assigned to this SR through the validated Closed.xlsx archive." : "Each damaged device can contain multiple parts. Compatibility columns and the export-only Spare tag are generated automatically on export."}</span>
           </div>
-          {stale && <div className="inline-warning">The database Spare Parts record changed after this draft began. Your draft is still safe. Choose whether to keep it over the current values or discard it.</div>}
+          {stale && <div className="inline-warning">The database Spare Parts record changed after this draft began. Restore the protected record over the latest value for review, or discard it. Restoring does not save.</div>}
           {!devices.length && (
             <div className="empty-spares">
               <strong>This ticket has no spare-parts record.</strong>
@@ -448,7 +399,7 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
       </div>
       <div className="inline-actions edit-actions">
         <span>{ticket.readOnly ? `${cleaned.length} device(s), ${partCount} part(s) · closed SR archive` : changed ? `${cleaned.length} device(s), ${partCount} part(s) · unsaved draft protected` : `${cleaned.length} device(s), ${partCount} part(s)`}</span>
-        {!ticket.readOnly && <div className="inline-actions">{changed && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}{stale && <button type="button" className="secondary-button" disabled={saving} onClick={keepDraftOverCurrent}>Keep my draft</button>}{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!partCount || changed} title={changed ? "Save Spare Parts before exporting" : "Create an independent request from this TT"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Spare Request</button>}<button type="button" className="primary-button" disabled={!changed || saving || stale} onClick={save}>{saving ? "Saving…" : "Save to Zeus"}</button></div>}
+        {!ticket.readOnly && <div className="inline-actions">{changed && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}{stale && <button type="button" className="secondary-button" disabled={saving} onClick={restoreDraft}>Restore changes</button>}{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!partCount || changed} title={changed ? "Save Spare Parts before exporting" : "Create an independent request from this TT"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Spare Request</button>}<button type="button" className="primary-button" disabled={!changed || saving || stale} onClick={save}>{saving ? "Saving…" : "Save to Zeus"}</button></div>}
       </div>
     </div>
   );
@@ -532,6 +483,7 @@ function MopsTab({ ticket, templates, onGenerateMop }: { ticket: TicketDetailTyp
 
 export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onGenerateMop, onExportSpareRequest }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
+  const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
   useEffect(() => setTab(initialTab), [initialTab]);
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -547,9 +499,14 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
       ) return;
       const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
       if (!delta) return;
+      let nextTab: Tab | null = null;
       setTab((current) => {
         const index = TAB_ORDER.indexOf(current);
-        return TAB_ORDER[Math.max(0, Math.min(TAB_ORDER.length - 1, index + delta))];
+        nextTab = TAB_ORDER[Math.max(0, Math.min(TAB_ORDER.length - 1, index + delta))];
+        return nextTab;
+      });
+      window.requestAnimationFrame(() => {
+        if (nextTab) tabRefs.current.get(nextTab)?.focus({ preventScroll: true });
       });
       event.preventDefault();
     }
@@ -577,7 +534,7 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
       </header>
       <nav className="detail-tabs" aria-label="Ticket sections">
         {tabs.map(([key, label, count]) => (
-          <button type="button" className={tab === key ? "active" : ""} onClick={() => setTab(key)} key={key}>
+          <button type="button" className={tab === key ? "active" : ""} onClick={() => setTab(key)} key={key} ref={(element) => { if (element) tabRefs.current.set(key, element); else tabRefs.current.delete(key); }}>
             {label}{count !== null && <small>{count}</small>}
           </button>
         ))}

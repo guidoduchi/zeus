@@ -5,9 +5,16 @@ export interface StoredDraft<Value, BaseValue = Value> {
   revision: string;
   baseValue: BaseValue;
   value: Value;
+  updatedAt?: string;
 }
 
 export type TicketDraftKind = "work" | "spares";
+
+export interface TicketDraftRecord {
+  ticketId: string;
+  kind: TicketDraftKind;
+  draft: StoredDraft<unknown, unknown>;
+}
 
 function storageKey(ticketId: string, kind: TicketDraftKind): string {
   return `${DRAFT_STORAGE_PREFIX}${ticketId}.${kind}`;
@@ -40,11 +47,39 @@ export function writeTicketDraft<Value, BaseValue = Value>(
   draft: StoredDraft<Value, BaseValue>,
 ) {
   try {
-    localStorage.setItem(storageKey(ticketId, kind), JSON.stringify(draft));
+    localStorage.setItem(storageKey(ticketId, kind), JSON.stringify({
+      ...draft,
+      updatedAt: new Date().toISOString(),
+    }));
     announceChange();
   } catch {
     // Browser storage is a safety net; the live React draft remains usable.
   }
+}
+
+export function listTicketDrafts(): TicketDraftRecord[] {
+  const records: TicketDraftRecord[] = [];
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(DRAFT_STORAGE_PREFIX)) continue;
+      const match = key.slice(DRAFT_STORAGE_PREFIX.length).match(/^(\d{8})\.(work|spares)$/);
+      if (!match) continue;
+      const kind = match[2] as TicketDraftKind;
+      const draft = readTicketDraft(match[1], kind);
+      if (draft) records.push({ ticketId: match[1], kind, draft });
+    }
+  } catch {
+    return [];
+  }
+  return records.sort((left, right) => (
+    left.ticketId.localeCompare(right.ticketId)
+    || left.kind.localeCompare(right.kind)
+  ));
+}
+
+export function ticketIdsWithDrafts(): Set<string> {
+  return new Set(listTicketDrafts().map((record) => record.ticketId));
 }
 
 export function clearTicketDraft(ticketId: string, kind: TicketDraftKind) {
@@ -57,14 +92,8 @@ export function clearTicketDraft(ticketId: string, kind: TicketDraftKind) {
 }
 
 export function countUnsavedDrafts(ticketId?: string): number {
-  try {
-    const prefix = ticketId ? `${DRAFT_STORAGE_PREFIX}${ticketId}.` : DRAFT_STORAGE_PREFIX;
-    let count = 0;
-    for (let index = 0; index < localStorage.length; index += 1) {
-      if (localStorage.key(index)?.startsWith(prefix)) count += 1;
-    }
-    return count;
-  } catch {
-    return 0;
-  }
+  const records = listTicketDrafts();
+  return ticketId
+    ? records.filter((record) => record.ticketId === ticketId).length
+    : records.length;
 }

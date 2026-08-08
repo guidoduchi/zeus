@@ -17,6 +17,7 @@ interface Props<Row extends WorkspaceGridRow> {
   emptyTitle: string;
   emptyHint: string;
   countLabel: string;
+  draftTicketIds?: ReadonlySet<string>;
   onSelect: (row: Row) => void;
   onCloseDetail: () => void;
 }
@@ -49,6 +50,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
   emptyTitle,
   emptyHint,
   countLabel,
+  draftTicketIds,
   onSelect,
   onCloseDetail,
 }: Props<Row>) {
@@ -66,7 +68,11 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
   function moveSelection(index: number) {
     if (!rows.length) return;
     const bounded = Math.max(0, Math.min(rows.length - 1, index));
-    onSelect(rows[bounded]);
+    const row = rows[bounded];
+    onSelect(row);
+    window.requestAnimationFrame(() => {
+      rowRefs.current.get(row.rowId)?.focus({ preventScroll: true });
+    });
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
@@ -103,6 +109,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
           </div>
         ) : rows.map((row) => {
           const selected = row.rowId === selectedRowId;
+          const hasDraft = Boolean(draftTicketIds?.has(row.ticketId));
           return (
             <button
               type="button"
@@ -110,7 +117,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
               data-ticket-id={row.ticketId}
               data-row-id={row.rowId}
               aria-selected={selected}
-              className={`ticket-row ${selected ? "selected" : ""} ${row.readOnly ? "archived" : ""}`}
+              className={`ticket-row ${selected ? "selected" : ""} ${row.readOnly ? "archived" : ""} ${hasDraft ? "draft-protected" : ""}`}
               data-read-only={row.readOnly ? "true" : "false"}
               style={{ gridTemplateColumns: gridTemplate }}
               key={row.rowId}
@@ -127,7 +134,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
                   title={displayValue(row, column.key)}
                   key={column.key}
                 >
-                  {column.key === "risk" ? <i className={`risk-mark risk-${row.risk}`} aria-label={`${row.risk} risk`} /> : displayValue(row, column.key)}
+                  {column.key === "risk" ? <i className={`risk-mark risk-${row.risk}`} aria-label={`${row.risk} risk`} /> : <>{displayValue(row, column.key)}{column.key === "ticketId" && hasDraft && <i className="draft-mark" aria-label="Protected draft" title="This SR has protected unsaved changes">✎</i>}</>}
                 </span>
               ))}
             </button>

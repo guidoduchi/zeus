@@ -6,20 +6,21 @@ interface Props extends PropsWithChildren {
   onClose: () => void;
   wide?: boolean;
   actions?: ReactNode;
+  dismissible?: boolean;
 }
 
-export function Modal({ title, subtitle, onClose, wide, actions, children }: Props) {
+export function Modal({ title, subtitle, onClose, wide, actions, dismissible = true, children }: Props) {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && dismissible) onClose();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [dismissible, onClose]);
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose();
+      if (event.target === event.currentTarget && dismissible) onClose();
     }}>
       <section className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}>
         <header className="modal-header">
@@ -27,7 +28,7 @@ export function Modal({ title, subtitle, onClose, wide, actions, children }: Pro
             <h2>{title}</h2>
             {subtitle && <p>{subtitle}</p>}
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label={`Close ${title}`}>×</button>
+          <button type="button" className="icon-button" disabled={!dismissible} title={dismissible ? undefined : "Save or cancel the unsaved changes first"} onClick={onClose} aria-label={`Close ${title}`}>×</button>
         </header>
         <div className="modal-body">{children}</div>
         {actions && <footer className="modal-actions">{actions}</footer>}

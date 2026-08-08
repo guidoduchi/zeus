@@ -11,7 +11,7 @@ from ..tickets import (
     normalize_local,
     normalize_spare_parts,
 )
-from ..utils import parse_date
+from ..utils import normalize_ticket_id, parse_date
 from .errors import ConflictError, ValidationError
 from .serialization import ticket_revision
 
@@ -123,32 +123,10 @@ def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
     return normalize_spare_parts(value)
 
 
-def edit_ticket_in_database(
-    store: ZeusStore,
-    ticket_id: str,
+def _prepare_local_edit(
+    ticket: dict[str, Any],
     changes: dict[str, Any],
-    *,
-    expected_revision: str,
-) -> dict[str, Any]:
-    """Persist validated work fields directly to the local Markdown database.
-
-    Operational workbooks are generated output in Zeus 3.1.3. They are never
-    read or rewritten as part of a browser save.
-    """
-
-    if not expected_revision:
-        raise ValidationError("A ticket revision is required for safe editing")
-    ticket = store.read_ticket(ticket_id)
-    actual_revision = ticket_revision(ticket)
-    if actual_revision != expected_revision:
-        raise TicketRevisionConflictError(
-            "This ticket changed after it was opened. Reload it before saving.",
-            details={
-                "expectedRevision": expected_revision,
-                "actualRevision": actual_revision,
-            },
-        )
-
+) -> tuple[dict[str, Any], list[str]]:
     prepared = _normalize_local_changes(changes)
     existing_local = normalize_local(ticket.get("local"))
     proposed_local = deepcopy(existing_local)
@@ -176,6 +154,36 @@ def edit_ticket_in_database(
         != proposed_local["fields"].get("Spare")
     ):
         changed_fields.append("Spare")
+    return proposed_local, changed_fields
+
+
+def edit_ticket_in_database(
+    store: ZeusStore,
+    ticket_id: str,
+    changes: dict[str, Any],
+    *,
+    expected_revision: str,
+) -> dict[str, Any]:
+    """Persist validated work fields directly to the local Markdown database.
+
+    Operational workbooks are generated output in Zeus 3.1.3. They are never
+    read or rewritten as part of a browser save.
+    """
+
+    if not expected_revision:
+        raise ValidationError("A ticket revision is required for safe editing")
+    ticket = store.read_ticket(ticket_id)
+    actual_revision = ticket_revision(ticket)
+    if actual_revision != expected_revision:
+        raise TicketRevisionConflictError(
+            "This ticket changed after it was opened. Reload it before saving.",
+            details={
+                "expectedRevision": expected_revision,
+                "actualRevision": actual_revision,
+            },
+        )
+
+    proposed_local, changed_fields = _prepare_local_edit(ticket, changes)
     if not changed_fields:
         return {
             "changed": False,
@@ -210,6 +218,98 @@ def edit_ticket_in_database(
         "ticket": updated,
         "revision": ticket_revision(updated),
         "changedFields": changed_fields,
+        "backup": summary.get("backup"),
+    }
+
+
+def edit_tickets_in_database(
+    store: ZeusStore,
+    edits: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply a reviewed set of ticket drafts in one all-or-nothing transaction."""
+
+    if not isinstance(edits, list) or not edits:
+        raise ValidationError("Choose at least one protected SR draft to save")
+    if len(edits) > 500:
+        raise ValidationError("No more than 500 SR drafts can be saved at once")
+
+    prepared: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(edits, start=1):
+        if not isinstance(raw, dict):
+            raise ValidationError(f"Draft update {index} must be an object")
+        try:
+            ticket_id = normalize_ticket_id(raw.get("ticketId"))
+        except ValueError as exc:
+            raise ValidationError(f"Draft update {index} has an invalid SR") from exc
+        if ticket_id in seen:
+            raise ValidationError(f"SR {ticket_id} appears more than once in the draft batch")
+        seen.add(ticket_id)
+        expected_revision = str(raw.get("revision") or "").strip('"')
+        if not expected_revision:
+            raise ValidationError(f"SR {ticket_id} requires a revision for safe editing")
+        changes = raw.get("changes")
+        if not isinstance(changes, dict):
+            raise ValidationError(f"SR {ticket_id} changes must be an object")
+        ticket = store.read_ticket(ticket_id)
+        actual_revision = ticket_revision(ticket)
+        if actual_revision != expected_revision:
+            raise TicketRevisionConflictError(
+                f"SR {ticket_id} changed after the batch was reviewed. Restore its draft before saving.",
+                details={
+                    "ticketId": ticket_id,
+                    "expectedRevision": expected_revision,
+                    "actualRevision": actual_revision,
+                },
+            )
+        proposed_local, changed_fields = _prepare_local_edit(ticket, changes)
+        prepared.append(
+            {
+                "ticket_id": ticket_id,
+                "expected_revision": expected_revision,
+                "proposed_local": proposed_local,
+                "changed_fields": changed_fields,
+            }
+        )
+
+    changed = [entry for entry in prepared if entry["changed_fields"]]
+    summary: dict[str, Any] = {
+        "ticket_ids": [entry["ticket_id"] for entry in changed],
+        "tickets": len(changed),
+        "changed_fields": {
+            entry["ticket_id"]: entry["changed_fields"] for entry in changed
+        },
+        "authority": "markdown_database",
+    }
+    if changed:
+        with store.transaction("web-local-batch-edit", summary) as staging:
+            for entry in changed:
+                current = store.read_ticket(entry["ticket_id"], staging)
+                current_revision = ticket_revision(current)
+                if current_revision != entry["expected_revision"]:
+                    raise TicketRevisionConflictError(
+                        f"SR {entry['ticket_id']} changed while the batch save was starting.",
+                        details={
+                            "ticketId": entry["ticket_id"],
+                            "expectedRevision": entry["expected_revision"],
+                            "actualRevision": current_revision,
+                        },
+                    )
+                current["local"] = entry["proposed_local"]
+                store.write_ticket_bundle(staging, current)
+
+    return {
+        "changed": bool(changed),
+        "ticketIds": [entry["ticket_id"] for entry in changed],
+        "results": [
+            {
+                "ticketId": entry["ticket_id"],
+                "changed": bool(entry["changed_fields"]),
+                "changedFields": entry["changed_fields"],
+                "revision": ticket_revision(store.read_ticket(entry["ticket_id"])),
+            }
+            for entry in prepared
+        ],
         "backup": summary.get("backup"),
     }
 

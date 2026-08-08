@@ -15,6 +15,7 @@ import {
 } from "./api";
 import { BomCatalogModal } from "./components/BomCatalogModal";
 import { ColumnChooser } from "./components/ColumnChooser";
+import { DraftsModal } from "./components/DraftsModal";
 import { FilterBar } from "./components/FilterBar";
 import { GlobalDataModal } from "./components/GlobalDataModal";
 import { JobBanner } from "./components/JobBanner";
@@ -33,6 +34,8 @@ import { TopBar } from "./components/TopBar";
 import {
   countUnsavedDrafts,
   DRAFTS_CHANGED_EVENT,
+  ticketIdsWithDrafts,
+  type TicketDraftKind,
 } from "./drafts";
 import { useColumnPreferences } from "./hooks/useColumnPreferences";
 import { isEditingArea, useGlobalCommands } from "./hooks/useGlobalCommands";
@@ -241,12 +244,15 @@ export default function App() {
   const [spareExportOpen, setSpareExportOpen] = useState(false);
   const [globalDataOpen, setGlobalDataOpen] = useState(false);
   const [bomCatalogOpen, setBomCatalogOpen] = useState(false);
+  const [draftsOpen, setDraftsOpen] = useState(false);
   const [spareExportTicketId, setSpareExportTicketId] = useState<string | undefined>();
   const [spareExportPart, setSpareExportPart] = useState<SparePartSummary | null>(null);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [templates, setTemplates] = useState<Array<{ name: string; path: string }>>([]);
   const [toast, setToast] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(null);
   const [draftCount, setDraftCount] = useState(countUnsavedDrafts);
+  const [draftTicketIds, setDraftTicketIds] = useState<Set<string>>(ticketIdsWithDrafts);
+  const [ticketInitialTab, setTicketInitialTab] = useState<"overview" | "work" | "spares">("overview");
   const searchRef = useRef<HTMLInputElement>(null);
   const dashboardRequest = useRef(0);
   const preference = workspacePreferences[workspace];
@@ -367,7 +373,10 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    const refreshDraftCount = () => setDraftCount(countUnsavedDrafts());
+    const refreshDraftCount = () => {
+      setDraftCount(countUnsavedDrafts());
+      setDraftTicketIds(ticketIdsWithDrafts());
+    };
     window.addEventListener(DRAFTS_CHANGED_EVENT, refreshDraftCount);
     window.addEventListener("storage", refreshDraftCount);
     return () => {
@@ -523,6 +532,7 @@ export default function App() {
     setSelectedTicketId(null);
     setSelectedRequestId(null);
     setSelectedRowId(null);
+    setTicketInitialTab("overview");
   }, []);
 
   const chooseWorkspace = useCallback((next: WorkspaceKey) => {
@@ -536,6 +546,7 @@ export default function App() {
     setSelectedRequestId(null);
     setSelectedRowId(null);
     setColumnsOpen(false);
+    setTicketInitialTab(next === "spare-requests" ? "spares" : "overview");
   }, [workspace]);
 
   const informProtectedTicketMove = useCallback((nextTicketId: string | null) => {
@@ -563,6 +574,7 @@ export default function App() {
     setSelectedRequestId(null);
     setSelectedTicketId(row.ticketId);
     setSelectedRowId(row.rowId);
+    setTicketInitialTab("spares");
   }, [informProtectedTicketMove]);
 
   const selectSpareRequest = useCallback((row: SpareRequestItemSummary) => {
@@ -581,6 +593,19 @@ export default function App() {
     setTicket(null);
     setSpareRequest(null);
   }, [spareView]);
+
+  const reviewProtectedDraft = useCallback((ticketId: string, kind: TicketDraftKind) => {
+    if (workspace !== "service-requests") {
+      dashboardRequest.current += 1;
+      setWorkspace("service-requests");
+      setDashboard(null);
+    }
+    setDraftsOpen(false);
+    setTicketInitialTab(kind === "spares" ? "spares" : "work");
+    setSelectedRequestId(null);
+    setSelectedTicketId(ticketId);
+    setSelectedRowId(ticketId);
+  }, [workspace]);
 
   const openSpareExport = useCallback((ticketId?: string, part: SparePartSummary | null = null) => {
     if (bootstrap && !bootstrap.spareRequestExport.requestReady) {
@@ -638,7 +663,7 @@ export default function App() {
     }
   }
 
-  const keyboardDisabled = operationsOpen || settingsOpen || spareExportOpen || globalDataOpen || bomCatalogOpen || Boolean(bootstrap?.onboarding.required);
+  const keyboardDisabled = operationsOpen || settingsOpen || spareExportOpen || globalDataOpen || bomCatalogOpen || draftsOpen || Boolean(bootstrap?.onboarding.required);
 
   useGlobalCommands({
     disabled: keyboardDisabled,
@@ -697,6 +722,10 @@ export default function App() {
       }
       if (!nextRowId) return;
       event.preventDefault();
+      window.requestAnimationFrame(() => {
+        const row = document.querySelector<HTMLElement>(`[data-row-id="${nextRowId}"]`);
+        row?.focus({ preventScroll: true });
+      });
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -750,7 +779,7 @@ export default function App() {
   return (
     <main className={`app-shell ${selectedTicketId || selectedRequestId ? "with-detail" : ""}`} data-workspace={workspace}>
       <TopBar
-        version={bootstrap.version || "3.1.3"}
+        version={bootstrap.version || "3.1.4"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
@@ -839,6 +868,7 @@ export default function App() {
             rows={eligiblePartFilters.filteredRows}
             columns={visibleColumns}
             selectedRowId={selectedRowId}
+            draftTicketIds={draftTicketIds}
             onSelect={(row) => { selectSparePart(row); openSpareExport(row.ticketId, row); }}
             onCloseDetail={closeDetail}
           /> : <SpareRequestsGrid
@@ -853,6 +883,7 @@ export default function App() {
             tickets={serviceFilters.filteredRows}
             columns={visibleColumns}
             selectedId={selectedTicketId}
+            draftTicketIds={draftTicketIds}
             onSelect={selectServiceRequest}
             onCloseDetail={closeDetail}
           />
@@ -860,7 +891,7 @@ export default function App() {
         {selectedTicketId && <TicketDetail
           ticket={ticket}
           loading={ticketLoading}
-          initialTab={workspace === "spare-requests" ? "spares" : "overview"}
+          initialTab={workspace === "spare-requests" ? "spares" : ticketInitialTab}
           templates={templates}
           onClose={closeDetail}
           onSave={saveLocalFields}
@@ -886,7 +917,7 @@ export default function App() {
         <span>S Sort</span>
         <span>M Operations</span>
         <span>R Check source</span>
-        <span className="footer-state">{activeJob ? activeJob.message : `${draftCount ? `${draftCount} protected draft(s) · ` : ""}${workspaceConfig.label} · Local database · ${bootstrap?.polling.intervalMinutes ?? 15} min Advanced Search check`}</span>
+        <span className="footer-state">{activeJob ? activeJob.message : <>{draftCount > 0 && <button type="button" className="footer-draft-button" onClick={() => setDraftsOpen(true)}>✎ {draftCount} protected draft{draftCount === 1 ? "" : "s"}</button>}<span>{workspaceConfig.label} · Local database · {bootstrap?.polling.intervalMinutes ?? 15} min Advanced Search check</span></>}</span>
       </footer>
       {operationsOpen && (
         <OperationsModal
@@ -909,6 +940,7 @@ export default function App() {
       )}
       {spareExportOpen && <SpareRequestModal initialTicketId={spareExportTicketId} initialPart={spareExportPart} onClose={() => setSpareExportOpen(false)} onExport={createSpareRequest} onOpenSettings={() => { setSpareExportOpen(false); setSettingsOpen(true); }} onError={reportError} />}
       {globalDataOpen && <GlobalDataModal onClose={() => setGlobalDataOpen(false)} onSaved={() => { loadBootstrap().catch(reportError); setToast({ tone: "success", message: "Global data saved locally." }); }} onError={reportError} />}
+      {draftsOpen && <DraftsModal onClose={() => setDraftsOpen(false)} onReview={reviewProtectedDraft} onSaved={(tickets) => { if (selectedTicketId && tickets[selectedTicketId]) setTicket(tickets[selectedTicketId]); loadDashboard().catch(reportError); }} onError={reportError} onNotice={(message) => setToast({ tone: "success", message })} />}
       {bomCatalogOpen && <BomCatalogModal onClose={() => setBomCatalogOpen(false)} onSaved={() => setToast({ tone: "success", message: "BOM catalog saved locally." })} onError={reportError} />}
       {toast && <div className={`toast toast-${toast.tone}`} role="status"><span>{toast.message}</span><button type="button" onClick={() => setToast(null)}>×</button></div>}
     </main>

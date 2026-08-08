@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.1.4 - 2026-08-08
+
+- Fixes the successful-save revision race that could misclassify Zeus's own
+  committed Work Fields update as a stale browser draft and keep reload
+  protection active after the data was already saved.
+- Adds amber protected-draft row markers and a selectable Drafts manager with
+  explicit restore semantics, per-SR field summaries, selective discard, and
+  confirmed all-or-nothing multi-SR database saves.
+- Rebases drafts at field level so unrelated database changes do not cause
+  false conflicts, while overlapping changes still require explicit review.
+- Makes keyboard focus follow row and detail-tab navigation, eliminating stale
+  cyan focus outlines on previously active controls.
+- Keeps Global data open after successful saves, disables clean saves, prevents
+  accidental dirty dismissal, autocompletes SR customer imports, describes
+  every manager collection, and displays the current profile as the default
+  requester.
+
 ## 3.1.3 - 2026-08-08
 
 - Makes the transactional Markdown database authoritative for current Zeus

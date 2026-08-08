@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TicketDetail } from "../components/TicketDetail";
+import { countUnsavedDrafts, writeTicketDraft } from "../drafts";
 import type { TicketDetail as TicketDetailType } from "../types";
 import styles from "../styles.css?raw";
 
@@ -66,6 +67,11 @@ const detail: TicketDetailType = {
 };
 
 describe("TicketDetail", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => vi.restoreAllMocks());
   it("opens directly in the Spare Parts editor from that management view", () => {
     render(
       <TicketDetail
@@ -110,6 +116,82 @@ describe("TicketDetail", () => {
     await user.type(notes, "Web note");
     await user.click(screen.getByRole("button", { name: /save to zeus/i }));
     expect(onSave).toHaveBeenCalledWith("12345678", "revision", { Notes: "Web note" });
+  });
+
+  it("does not reinterpret its own successful save as a stale protected draft", async () => {
+    const user = userEvent.setup();
+    const saved = {
+      ...detail,
+      revision: "revision-after-save",
+      localFields: { ...detail.localFields, Notes: "Race-safe note" },
+    };
+    const props = {
+      loading: false,
+      templates: [],
+      onClose: vi.fn(),
+      onGenerateMop: vi.fn(),
+    };
+    let rerender: ReturnType<typeof render>["rerender"];
+    const onSave = vi.fn(async () => {
+      rerender(<TicketDetail ticket={saved} onSave={onSave} {...props} />);
+    });
+    ({ rerender } = render(<TicketDetail ticket={detail} onSave={onSave} {...props} />));
+    await user.click(screen.getByRole("button", { name: /work fields/i }));
+    await user.type(screen.getByLabelText("Notes"), "Race-safe note");
+    await user.click(screen.getByRole("button", { name: /save to zeus/i }));
+
+    await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeVisible());
+    expect(screen.queryByRole("button", { name: "Restore changes" })).not.toBeInTheDocument();
+    expect(countUnsavedDrafts()).toBe(0);
+  });
+
+  it("clears a legacy stuck draft when Zeus already contains every protected value", async () => {
+    const current = {
+      ...detail,
+      revision: "revision-after-earlier-save",
+      localFields: { ...detail.localFields, Notes: "Already saved note" },
+    };
+    const baseValue = {
+      "Planned Date": "", Site: "GYE", Cloud: "", RelatedSR: "", "Done?": "N", Notes: "",
+    };
+    writeTicketDraft(detail.ticketId, "work", {
+      revision: "revision-before-earlier-save",
+      baseValue,
+      value: { ...baseValue, Notes: "Already saved note" },
+    });
+
+    render(<TicketDetail ticket={current} loading={false} templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} initialTab="work" />);
+
+    await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeVisible());
+    expect(screen.queryByRole("button", { name: "Restore changes" })).not.toBeInTheDocument();
+    expect(countUnsavedDrafts()).toBe(0);
+  });
+
+  it("labels genuine overlapping conflicts as restore-before-save", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const current = {
+      ...detail,
+      revision: "new-revision",
+      localFields: { ...detail.localFields, Notes: "Database note" },
+    };
+    const baseValue = {
+      "Planned Date": "", Site: "GYE", Cloud: "", RelatedSR: "", "Done?": "N", Notes: "Old note",
+    };
+    writeTicketDraft(detail.ticketId, "work", {
+      revision: "old-revision",
+      baseValue,
+      value: { ...baseValue, Notes: "Protected note" },
+    });
+    const user = userEvent.setup();
+    render(<TicketDetail ticket={current} loading={false} templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} initialTab="work" />);
+
+    expect(await screen.findByText(/same database work fields changed/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save to Zeus" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Restore changes" }));
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/does not save to the database/i));
+    expect(screen.queryByText(/same database work fields changed/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save to Zeus" })).toBeEnabled();
+    expect(screen.getByLabelText("Notes")).toHaveValue("Protected note");
   });
 
   it("uses a calendar date without exposing the export-only Spare field", async () => {
@@ -227,6 +309,7 @@ describe("TicketDetail", () => {
     const first = render(<TicketDetail {...props} />);
     fireEvent.keyDown(window, { key: "ArrowRight" });
     expect(screen.getByRole("button", { name: /work fields/i })).toHaveClass("active");
+    await waitFor(() => expect(screen.getByRole("button", { name: /work fields/i })).toHaveFocus());
     await user.type(screen.getByLabelText("Notes"), "Reload-safe note");
     fireEvent.keyDown(screen.getByLabelText("Notes"), { key: "ArrowRight" });
     expect(screen.getByRole("button", { name: /work fields/i })).toHaveClass("active");
@@ -237,6 +320,7 @@ describe("TicketDetail", () => {
     await user.click(screen.getByRole("button", { name: /history/i }));
     fireEvent.keyDown(window, { key: "ArrowRight" });
     expect(screen.getByRole("button", { name: /history/i })).toHaveClass("active");
+    await waitFor(() => expect(screen.getByRole("button", { name: /history/i })).toHaveFocus());
   });
 
   it("shows finalized spare parts under their SR without edit controls", () => {

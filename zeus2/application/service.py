@@ -64,7 +64,7 @@ from ..startup import StartupResult, reconcile_advanced_and_new_mail, run_startu
 from ..store import StoreError, ZeusStore
 from ..tickets import empty_email
 from ..utils import iso_now, normalize_ticket_id
-from .edits import edit_ticket_in_database
+from .edits import edit_ticket_in_database, edit_tickets_in_database
 from .errors import (
     BusyError,
     ConflictError,
@@ -617,14 +617,31 @@ class ApplicationService:
             "ticketId": normalized,
             "ticketExists": True,
             "profile": {
-                "customerOrganization": first("Customer Name", "Customer", "Account Name"),
-                "customerName": first("Customer Contact", "Contact Name", "Contact"),
+                "customerOrganization": first(
+                    "Customer Organization",
+                    "Customer Org",
+                    "Customer Org.",
+                    "Customer Name",
+                    "Customer",
+                    "Account Name",
+                ),
+                "customerName": first(
+                    "Customer Contact",
+                    "Contact Name",
+                    "Contact Person",
+                    "Contact",
+                ),
                 "siteCode": local.get("Site"),
                 "siteName": first("Site Name"),
                 "siteAddress": first("Site Address", "Customer Address", "Address"),
                 "cloud": local.get("Cloud"),
                 "contact": {
-                    "name": first("Customer Contact", "Contact Name", "Contact"),
+                    "name": first(
+                        "Customer Contact",
+                        "Contact Name",
+                        "Contact Person",
+                        "Contact",
+                    ),
                     "email": first("Customer Email", "Contact Email"),
                     "phone": first("Customer Phone", "Contact Phone", "Phone"),
                 },
@@ -1310,6 +1327,39 @@ class ApplicationService:
             "ticket": self.ticket(normalized_ticket_id),
         }
         return response
+
+    def edit_tickets(
+        self,
+        edits: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        normalized: list[dict[str, Any]] = []
+        for raw in edits:
+            if not isinstance(raw, dict):
+                raise ValidationError("Every protected draft update must be an object")
+            try:
+                ticket_id = normalize_ticket_id(raw.get("ticketId"))
+            except ValueError as exc:
+                raise ValidationError("Every protected draft update requires an eight-digit SR") from exc
+            if not self.store.ticket_file(ticket_id).is_file():
+                if self._closed_archive_ticket(ticket_id) is not None:
+                    raise ValidationError(
+                        f"SR {ticket_id} is finalized and its protected draft cannot be saved"
+                    )
+                raise NotFoundError(f"SR {ticket_id} was not found")
+            normalized.append({**raw, "ticketId": ticket_id})
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data. Try again when it finishes.")
+        try:
+            result = edit_tickets_in_database(self.store, normalized)
+        finally:
+            self._operation_lock.release()
+        if result.get("changed"):
+            self._touch_data("ticket-batch-edit")
+        result["tickets"] = {
+            ticket_id: self.ticket(ticket_id)
+            for ticket_id in (entry["ticketId"] for entry in result.get("results", []))
+        }
+        return result
 
     def get_settings(self) -> dict[str, Any]:
         return settings_payload(self.store)

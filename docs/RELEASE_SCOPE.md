@@ -1,4 +1,4 @@
-# Zeus 3.1.3 release scope
+# Zeus 3.1.4 release scope
 
 Included:
 
@@ -48,6 +48,17 @@ Included:
   controls; ↑/↓ follows filtered order and ←/→ changes detail tabs without wrap;
 - browser-persisted Work/Spare drafts, row-move notices, stale-draft recovery,
   and reload protection until a draft is saved or discarded;
+- visible protected-draft row markers plus a selectable Drafts manager for
+  review, explicit restore, selective discard, and confirmed all-or-nothing
+  multi-SR database saves;
+- overlap-aware three-way draft rebasing, so unrelated database changes do not
+  create false conflicts and a successful save cannot recreate its own draft;
+- keyboard focus that follows the selected row and active detail tab instead of
+  leaving a stale cyan focus rectangle on an earlier control;
+- a dirty-state-aware Global data manager that remains open after saving,
+  disables no-op saves, blocks accidental dismissal while dirty, autocompletes
+  SR-based contact imports, explains each collection, and visibly includes the
+  current profile as the default requester;
 - fixed Work/Spare action rails that remain above the global command strip;
 - a normalized, repeatable database-owned damaged-device and spare-parts editor
   emitted as a one-row-per-part worksheet on export, with legacy scalar migration;

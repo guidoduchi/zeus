@@ -5,6 +5,7 @@ interface Props {
   tickets: TicketSummary[];
   columns: ColumnDefinition[];
   selectedId: string | null;
+  draftTicketIds?: ReadonlySet<string>;
   onSelect: (ticketId: string) => void;
   onCloseDetail: () => void;
 }
@@ -13,6 +14,7 @@ export function TicketGrid({
   tickets,
   columns,
   selectedId,
+  draftTicketIds,
   onSelect,
   onCloseDetail,
 }: Props) {
@@ -28,6 +30,7 @@ export function TicketGrid({
       emptyTitle="No matching Zeus ticket records."
       emptyHint="Check the configured Advanced Search source to discover new service requests."
       countLabel="service request(s)"
+      draftTicketIds={draftTicketIds}
       onSelect={(ticket) => onSelect(ticket.ticketId)}
       onCloseDetail={onCloseDetail}
     />

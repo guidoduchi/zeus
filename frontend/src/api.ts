@@ -230,6 +230,22 @@ export function saveTicket(
   });
 }
 
+export function saveTicketDraftBatch(edits: Array<{
+  ticketId: string;
+  revision: string;
+  changes: Record<string, unknown>;
+}>): Promise<{
+  changed: boolean;
+  ticketIds: string[];
+  results: Array<{ ticketId: string; changed: boolean; changedFields: string[]; revision: string }>;
+  tickets: Record<string, TicketDetail>;
+}> {
+  return request("/api/tickets/bulk-local", {
+    method: "PATCH",
+    body: JSON.stringify({ edits }),
+  });
+}
+
 export function getSettings(): Promise<SettingsPayload> {
   return request<SettingsPayload>("/api/settings");
 }

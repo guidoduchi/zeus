@@ -1,4 +1,4 @@
-# Zeus 3.1.3
+# Zeus 3.1.4
 
 Zeus is a strictly local ticket workstation. Its Python backend runs in the
 background, serves a bundled React interface on `127.0.0.1`, and opens that
@@ -145,6 +145,14 @@ Work and Spare Parts changes are also written to protected browser drafts while
 the user types. Drafts survive row navigation, tab changes, detail closure, and
 page remount. Standard reload attempts are blocked or receive the browser's
 leave-page warning until the user saves or discards the draft.
+
+Rows with protected changes carry an amber edit marker, and the command strip
+opens a **Protected drafts** manager. That manager groups changes by SR, shows
+the pending fields, lets the user select exactly which SRs to restore, save, or
+discard, and lists every selected SR before confirmation. A multi-SR save is a
+single database transaction: every reviewed revision commits or none do.
+**Restore changes** reapplies protected values over the latest database values
+for review; it never implies that the values have already been saved.
 
 Browser-editable database-owned fields are:
 

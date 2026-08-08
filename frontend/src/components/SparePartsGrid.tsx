@@ -5,6 +5,7 @@ interface Props {
   rows: SparePartSummary[];
   columns: ColumnDefinition[];
   selectedRowId: string | null;
+  draftTicketIds?: ReadonlySet<string>;
   onSelect: (row: SparePartSummary) => void;
   onCloseDetail: () => void;
 }
@@ -13,6 +14,7 @@ export function SparePartsGrid({
   rows,
   columns,
   selectedRowId,
+  draftTicketIds,
   onSelect,
   onCloseDetail,
 }: Props) {
@@ -25,6 +27,7 @@ export function SparePartsGrid({
       emptyTitle="No matching spare-parts records."
       emptyHint="Add damaged devices and parts from an SR's Spare Parts editor."
       countLabel="part row(s)"
+      draftTicketIds={draftTicketIds}
       onSelect={onSelect}
       onCloseDetail={onCloseDetail}
     />

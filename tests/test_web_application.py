@@ -18,7 +18,10 @@ from openpyxl import load_workbook
 
 import zeus2.main as main_module
 from tests.test_zeus2 import pending_row, upstream_row, write_advanced, write_managed
-from zeus2.application.edits import edit_ticket_through_pendings
+from zeus2.application.edits import (
+    TicketRevisionConflictError,
+    edit_ticket_through_pendings,
+)
 from zeus2.application.errors import ValidationError
 from zeus2.application.jobs import EventBroker, JobManager
 from zeus2.application.serialization import (
@@ -134,6 +137,99 @@ class DatabaseFirstSourceTests(WebFixture):
         self.assertEqual(updated["local"]["fields"]["Notes"], "Changed from Zeus web")
         self.assertEqual(updated["local"]["fields"]["Done?"], "Y")
         self.assertFalse((self.books / "Zeus Backups" / "Web edits").exists())
+
+    def test_selected_ticket_drafts_commit_in_one_database_transaction(self) -> None:
+        source = self.downloads / "Advanced Search(Service Request)20260808010101.xlsx"
+        write_advanced(
+            source,
+            [
+                upstream_row("12345678", summary="First protected draft"),
+                upstream_row("87654321", summary="Second protected draft"),
+            ],
+        )
+        sync_advanced_search(self.store, source)
+        service = ApplicationService(self.store)
+        try:
+            first = service.ticket("12345678")
+            second = service.ticket("87654321")
+            result = service.edit_tickets(
+                [
+                    {
+                        "ticketId": "12345678",
+                        "revision": first["revision"],
+                        "changes": {"Notes": "First saved draft"},
+                    },
+                    {
+                        "ticketId": "87654321",
+                        "revision": second["revision"],
+                        "changes": {"Planned Date": "2026-08-20", "Done?": "P"},
+                    },
+                ]
+            )
+        finally:
+            service.stop()
+
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["ticketIds"], ["12345678", "87654321"])
+        self.assertEqual(
+            self.store.read_ticket("12345678")["local"]["fields"]["Notes"],
+            "First saved draft",
+        )
+        self.assertEqual(
+            self.store.read_ticket("87654321")["local"]["fields"]["Done?"],
+            "P",
+        )
+        audit = self.store.audit_file.read_text(encoding="utf-8")
+        self.assertEqual(audit.count('"action": "web-local-batch-edit"'), 1)
+
+    def test_conflicted_draft_batch_changes_no_ticket(self) -> None:
+        source = self.downloads / "Advanced Search(Service Request)20260808010202.xlsx"
+        write_advanced(
+            source,
+            [
+                upstream_row("12345678", summary="First protected draft"),
+                upstream_row("87654321", summary="Second protected draft"),
+            ],
+        )
+        sync_advanced_search(self.store, source)
+        first = self.store.read_ticket("12345678")
+        second = self.store.read_ticket("87654321")
+        first_revision = ticket_revision(first)
+        stale_second_revision = ticket_revision(second)
+        edit_ticket_through_pendings(
+            self.store,
+            "87654321",
+            {"Notes": "Concurrent database change"},
+            expected_revision=stale_second_revision,
+        )
+        service = ApplicationService(self.store)
+        try:
+            with self.assertRaises(TicketRevisionConflictError):
+                service.edit_tickets(
+                    [
+                        {
+                            "ticketId": "12345678",
+                            "revision": first_revision,
+                            "changes": {"Notes": "Must roll back"},
+                        },
+                        {
+                            "ticketId": "87654321",
+                            "revision": stale_second_revision,
+                            "changes": {"Notes": "Must conflict"},
+                        },
+                    ]
+                )
+        finally:
+            service.stop()
+
+        self.assertNotEqual(
+            self.store.read_ticket("12345678")["local"]["fields"].get("Notes"),
+            "Must roll back",
+        )
+        self.assertEqual(
+            self.store.read_ticket("87654321")["local"]["fields"]["Notes"],
+            "Concurrent database change",
+        )
 
     def test_normalized_spare_parts_save_to_database_then_export(self) -> None:
         self.seed_database()
@@ -734,6 +830,27 @@ class JobManagerTests(unittest.TestCase):
 
 
 class ApplicationServiceContractTests(WebFixture):
+    def test_spare_prefill_recognizes_new_customer_organization_columns(self) -> None:
+        self.seed_database()
+        ticket = self.store.read_ticket("12345678")
+        ticket["upstream"]["fields"].update(
+            {
+                "Customer Organization": "Customer Org from Advanced Search",
+                "Customer Contact": "Customer Contact from Advanced Search",
+                "Contact Email": "customer@example.com",
+            }
+        )
+        self.store.write_ticket_bundle(self.store.current, ticket)
+        service = ApplicationService(self.store)
+        try:
+            profile = service.spare_request_prefill("12345678")["profile"]
+        finally:
+            service.stop()
+
+        self.assertEqual(profile["customerOrganization"], "Customer Org from Advanced Search")
+        self.assertEqual(profile["customerName"], "Customer Contact from Advanced Search")
+        self.assertEqual(profile["contact"]["email"], "customer@example.com")
+
     def test_legacy_email_threads_are_compacted_without_resynchronizing(self) -> None:
         self.seed_database()
         run_startup(self.store)
@@ -1070,6 +1187,37 @@ class WebServerTests(WebFixture):
         self.assertEqual(edited["localFields"]["Notes"], "Complete API response")
         self.assertIsInstance(edited["history"], list)
         self.assertIsInstance(edited["mops"], list)
+
+    def test_bulk_draft_patch_returns_complete_saved_tickets(self) -> None:
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        _, detail, _ = self.read_json("/api/tickets/12345678")
+        body = json.dumps(
+            {
+                "edits": [
+                    {
+                        "ticketId": "12345678",
+                        "revision": detail["revision"],
+                        "changes": {"Notes": "Saved from protected drafts manager"},
+                    }
+                ]
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.url + "/api/tickets/bulk-local",
+            data=body,
+            method="PATCH",
+            headers={
+                "Content-Type": "application/json",
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            payload = json.loads(response.read())
+
+        self.assertEqual(payload["ticketIds"], ["12345678"])
+        saved = payload["tickets"]["12345678"]
+        self.assertEqual(saved["localFields"]["Notes"], "Saved from protected drafts manager")
+        self.assertIsInstance(saved["history"], list)
 
     def test_bundled_react_entrypoint_and_hashed_assets_are_served_locally(self) -> None:
         with urllib.request.urlopen(self.url + "/", timeout=3) as response:

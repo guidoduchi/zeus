@@ -149,6 +149,9 @@ test("saving to Zeus keeps the workstation mounted", async ({ page }, testInfo) 
   await expect(page.getByRole("button", { name: "History" })).toBeVisible();
   await expect(page.getByLabel("Notes")).toHaveValue(note);
   await expect(page.getByLabel("Planned Date")).toHaveValue(plannedDate);
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("zeus3.ticket-draft.")).length)).toBe(0);
+  await expect(page.getByRole("button", { name: /protected draft/i })).toHaveCount(0);
+  await expect(page.getByText("No unsaved changes")).toBeVisible();
 
   const detail = page.getByRole("complementary", { name: /SR \d{8} detail/ });
   await detail.getByRole("button", { name: /^Spare Parts/ }).click();
@@ -157,6 +160,7 @@ test("saving to Zeus keeps the workstation mounted", async ({ page }, testInfo) 
   await page.getByRole("button", { name: /Save to Zeus/ }).click();
   await expect(page.getByText(/saved to the Zeus database/i)).toBeVisible();
   await expect(bom).toHaveValue(bomValue);
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("zeus3.ticket-draft.")).length)).toBe(0);
 });
 
 test("unsaved Work Fields survive row arrows and keyboard reload is blocked", async ({ page }) => {
@@ -176,14 +180,49 @@ test("unsaved Work Fields survive row arrows and keyboard reload is blocked", as
   await expect(page.getByText(new RegExp(`Unsaved SR ${firstId} draft kept safely`))).toBeVisible();
   await expect(page.getByRole("complementary", { name: `SR ${secondId} detail` })).toBeVisible();
   await expect(page.getByRole("button", { name: "Work fields" })).toHaveClass(/active/);
+  await expect(page.locator(`[data-ticket-id="${secondId}"]`)).toBeFocused();
+  await expect(page.locator(`[data-ticket-id="${firstId}"]`)).toHaveClass(/draft-protected/);
+
+  await page.locator(".stats-bar").click();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("button", { name: /^Spare Parts/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: /^Spare Parts/ })).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.getByRole("button", { name: "Work fields" })).toBeFocused();
 
   await page.keyboard.press("ArrowUp");
   await expect(page.getByRole("complementary", { name: `SR ${firstId} detail` })).toBeVisible();
   await expect(page.getByLabel("Notes")).toHaveValue("Protected navigation draft");
+  await page.getByRole("button", { name: /1 protected draft/i }).click();
+  const drafts = page.getByRole("dialog", { name: "Protected drafts" });
+  await expect(drafts.getByText(`SR ${firstId}`)).toBeVisible();
+  await expect(drafts.getByText("Notes", { exact: true })).toBeVisible();
+  await drafts.getByRole("button", { name: "Close" }).click();
   await page.locator(".stats-bar").click();
   await page.keyboard.press("Control+R");
   await expect(page.getByText(/Reload blocked: save or discard the protected draft first/i)).toBeVisible();
   await expect(page.getByLabel("Notes")).toHaveValue("Protected navigation draft");
+});
+
+test("Global data protects dirty forms and stays open after save", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Global data" }).click();
+  const modal = page.getByRole("dialog", { name: "Global data" });
+  await expect(modal.getByRole("button", { name: "Save global data" })).toBeDisabled();
+
+  await modal.getByRole("button", { name: /Customer orgs/ }).click();
+  await expect(modal.getByText("Customer organizations group customer contacts.")).toBeVisible();
+  await modal.getByRole("button", { name: "+ Add" }).click();
+  await modal.getByLabel("Customer organization *").fill(`E2E Organization ${testInfo.project.name}`);
+  await expect(modal.getByRole("button", { name: "Close Global data" })).toBeDisabled();
+  await expect(modal.getByRole("button", { name: "Save global data" })).toBeEnabled();
+  await modal.getByRole("button", { name: "Save global data" }).click();
+
+  await expect(page.getByText("Global data saved locally.")).toBeVisible();
+  await expect(modal).toBeVisible();
+  await expect(modal.getByRole("button", { name: "Save global data" })).toBeDisabled();
+  await modal.getByRole("button", { name: "Close" }).click();
+  await expect(modal).toHaveCount(0);
 });
 
 test("work and spare editors remain bounded above the global command strip", async ({ page }) => {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TicketGrid } from "../components/TicketGrid";
@@ -98,5 +98,39 @@ describe("TicketGrid", () => {
     expect(screen.getAllByText("10")[0]).toHaveClass("tone-none");
     expect(screen.getAllByText("No email [7]")[0]).toHaveClass("tone-grey");
     expect(screen.queryByRole("columnheader", { name: "Emails" })).not.toBeInTheDocument();
+  });
+
+  it("marks protected SR drafts without confusing them with row selection", () => {
+    render(
+      <TicketGrid
+        tickets={[ticket("12345678"), ticket("87654321")]}
+        columns={columns}
+        selectedId="87654321"
+        draftTicketIds={new Set(["12345678"])}
+        onSelect={vi.fn()}
+        onCloseDetail={vi.fn()}
+      />,
+    );
+
+    const draftRow = screen.getByRole("row", { name: /12345678.*Protected draft/i });
+    expect(draftRow).toHaveClass("draft-protected");
+    expect(draftRow).not.toHaveClass("selected");
+    expect(screen.getByRole("row", { name: /87654321/i })).toHaveClass("selected");
+  });
+
+  it("moves keyboard focus with the newly selected row", async () => {
+    const tickets = [ticket("12345678"), ticket("87654321")];
+    let rerender: ReturnType<typeof render>["rerender"];
+    const onSelect = vi.fn((ticketId: string) => {
+      rerender(<TicketGrid tickets={tickets} columns={columns} selectedId={ticketId} onSelect={onSelect} onCloseDetail={vi.fn()} />);
+    });
+    ({ rerender } = render(<TicketGrid tickets={tickets} columns={columns} selectedId={null} onSelect={onSelect} onCloseDetail={vi.fn()} />));
+    const grid = screen.getByRole("grid");
+    grid.focus();
+    fireEvent.keyDown(grid, { key: "ArrowDown" });
+
+    const second = screen.getByRole("row", { name: /87654321/i });
+    await waitFor(() => expect(second).toHaveFocus());
+    expect(second).toHaveClass("selected");
   });
 });

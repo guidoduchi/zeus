@@ -414,6 +414,15 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 self.server.service.save_bom_catalog(value),
             )
             return
+        if path == "/api/tickets/bulk-local":
+            edits = payload.get("edits")
+            if not isinstance(edits, list):
+                raise ValidationError("Protected draft updates must be a list")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.edit_tickets(edits),
+            )
+            return
         ticket_match = TICKET_LOCAL_ROUTE.fullmatch(path)
         if ticket_match:
             changes = payload.get("changes")
