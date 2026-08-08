@@ -197,7 +197,7 @@ test("unsaved Work Fields survive row arrows and keyboard reload is blocked", as
   const drafts = page.getByRole("dialog", { name: "Protected drafts" });
   await expect(drafts.getByText(`SR ${firstId}`)).toBeVisible();
   await expect(drafts.getByText("Notes", { exact: true })).toBeVisible();
-  await drafts.getByRole("button", { name: "Close" }).click();
+  await drafts.getByRole("button", { name: "Close", exact: true }).click();
   await page.locator(".stats-bar").click();
   await page.keyboard.press("Control+R");
   await expect(page.getByText(/Reload blocked: save or discard the protected draft first/i)).toBeVisible();
@@ -221,7 +221,7 @@ test("Global data protects dirty forms and stays open after save", async ({ page
   await expect(page.getByText("Global data saved locally.")).toBeVisible();
   await expect(modal).toBeVisible();
   await expect(modal.getByRole("button", { name: "Save global data" })).toBeDisabled();
-  await modal.getByRole("button", { name: "Close" }).click();
+  await modal.getByRole("button", { name: "Close", exact: true }).click();
   await expect(modal).toHaveCount(0);
 });
 
