@@ -227,7 +227,7 @@ test("Global data protects dirty forms and stays open after save", async ({ page
   const modal = page.getByRole("dialog", { name: "Global data" });
   await expect(modal.getByRole("button", { name: "Save global data" })).toBeDisabled();
 
-  await modal.getByRole("button", { name: /Customer orgs/ }).click();
+  await modal.getByRole("button", { name: "Customer organizations", exact: true }).click();
   await expect(modal.getByText("Customer organizations group customer contacts.")).toBeVisible();
   await modal.getByRole("button", { name: "+ Add" }).click();
   await modal.getByLabel("Customer organization *").fill(`E2E Organization ${testInfo.project.name}`);
