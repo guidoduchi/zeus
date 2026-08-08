@@ -28,7 +28,7 @@ function SettingControl({
   onBrowse: () => void;
   onOpen: () => void;
 }) {
-  const path = setting.kind === "directory" || setting.kind === "outlook_store";
+  const path = setting.kind === "directory" || setting.kind === "outlook_store" || setting.kind === "xlsx_template";
   return (
     <div className={`setting-row ${!setting.editable ? "fixed" : ""}`}>
       <div className="setting-copy">

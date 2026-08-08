@@ -16,6 +16,7 @@ interface Props {
   onClose: () => void;
   onSave: (ticketId: string, revision: string, changes: Record<string, unknown>) => Promise<void>;
   onGenerateMop: (ticketId: string, template: string) => void;
+  onExportSpareRequest?: (ticketId: string) => void;
 }
 
 const WORK_FIELDS = [
@@ -194,7 +195,7 @@ function cleanSpareParts(value: DraftDevice[] | SpareDevice[]): SpareDevice[] {
   });
 }
 
-function SparePartsTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket: TicketDetailType }) {
+function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ticket" | "onSave" | "onExportSpareRequest"> & { ticket: TicketDetailType }) {
   const [devices, setDevices] = useState<DraftDevice[]>([]);
   const [saving, setSaving] = useState(false);
   useEffect(() => setDevices(spareDraft(ticket.spareParts)), [ticket]);
@@ -292,11 +293,7 @@ function SparePartsTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { 
       </div>
       <div className="inline-actions edit-actions">
         <span>{ticket.readOnly ? `${cleaned.length} device(s), ${partCount} part(s) · closed SR archive` : changed ? `${cleaned.length} device(s), ${partCount} part(s) · unsaved` : `${cleaned.length} device(s), ${partCount} part(s)`}</span>
-        {!ticket.readOnly && (
-          <button type="button" className="primary-button" disabled={!changed || saving} onClick={save}>
-            {saving ? "Saving…" : "Save through Pendings"}
-          </button>
-        )}
+        {!ticket.readOnly && <div className="inline-actions">{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!partCount || changed} title={changed ? "Save Spare Parts before exporting" : "Create an independent request from this TT"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Spare Request</button>}<button type="button" className="primary-button" disabled={!changed || saving} onClick={save}>{saving ? "Saving…" : "Save through Pendings"}</button></div>}
       </div>
     </div>
   );
@@ -378,7 +375,7 @@ function MopsTab({ ticket, templates, onGenerateMop }: { ticket: TicketDetailTyp
   );
 }
 
-export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onGenerateMop }: Props) {
+export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onGenerateMop, onExportSpareRequest }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
   useEffect(() => setTab(initialTab), [initialTab, ticket?.ticketId]);
   if (loading && !ticket) return <aside className="detail-panel"><div className="detail-loading">Reading ticket…</div></aside>;
@@ -423,7 +420,7 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
           </div>
         )}
         {tab === "work" && <WorkTab ticket={ticket} onSave={onSave} />}
-        {tab === "spares" && <SparePartsTab ticket={ticket} onSave={onSave} />}
+        {tab === "spares" && <SparePartsTab ticket={ticket} onSave={onSave} onExportSpareRequest={onExportSpareRequest} />}
         {tab === "emails" && <EmailsTab messages={ticket.email.messages} />}
         {tab === "mops" && <MopsTab ticket={ticket} templates={templates} onGenerateMop={onGenerateMop} />}
         {tab === "history" && (

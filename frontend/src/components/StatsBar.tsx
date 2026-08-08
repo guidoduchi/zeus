@@ -2,20 +2,21 @@ import type { DashboardPayload } from "../types";
 
 export function StatsBar({ dashboard }: { dashboard: DashboardPayload | null }) {
   if (!dashboard) return <div className="stats-bar muted">Reading Markdown records…</div>;
-  if (dashboard.workspace === "spare-parts") {
+  if (dashboard.workspace === "spare-requests") {
     const stats = dashboard.stats;
     return (
-      <div className="stats-bar" aria-label="Spare Parts summary">
-        <span>Tickets <strong>{stats.tickets}</strong></span>
-        <span>Current <strong>{stats.currentTickets}</strong></span>
-        <span>Closed <strong>{stats.closedTickets}</strong></span>
+      <div className="stats-bar" aria-label="Spare Requests summary">
+        <span>Active requests <strong>{stats.activeRequests}</strong></span>
+        <span>Unit items <strong>{stats.activeItems}</strong></span>
         <span className="stat-separator">|</span>
-        <span>Devices <strong>{stats.devices}</strong></span>
-        <span>Parts <strong>{stats.parts}</strong></span>
+        <span>Awaiting stock <strong>{stats.awaitingStock}</strong></span>
+        <span>Awaiting dispatch <strong>{stats.awaitingDispatch}</strong></span>
+        <span>Dispatched <strong>{stats.dispatched}</strong></span>
         <span className="stat-separator">|</span>
-        <span>With BOM <strong>{stats.withBom}</strong></span>
-        <span>Missing BOM <strong className={stats.missingBom ? "yellow-text" : ""}>{stats.missingBom}</strong></span>
-        <span>New SN recorded <strong>{stats.newSnRecorded}</strong></span>
+        <span>Confirm return <strong className={stats.warehouseCandidates ? "yellow-text" : ""}>{stats.warehouseCandidates}</strong></span>
+        <span>Conflicts <strong className={stats.conflicts ? "red-text" : ""}>{stats.conflicts}</strong></span>
+        <span>Eligible <strong>{stats.eligibleParts}</strong></span>
+        <span>Completed <strong>{stats.completedItems}</strong></span>
       </div>
     );
   }

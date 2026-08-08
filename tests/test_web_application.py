@@ -969,16 +969,18 @@ class WebServerTests(WebFixture):
         self.assertEqual(index["instanceId"], "test-instance")
         self.assertEqual(audit_before, audit_after)
 
-    def test_spare_parts_workspace_is_available_without_mutating_sources(self) -> None:
+    def test_spare_requests_workspace_is_available_without_mutating_sources(self) -> None:
         audit_before = self.store.audit_file.read_text(encoding="utf-8")
         status, payload, _ = self.read_json(
-            "/api/dashboard?workspace=spare-parts&sort=sr&direction=desc&search="
+            "/api/dashboard?workspace=spare-requests&view=eligible&sort=tt&direction=desc&search="
         )
         audit_after = self.store.audit_file.read_text(encoding="utf-8")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["workspace"], "spare-parts")
-        self.assertIn("spareParts", payload)
+        self.assertEqual(payload["workspace"], "spare-requests")
+        self.assertEqual(payload["view"], "eligible")
+        self.assertIn("eligibleParts", payload)
+        self.assertEqual(payload["columns"][0]["label"], "TT")
         self.assertNotIn("tickets", payload)
         self.assertEqual(audit_before, audit_after)
 

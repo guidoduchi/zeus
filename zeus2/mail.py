@@ -14,6 +14,7 @@ from threading import Event
 from typing import Any, Callable, Iterable
 
 from .diagnostics import record_exception
+from .spare_request_mail import apply_spare_request_messages, is_spare_candidate
 from .store import ZeusStore
 from .utils import (
     atomic_write_json,
@@ -261,8 +262,11 @@ def _normalize_message(raw: dict[str, Any]) -> dict[str, Any]:
     ticket_ids = sorted(
         {str(value) for value in raw.get("ticket_ids", [])}, reverse=True
     )
-    if direction is None or timestamp is None or not ticket_ids:
-        raise MailSyncError("Fetched message lacks direction, timestamp, or ticket IDs")
+    spare_candidate = bool(raw.get("spare_candidate"))
+    if direction is None or timestamp is None or (not ticket_ids and not spare_candidate):
+        raise MailSyncError(
+            "Fetched message lacks direction, timestamp, or a ticket/Spare Request association"
+        )
     raw_key = str(raw.get("message_key") or raw.get("message_id") or "").strip()
     if not raw_key:
         raw_key = (
@@ -282,7 +286,10 @@ def _normalize_message(raw: dict[str, Any]) -> dict[str, Any]:
         "direction": direction,
         "subject": str(raw.get("subject") or ""),
         "body": str(raw.get("body") or ""),
+        "html_body": str(raw.get("html_body") or ""),
         "sender": str(raw.get("sender") or ""),
+        "sender_address": str(raw.get("sender_address") or ""),
+        "spare_candidate": spare_candidate,
         "source": str(raw.get("source") or "outlook"),
     })
 
@@ -306,6 +313,9 @@ def _merge_staging(
         if not current.get("body") and message.get("body"):
             current["body"] = message["body"]
         for field in (
+            "html_body",
+            "sender_address",
+            "spare_candidate",
             "latest_reply_body",
             "quoted_history_hidden",
             "quoted_history_lines",
@@ -511,6 +521,14 @@ def commit_fetched_messages(
                 update_global_timer=update_global_sync_timer,
                 synchronized_at=fetched_at,
             )
+        spare_candidates = [
+            message for message in normalized if message.get("spare_candidate")
+        ]
+        summary["spare_request_sync"] = apply_spare_request_messages(
+            store,
+            staging,
+            spare_candidates,
+        )
     return summary
 
 
@@ -535,6 +553,11 @@ def synchronize_staged_email(
                 update_global_timer=update_global_timer,
                 synchronized_at=synchronized_at,
             )
+        )
+        summary["spare_request_sync"] = apply_spare_request_messages(
+            store,
+            staging,
+            [],
         )
     return summary
 
@@ -608,6 +631,21 @@ def _internet_message_id(item: Any) -> str:
         return ""
 
 
+def _sender_smtp_address(item: Any, direction: str) -> str:
+    if direction == "sent":
+        return str(getattr(item, "SenderEmailAddress", "") or "")
+    address = str(getattr(item, "SenderEmailAddress", "") or "")
+    if address and not address.startswith("/O="):
+        return address
+    try:
+        sender = getattr(item, "Sender", None)
+        exchange_user = sender.GetExchangeUser() if sender is not None else None
+        smtp = str(getattr(exchange_user, "PrimarySmtpAddress", "") or "")
+        return smtp or address
+    except Exception:
+        return address
+
+
 def _folder_metadata(
     folder: Any,
     *,
@@ -615,6 +653,9 @@ def _folder_metadata(
     store_id: str,
     cutoff: datetime | None,
     known_ids: set[str],
+    request_ids: set[str],
+    spare_srs: set[str],
+    rmas: set[str],
     cancel_event: Event | None,
     callback: ProgressCallback | None,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -656,7 +697,21 @@ def _folder_metadata(
             scanned += 1
             subject = str(getattr(item, "Subject", "") or "")
             ticket_ids = extract_ticket_ids(subject, known_ids)
-            if not ticket_ids:
+            sender = str(
+                getattr(item, "SenderName", "")
+                if direction == "received"
+                else getattr(item, "To", "")
+            )
+            sender_address_value = _sender_smtp_address(item, direction)
+            spare_candidate = is_spare_candidate(
+                subject=subject,
+                sender=sender,
+                sender_address_value=sender_address_value,
+                request_ids=request_ids,
+                spare_srs=spare_srs,
+                rmas=rmas,
+            )
+            if not ticket_ids and not spare_candidate:
                 continue
             entry_id = str(getattr(item, "EntryID", "") or "")
             internet_id = _internet_message_id(item)
@@ -668,12 +723,11 @@ def _folder_metadata(
                     "timestamp": to_iso(timestamp),
                     "direction": direction,
                     "subject": subject,
-                    "sender": str(
-                        getattr(item, "SenderName", "")
-                        if direction == "received"
-                        else getattr(item, "To", "")
-                    ),
+                    "sender": sender,
+                    "sender_address": sender_address_value,
                     "body": "",
+                    "html_body": "",
+                    "spare_candidate": spare_candidate,
                     "entry_id": entry_id,
                     "store_id": store_id,
                     "source": "outlook",
@@ -710,7 +764,18 @@ def _fetch_outlook_messages_on_worker(
         ) from exc
 
     active_ids = set(store.iter_ticket_ids(status="active"))
-    known_ids = active_ids if ticket_ids is None else active_ids & {str(value) for value in ticket_ids}
+    active_requests = list(store.iter_spare_requests())
+    spare_ticket_ids = {str(request.get("tt")) for request in active_requests if request.get("tt")}
+    eligible_ids = active_ids | spare_ticket_ids
+    known_ids = eligible_ids if ticket_ids is None else eligible_ids & {str(value) for value in ticket_ids}
+    request_ids = {str(request.get("request_id")) for request in active_requests if request.get("request_id")}
+    spare_srs = {str(request.get("spare_sr")) for request in active_requests if request.get("spare_sr")}
+    rmas = {
+        str(item.get("rma"))
+        for request in active_requests
+        for item in request.get("items", [])
+        if item.get("rma")
+    }
     if not known_ids:
         return [], {"scanned": 0, "matched": 0, "folders": 0, "full_scan": True}
     state = store.state().get("email_state", {})
@@ -749,6 +814,9 @@ def _fetch_outlook_messages_on_worker(
                 store_id=store_id,
                 cutoff=cutoff,
                 known_ids=known_ids,
+                request_ids=request_ids,
+                spare_srs=spare_srs,
+                rmas=rmas,
                 cancel_event=cancel_event,
                 callback=progress,
             )
@@ -759,6 +827,11 @@ def _fetch_outlook_messages_on_worker(
         # ticket's newest configured N matches.
         retained_count = int(store.config.get("email", {}).get("retained_message_count", 7))
         body_keys: set[str] = set()
+        body_keys.update(
+            message["message_key"]
+            for message in metadata
+            if message.get("spare_candidate")
+        )
         if retained_count:
             for ticket_id in known_ids:
                 candidates = [
@@ -778,8 +851,10 @@ def _fetch_outlook_messages_on_worker(
             try:
                 item = namespace.GetItemFromID(message["entry_id"], message["store_id"])
                 message["body"] = str(getattr(item, "Body", "") or "")
+                message["html_body"] = str(getattr(item, "HTMLBody", "") or "")
             except Exception:
                 message["body"] = ""
+                message["html_body"] = ""
             _notify(progress, phase="body", index=index, total=len(metadata))
         for message in metadata:
             message.pop("entry_id", None)
@@ -842,7 +917,13 @@ def fetch_and_commit_outlook(
     progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     active = set(store.iter_ticket_ids(status="active"))
-    targets = active if ticket_ids is None else active & {str(value) for value in ticket_ids}
+    spare_tts = {
+        str(request.get("tt"))
+        for request in store.iter_spare_requests()
+        if request.get("tt")
+    }
+    eligible = active | spare_tts
+    targets = eligible if ticket_ids is None else eligible & {str(value) for value in ticket_ids}
     messages, diagnostics = fetch_outlook_messages(
         store,
         ticket_ids=targets,
@@ -870,7 +951,20 @@ def import_mail_csv(store: ZeusStore, csv_path: Path) -> dict[str, Any]:
     csv_path = csv_path.expanduser().resolve()
     if not csv_path.is_file():
         raise MailSyncError(f"Mail CSV not found: {csv_path}")
-    known_ids = set(store.iter_ticket_ids(status="active"))
+    known_ids = set(store.iter_ticket_ids(status="active")) | {
+        str(request.get("tt"))
+        for request in store.iter_spare_requests()
+        if request.get("tt")
+    }
+    active_requests = list(store.iter_spare_requests())
+    request_ids = {str(request.get("request_id")) for request in active_requests}
+    spare_srs = {str(request.get("spare_sr")) for request in active_requests if request.get("spare_sr")}
+    rmas = {
+        str(item.get("rma"))
+        for request in active_requests
+        for item in request.get("items", [])
+        if item.get("rma")
+    }
     messages: list[dict[str, Any]] = []
     scanned = 0
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -881,7 +975,15 @@ def import_mail_csv(store: ZeusStore, csv_path: Path) -> dict[str, Any]:
             ids = extract_ticket_ids(subject, known_ids)
             direction = _normalize_direction(row.get("direction"))
             timestamp = parse_datetime(row.get("timestamp"))
-            if not ids or direction is None or timestamp is None:
+            spare_candidate = is_spare_candidate(
+                subject=subject,
+                sender=str(row.get("sender") or ""),
+                sender_address_value=str(row.get("sender_address") or ""),
+                request_ids=request_ids,
+                spare_srs=spare_srs,
+                rmas=rmas,
+            )
+            if (not ids and not spare_candidate) or direction is None or timestamp is None:
                 continue
             messages.append(
                 {
@@ -892,7 +994,10 @@ def import_mail_csv(store: ZeusStore, csv_path: Path) -> dict[str, Any]:
                     "direction": direction,
                     "subject": subject,
                     "body": row.get("body") or "",
+                    "html_body": row.get("html_body") or "",
                     "sender": row.get("sender") or "",
+                    "sender_address": row.get("sender_address") or "",
+                    "spare_candidate": spare_candidate,
                     "source": "csv",
                 }
             )

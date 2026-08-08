@@ -18,13 +18,15 @@ OUTLOOK_STORE_SUFFIXES = {".ost", ".pst"}
 # Runtime markers (processed filenames, hashes and successful operation times)
 # live in current/state.json and are never accepted from this file.
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 5,
+    "schema_version": 6,
     "paths": {
         "workbook_directory": None,
         "advanced_search_directory": None,
         "outlook_store_path": None,
         "template_directory": None,
         "spare_parts_export_directory": None,
+        "spare_request_template_path": None,
+        "spare_return_template_path": None,
     },
     "advanced_search": {
         "glob": "Advanced Search*.xlsx",
@@ -113,10 +115,26 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         "paths.spare_parts_export_directory",
-        "Spare Parts export folder",
+        "Spare Request export folder",
         "Paths",
         "directory",
-        "Destination for generated Spare Part Request workbooks. Zeus writes exports here but never imports them.",
+        "Root destination; Zeus creates Requests and Returns subfolders and never imports from them.",
+        nullable=True,
+    ),
+    SettingSpec(
+        "paths.spare_request_template_path",
+        "Spare Request XLSX template",
+        "Paths",
+        "xlsx_template",
+        "Local two-sheet Huawei request template. The file remains outside the installation and repository.",
+        nullable=True,
+    ),
+    SettingSpec(
+        "paths.spare_return_template_path",
+        "Faulty Return XLSX template",
+        "Paths",
+        "xlsx_template",
+        "Local one-sheet Fault Tag return template. The file remains outside the installation and repository.",
         nullable=True,
     ),
     SettingSpec(
@@ -376,7 +394,7 @@ def _migrate_legacy_keys(saved: dict[str, Any]) -> dict[str, Any]:
     migrated.pop("updatefile_dir", None)
     migrated.pop("mail", None)
     paths.pop("update_directory", None)
-    migrated["schema_version"] = 5
+    migrated["schema_version"] = 6
     return migrated
 
 
@@ -483,7 +501,7 @@ def load_config(home: Path) -> dict[str, Any]:
     migrated = _migrate_legacy_keys(saved)
     _assert_known_structure(migrated)
     config = deep_merge(DEFAULT_CONFIG, migrated)
-    config["schema_version"] = 5
+    config["schema_version"] = 6
     _validate(config)
     return config
 
@@ -493,7 +511,7 @@ def save_config(home: Path, config: dict[str, Any]) -> Path:
     resolved_home.mkdir(parents=True, exist_ok=True)
     _assert_known_structure(config)
     prepared = deep_merge(DEFAULT_CONFIG, config)
-    prepared["schema_version"] = 5
+    prepared["schema_version"] = 6
     _validate(prepared, validate_paths=True)
     path = config_path(resolved_home)
     atomic_write_json(path, prepared)
@@ -627,6 +645,16 @@ def coerce_setting_value(
         if not path.is_absolute():
             path = (base or Path.cwd()) / path
         return str(path.resolve())
+    if spec.kind == "xlsx_template":
+        if not text:
+            raise ValueError(f"{spec.label} cannot be blank")
+        path = Path(text.strip('"')).expanduser()
+        if not path.is_absolute():
+            path = (base or Path.cwd()) / path
+        path = path.resolve()
+        if path.suffix.lower() != ".xlsx":
+            raise ValueError(f"{spec.label} must be an .xlsx file")
+        return str(path)
     if spec.kind == "integer":
         try:
             parsed = int(text)

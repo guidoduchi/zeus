@@ -33,9 +33,12 @@ function displayTone(row: WorkspaceGridRow, key: string): string {
     plannedDate: "plannedColor",
     ticketAgeDays: "ticketAgeColor",
     emailLabel: "emailColor",
+    status: "lifecycleColor",
+    statusLabel: "lifecycleColor",
+    dispatchAgeDays: "dispatchAgeColor",
   };
   const value = row[establishedKeys[key] || `${key}Color`];
-  return value === "red" || value === "yellow" || value === "grey" ? value : "none";
+  return value === "red" || value === "yellow" || value === "grey" || value === "green" || value === "black" ? String(value) : "none";
 }
 
 export function WorkspaceGrid<Row extends WorkspaceGridRow>({

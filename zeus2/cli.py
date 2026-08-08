@@ -1485,6 +1485,25 @@ def _edit_directory_setting(
     return True
 
 
+def _edit_xlsx_template_setting(
+    config: dict[str, Any], spec: SettingSpec, *, base: Path
+) -> bool:
+    current = get_dotted(config, spec.key)
+    raw = input(
+        f"{spec.label} [{_format_setting_value(spec, current)}] "
+        "(Enter cancels; '-' clears it): "
+    ).strip()
+    if not raw:
+        return False
+    value = coerce_setting_value(spec.key, raw, base=base)
+    if value is not None:
+        path = Path(value)
+        if not path.is_file() or path.suffix.lower() != ".xlsx":
+            raise ValueError(f"Excel template does not exist: {path}")
+    set_dotted(config, spec.key, value)
+    return True
+
+
 def _outlook_default_directory(current: Any) -> Path | None:
     if not current:
         return None
@@ -1635,6 +1654,8 @@ def _interactive_config(store: ZeusStore) -> None:
                 changed = _edit_outlook_store_setting(candidate, base=store.config_home)
             elif spec.kind == "directory":
                 changed = _edit_directory_setting(candidate, spec, base=store.config_home)
+            elif spec.kind == "xlsx_template":
+                changed = _edit_xlsx_template_setting(candidate, spec, base=store.config_home)
             else:
                 changed = _edit_scalar_setting(candidate, spec, base=store.config_home)
             if changed:
@@ -1723,6 +1744,8 @@ def _doctor(store: ZeusStore) -> dict[str, Any]:
         "outlook_store_path",
         "template_directory",
         "spare_parts_export_directory",
+        "spare_request_template_path",
+        "spare_return_template_path",
     ):
         path = store.configured_directory(key)
         result["paths"][key] = str(path) if path else "not configured"

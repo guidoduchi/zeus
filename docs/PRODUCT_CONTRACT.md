@@ -46,16 +46,19 @@ Consequences:
 12. Work and Spare Parts editors own a fixed action row above the global command
     strip; scrolling their content never moves or overlaps either command rail.
 13. Top-level work is organized as extensible workspaces. Service Requests and
-    Spare Parts share the same dense interaction grammar without sharing
+    Spare Requests share the same dense interaction grammar without sharing
     incompatible sort, search, or column preferences.
-14. The Spare Parts workspace displays one row per normalized part. Current
-    rows open the parent SR's editor; finalized rows open a read-only archive.
-    A presentation row never becomes an independently writable record.
-15. SR is mandatory, always visible, and pinned as the literal first dashboard
-    column. Saved browser preferences cannot hide or displace it.
-16. Finalized SR hardware remains visible in Spare Parts under the same SR.
-    Closed rows are visibly read-only and cannot invoke Pendings edits or MOP
-    generation.
+14. Spare Requests has Active Requests, reusable Eligible SR Parts, and
+    Completed subviews. Eligible rows remain a projection; exporting creates an
+    independent persistent request immediately.
+15. TT, RMA, email inactivity, then cumulative Email count are the first active
+    request fields. Lifecycle attendance and dispatch aging use separate visual
+    signals.
+16. The damaged-device Spare Parts editor remains inside SR detail. Once its
+    request XLSX is exported, later request work is available only in the Spare
+    Requests workspace.
+17. Warehouse email only creates a candidate. Returned archive requires a user
+    confirmation, or a manual override with a mandatory note.
 
 ## Authority invariants
 
@@ -79,13 +82,17 @@ Consequences:
 10. Multiple damaged devices and parts are represented by the normalized
     `Spare Parts` worksheet and `local.spare_parts`; flat compatibility cells
     must never become a competing nested-data authority.
-11. Spare Part Request workbooks are generated outputs only. Their configured
+11. Spare Request and return workbooks are generated outputs only. Their configured
     destination is excluded from every startup, Query, import, reconciliation,
     and recovery scan.
-12. Every spare-parts row belongs to exactly one valid eight-digit SR. Current
-    rows are owned by Pendings/Markdown; finalized rows are read from the
-    validated append-only Closed.xlsx archive and cannot become a second
-    writable source.
+12. One active request owns one eight-digit TT and at most one Spare SR. Each
+    quantity-expanded unit owns at most one globally unique immutable RMA;
+    requested and delivered BOM are different fields.
+13. Email/manual contradictions produce conflicts. Existing RMA and New SN facts
+    are never silently overwritten.
+14. Completed/cancelled items are appended to dedicated Closed.xlsx tabs,
+    removed from active Markdown, and cannot reopen. Active spare email and
+    completed private/archive data are retained for at most 180 days.
 
 ## Runtime invariants
 

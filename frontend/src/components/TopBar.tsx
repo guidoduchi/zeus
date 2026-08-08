@@ -25,7 +25,7 @@ export function TopBar({
     <header className="top-bar">
       <div className="top-title">
         <span className="bolt" aria-hidden="true">ϟ</span>
-        <strong>ZEUS {version || "3.1.0"}</strong>
+        <strong>ZEUS {version || "3.1.1"}</strong>
         <span className="top-separator">|</span>
         <nav className="workspace-switcher" aria-label="Zeus workspace">
           <button
@@ -38,11 +38,11 @@ export function TopBar({
           </button>
           <button
             type="button"
-            className={workspace === "spare-parts" ? "active" : ""}
-            aria-pressed={workspace === "spare-parts"}
-            onClick={() => onWorkspaceChange("spare-parts")}
+            className={workspace === "spare-requests" ? "active" : ""}
+            aria-pressed={workspace === "spare-requests"}
+            onClick={() => onWorkspaceChange("spare-requests")}
           >
-            Spare Parts
+            Spare Requests
           </button>
         </nav>
         {detailOpen && <span className="detail-crumb">/ Detail</span>}

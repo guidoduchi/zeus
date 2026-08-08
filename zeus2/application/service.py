@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from copy import deepcopy
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,6 +19,31 @@ from ..excel_import import read_closed, validate_closed_against_index
 from ..mail import fetch_and_commit_outlook, synchronize_staged_email
 from ..mop import generate_mop
 from ..reconcile import sync_newest_advanced_search
+from ..spare_request_excel import (
+    append_archived_item,
+    export_initial_request,
+    export_return_workbook,
+    purge_archived_items,
+    purge_spare_archive_backups,
+    read_archived_items,
+)
+from ..spare_request_mail import purge_old_active_email_bodies
+from ..spare_requests import (
+    ECUADOR_TIMEZONE,
+    SpareRequestError,
+    create_request_record,
+    load_reference_data,
+    next_request_id,
+    normalize_profile,
+    normalize_request_lines,
+    normalize_rma,
+    normalize_spare_sr,
+    normalize_tt,
+    request_filename,
+    request_history,
+    request_subject,
+    save_reference_data,
+)
 from ..startup import StartupResult, reconcile_advanced_and_new_mail, run_startup
 from ..store import StoreError, ZeusStore
 from ..tickets import empty_email
@@ -25,6 +51,7 @@ from ..utils import iso_now, normalize_ticket_id
 from .edits import edit_ticket_through_pendings
 from .errors import (
     BusyError,
+    ConflictError,
     FeatureUnavailableError,
     NotFoundError,
     ValidationError,
@@ -33,9 +60,13 @@ from .jobs import EventBroker, JobContext, JobManager
 from .serialization import (
     DEFAULT_SORT_DIRECTIONS,
     SPARE_PART_DEFAULT_SORT_DIRECTIONS,
+    SPARE_REQUEST_DEFAULT_SORT_DIRECTIONS,
     dashboard_payload,
+    serialize_spare_request_detail,
     serialize_ticket_detail,
     spare_parts_dashboard_payload,
+    spare_request_revision,
+    spare_requests_dashboard_payload,
 )
 from .settings import outlook_candidates, settings_payload, update_settings
 
@@ -248,6 +279,28 @@ class ApplicationService:
             None,
         )
 
+    def _closed_workbook_path(self, *, required: bool = False) -> Path | None:
+        directory = self.store.configured_directory("workbook_directory")
+        path = directory / "Closed.xlsx" if directory is not None else None
+        if required and path is None:
+            raise FeatureUnavailableError(
+                "Configure the workbook folder before archiving Spare Requests"
+            )
+        return path
+
+    def _spare_template(self, key: str, label: str) -> Path:
+        raw = self.store.config.get("paths", {}).get(key)
+        path = Path(str(raw)).expanduser().resolve() if raw else None
+        if path is None or not path.is_file() or path.suffix.lower() != ".xlsx":
+            raise FeatureUnavailableError(f"Configure the local {label} template first")
+        return path
+
+    def _spare_export_root(self) -> Path:
+        directory = self.store.configured_directory("spare_parts_export_directory")
+        if directory is None:
+            raise FeatureUnavailableError("Configure the Spare Request export folder first")
+        return directory
+
     def dashboard(
         self,
         *,
@@ -255,6 +308,7 @@ class ApplicationService:
         sort: str,
         search: str,
         direction: str | None = None,
+        view: str = "active",
     ) -> dict[str, Any]:
         workspaces = {
             "service-requests": (
@@ -266,6 +320,11 @@ class ApplicationService:
                 {"sr", "planned", "site", "cloud", "device", "part", "bom"},
                 SPARE_PART_DEFAULT_SORT_DIRECTIONS,
                 spare_parts_dashboard_payload,
+            ),
+            "spare-requests": (
+                {"tt", "rma", "email", "status", "age", "site", "cloud", "bom"},
+                SPARE_REQUEST_DEFAULT_SORT_DIRECTIONS,
+                spare_requests_dashboard_payload,
             ),
         }
         definition = workspaces.get(workspace)
@@ -287,6 +346,11 @@ class ApplicationService:
         }
         if workspace == "spare-parts":
             arguments["closed_tickets"] = self._closed_archive_tickets()
+        elif workspace == "spare-requests":
+            if view not in {"active", "eligible", "completed"}:
+                raise ValidationError(f"Unsupported Spare Requests view: {view}")
+            arguments["view"] = view
+            arguments["closed_path"] = self._closed_workbook_path()
         return serializer(self.store, **arguments)
 
     def ticket(self, ticket_id: str) -> dict[str, Any]:
@@ -310,6 +374,658 @@ class ApplicationService:
         detail["history"] = self.ticket_history(normalized_ticket_id)
         detail["mops"] = self.list_mops(normalized_ticket_id)
         return detail
+
+    def spare_request(self, request_id: str) -> dict[str, Any]:
+        try:
+            request = self.store.read_spare_request(request_id)
+        except (StoreError, ValueError) as exc:
+            raise NotFoundError(f"Spare Request {request_id} was not found") from exc
+        return serialize_spare_request_detail(request)
+
+    def spare_reference_data(self) -> dict[str, Any]:
+        return load_reference_data(self.store.config_home)
+
+    def save_spare_reference_data(self, value: dict[str, Any]) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Wait for the current Zeus operation before changing managers")
+        try:
+            result = save_reference_data(self.store.config_home, value)
+        except SpareRequestError as exc:
+            raise ValidationError(str(exc)) from exc
+        finally:
+            self._operation_lock.release()
+        self.broker.publish("configuration", {"changed": ["spare-request-managers"]})
+        return result
+
+    def spare_request_prefill(self, ticket_id: str) -> dict[str, Any]:
+        normalized = normalize_ticket_id(ticket_id)
+        try:
+            ticket = self.store.read_ticket(normalized)
+        except StoreError as exc:
+            raise NotFoundError(f"Active SR {ticket_id} was not found") from exc
+        local = ticket.get("local", {}).get("fields", {})
+        upstream = ticket.get("upstream", {}).get("fields", {})
+
+        def first(*names: str) -> Any:
+            return next(
+                (upstream.get(name) for name in names if upstream.get(name) not in (None, "")),
+                None,
+            )
+
+        lines: list[dict[str, Any]] = []
+        for device_number, device in enumerate(
+            ticket.get("local", {}).get("spare_parts", []), start=1
+        ):
+            for part_number, part in enumerate(device.get("parts") or [], start=1):
+                if not part.get("bom"):
+                    continue
+                lines.append(
+                    {
+                        "bom": part.get("bom"),
+                        "amount": 1,
+                        "description": part.get("part") or part.get("bom"),
+                        "part": part.get("part"),
+                        "model": device.get("model"),
+                        "device": device.get("device"),
+                        "slot": part.get("slot"),
+                        "faultySn": part.get("faulty_sn"),
+                        "reportDate": first("Report Date", "ReportDate", "Created Date"),
+                        "deviceNumber": device_number,
+                        "partNumber": part_number,
+                    }
+                )
+        return {
+            "ticketId": normalized,
+            "ticketExists": True,
+            "profile": {
+                "customerName": first("Customer Name", "Customer", "Account Name"),
+                "siteCode": local.get("Site"),
+                "siteName": first("Site Name"),
+                "siteAddress": first("Site Address", "Customer Address", "Address"),
+                "cloud": local.get("Cloud"),
+                "contact": {
+                    "name": first("Customer Contact", "Contact Name", "Contact"),
+                    "email": first("Customer Email", "Contact Email"),
+                    "phone": first("Customer Phone", "Contact Phone", "Phone"),
+                },
+            },
+            "lines": lines,
+            "warning": None if lines else "This SR has no damaged part with a BOM yet.",
+        }
+
+    def export_spare_request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        exported: Path | None = None
+        persisted = False
+        try:
+            source = str(payload.get("source") or "manual").strip().casefold()
+            try:
+                tt = normalize_tt(payload.get("ticketId"))
+                profile = normalize_profile(payload.get("profile"))
+                lines = normalize_request_lines(payload.get("lines"))
+            except SpareRequestError as exc:
+                raise ValidationError(str(exc)) from exc
+            ticket_exists = self.store.ticket_file(tt).is_file()
+            if source == "ticket" and not ticket_exists:
+                raise ValidationError(f"SR {tt} must be active before exporting from its detail")
+            if source not in {"ticket", "manual"}:
+                raise ValidationError("Request source must be ticket or manual")
+            occupied_request_ids = set(self.store.iter_spare_request_ids())
+            closed_path = self._closed_workbook_path()
+            if closed_path is not None:
+                occupied_request_ids.update(
+                    str(row.get("Request ID") or "")
+                    for row in read_archived_items(closed_path)
+                    if row.get("Request ID")
+                )
+            requests_directory = self._spare_export_root() / "Requests"
+            if requests_directory.is_dir():
+                for prior_export in requests_directory.glob("*.xlsx"):
+                    suffix = prior_export.stem.rsplit("–", 1)[-1].split("-r", 1)[0]
+                    if len(suffix) == 12 and suffix.isdigit():
+                        occupied_request_ids.add(suffix)
+            request_id = next_request_id(occupied_request_ids)
+            subject = request_subject(request_id, tt, lines)
+            filename = request_filename(request_id, tt, profile, lines)
+            request = create_request_record(
+                request_id=request_id,
+                tt=tt,
+                source=source,
+                profile=profile,
+                lines=lines,
+                export_path=None,
+                subject=subject,
+            )
+            exported = export_initial_request(
+                self._spare_template("spare_request_template_path", "Spare Request XLSX"),
+                self._spare_export_root(),
+                request,
+                filename,
+            )
+            timestamp = request.get("created_at") or iso_now()
+            request["export"].update(
+                {
+                    "request_filename": exported.name,
+                    "request_path": str(exported),
+                    "subject": subject,
+                    "created_at": timestamp,
+                    "revisions": [
+                        {"filename": exported.name, "path": str(exported), "created_at": timestamp}
+                    ],
+                }
+            )
+            request["history"][0]["action"] = "request-created"
+            request["history"][0]["summary"]["filename"] = exported.name
+            with self.store.transaction(
+                "spare-request-export",
+                {"request_id": request_id, "tt": tt, "items": len(request["items"])},
+            ) as staging:
+                self.store.write_spare_request(staging, request)
+            persisted = True
+            self._touch_data("spare-request-export")
+            warnings = []
+            if source == "manual" and not ticket_exists:
+                warnings.append(
+                    f"TT {tt} is not in local Service Requests. The request was exported with that warning recorded."
+                )
+            return {
+                "request": self.spare_request(request_id),
+                "filename": exported.name,
+                "path": str(exported),
+                "subject": subject,
+                "warnings": warnings,
+            }
+        except Exception:
+            if exported is not None and not persisted:
+                exported.unlink(missing_ok=True)
+            raise
+        finally:
+            self._operation_lock.release()
+
+    def reexport_spare_request(self, request_id: str) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        exported: Path | None = None
+        persisted = False
+        try:
+            request = self.store.read_spare_request(request_id)
+            filename = request_filename(
+                request["request_id"], request["tt"], request["profile"], request["request_lines"]
+            )
+            exported = export_initial_request(
+                self._spare_template("spare_request_template_path", "Spare Request XLSX"),
+                self._spare_export_root(),
+                request,
+                filename,
+            )
+            timestamp = iso_now()
+            with self.store.transaction(
+                "spare-request-reexport", {"request_id": request_id, "filename": exported.name}
+            ) as staging:
+                updated = self.store.read_spare_request(request_id, staging)
+                updated["export"]["request_filename"] = exported.name
+                updated["export"]["request_path"] = str(exported)
+                updated["export"].setdefault("revisions", []).append(
+                    {"filename": exported.name, "path": str(exported), "created_at": timestamp}
+                )
+                request_history(updated, "request-reexported", {"filename": exported.name})
+                self.store.write_spare_request(staging, updated)
+            persisted = True
+            self._touch_data("spare-request-reexport")
+            return {
+                "request": self.spare_request(request_id),
+                "filename": exported.name,
+                "path": str(exported),
+                "subject": request.get("export", {}).get("subject"),
+            }
+        except Exception:
+            if exported is not None and not persisted:
+                exported.unlink(missing_ok=True)
+            raise
+        finally:
+            self._operation_lock.release()
+
+    @staticmethod
+    def _find_request_item(request: dict[str, Any], item_id: str) -> dict[str, Any]:
+        item = next(
+            (value for value in request.get("items", []) if value.get("item_id") == item_id),
+            None,
+        )
+        if item is None:
+            raise ValidationError(f"Item {item_id} does not belong to this request")
+        return item
+
+    def edit_spare_request(
+        self,
+        request_id: str,
+        *,
+        expected_revision: str,
+        changes: dict[str, Any],
+        item_updates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        try:
+            current = self.store.read_spare_request(request_id)
+            if not expected_revision or spare_request_revision(current) != expected_revision:
+                raise ConflictError("This Spare Request changed. Reload before saving again.")
+            note = str(changes.get("note") or "").strip()
+            active_requests = list(self.store.iter_spare_requests())
+            closed_path = self._closed_workbook_path()
+            archived_rmas = {
+                str(row.get("RMA"))
+                for row in read_archived_items(closed_path)
+                if row.get("RMA")
+            } if closed_path is not None else set()
+            with self.store.transaction(
+                "spare-request-edit", {"request_id": request_id}
+            ) as staging:
+                request = self.store.read_spare_request(request_id, staging)
+                if "ticketId" in changes:
+                    if not request.get("tt_editable"):
+                        raise ValidationError("The TT inherited from a Service Request is immutable")
+                    incoming_tt = normalize_tt(changes.get("ticketId"))
+                    if incoming_tt != request.get("tt"):
+                        if any(item.get("rma") for item in request.get("items", [])) and not note:
+                            raise ValidationError("Correcting a TT after RMA assignment requires a note")
+                        previous = request.get("tt")
+                        request["tt"] = incoming_tt
+                        request.setdefault("export", {})["subject"] = request_subject(
+                            request["request_id"], incoming_tt, request.get("request_lines", [])
+                        )
+                        request_history(
+                            request,
+                            "tt-corrected",
+                            {"previous": previous, "current": incoming_tt, "note": note},
+                        )
+                if "spareSr" in changes:
+                    incoming_sr = normalize_spare_sr(changes.get("spareSr"))
+                    if request.get("spare_sr") and incoming_sr != request.get("spare_sr") and not note:
+                        raise ValidationError("Replacing an assigned Spare SR requires a note")
+                    if incoming_sr and any(
+                        candidate.get("request_id") != request_id
+                        and candidate.get("spare_sr") == incoming_sr
+                        for candidate in active_requests
+                    ):
+                        raise ValidationError(f"Spare SR {incoming_sr} already belongs to another active request")
+                    request["spare_sr"] = incoming_sr
+                    if incoming_sr:
+                        timestamp = iso_now()
+                        for item in request.get("items", []):
+                            item["attendance_confirmed_at"] = item.get("attendance_confirmed_at") or timestamp
+                            item["attendance_source"] = item.get("attendance_source") or "manual"
+                for update in item_updates:
+                    if not isinstance(update, dict):
+                        raise ValidationError("Item updates must be objects")
+                    item = self._find_request_item(request, str(update.get("itemId") or ""))
+                    if "rma" in update:
+                        incoming_rma = normalize_rma(update.get("rma"))
+                        if item.get("rma") and incoming_rma != item.get("rma"):
+                            raise ValidationError(f"RMA {item['rma']} is immutable")
+                        if incoming_rma and any(
+                            candidate.get("request_id") != request_id
+                            and any(
+                                candidate_item.get("rma") == incoming_rma
+                                for candidate_item in candidate.get("items", [])
+                            )
+                            for candidate in active_requests
+                        ):
+                            raise ValidationError(f"RMA {incoming_rma} already belongs to another active request")
+                        if incoming_rma and any(
+                            candidate_item is not item and candidate_item.get("rma") == incoming_rma
+                            for candidate_item in request.get("items", [])
+                        ):
+                            raise ValidationError(f"RMA {incoming_rma} already belongs to another item")
+                        if incoming_rma and incoming_rma in archived_rmas:
+                            raise ValidationError(f"RMA {incoming_rma} already belongs to a completed item")
+                        item["rma"] = incoming_rma
+                        if incoming_rma:
+                            item["attendance_confirmed_at"] = item.get("attendance_confirmed_at") or iso_now()
+                            item["attendance_source"] = item.get("attendance_source") or "manual"
+                    if "deliveredBom" in update:
+                        incoming_bom = str(update.get("deliveredBom") or "").strip() or None
+                        if item.get("delivered_bom") and incoming_bom != item.get("delivered_bom"):
+                            item.setdefault("conflicts", []).append(
+                                {
+                                    "field": "delivered_bom",
+                                    "existing": item.get("delivered_bom"),
+                                    "incoming": incoming_bom,
+                                    "message_key": None,
+                                    "detected_at": iso_now(),
+                                    "resolved_at": None,
+                                    "resolution": None,
+                                    "note": note or None,
+                                }
+                            )
+                        else:
+                            item["delivered_bom"] = incoming_bom
+                    if "newSn" in update:
+                        incoming_sn = str(update.get("newSn") or "").strip() or None
+                        if item.get("new_sn") and incoming_sn != item.get("new_sn"):
+                            item.setdefault("conflicts", []).append(
+                                {
+                                    "field": "new_sn",
+                                    "existing": item.get("new_sn"),
+                                    "incoming": incoming_sn,
+                                    "message_key": None,
+                                    "detected_at": iso_now(),
+                                    "resolved_at": None,
+                                    "resolution": None,
+                                    "note": note or None,
+                                }
+                            )
+                        else:
+                            item["new_sn"] = incoming_sn
+                    if update.get("attended"):
+                        item["attendance_confirmed_at"] = item.get("attendance_confirmed_at") or iso_now()
+                        item["attendance_source"] = item.get("attendance_source") or "manual"
+                    if "dispatchAt" in update:
+                        incoming_dispatch = str(update.get("dispatchAt") or "").strip() or None
+                        if item.get("dispatch_at") and incoming_dispatch != item.get("dispatch_at"):
+                            raise ValidationError("Dispatch time cannot be silently overwritten")
+                        item["dispatch_at"] = incoming_dispatch
+                        item["dispatch_source"] = "manual" if incoming_dispatch else None
+                    if "notes" in update:
+                        item["notes"] = str(update.get("notes") or "").strip() or None
+                request_history(
+                    request,
+                    "request-edited",
+                    {"fields": sorted(changes), "items": len(item_updates), "note": note or None},
+                )
+                self.store.write_spare_request(staging, request)
+            self._touch_data("spare-request-edit")
+            return {"request": self.spare_request(request_id)}
+        except SpareRequestError as exc:
+            raise ValidationError(str(exc)) from exc
+        finally:
+            self._operation_lock.release()
+
+    def resolve_spare_conflict(
+        self,
+        request_id: str,
+        *,
+        item_id: str | None,
+        conflict_index: int,
+        resolution: str,
+        note: str,
+    ) -> dict[str, Any]:
+        if resolution not in {"keep-existing", "accept-incoming"}:
+            raise ValidationError("Choose whether to keep the existing or accept the incoming value")
+        if not note.strip():
+            raise ValidationError("Conflict resolution requires a note")
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        try:
+            with self.store.transaction(
+                "spare-request-conflict-resolution", {"request_id": request_id}
+            ) as staging:
+                request = self.store.read_spare_request(request_id, staging)
+                target = self._find_request_item(request, item_id) if item_id else request
+                conflicts = target.get("conflicts", [])
+                if conflict_index < 0 or conflict_index >= len(conflicts):
+                    raise ValidationError("Conflict was not found")
+                conflict = conflicts[conflict_index]
+                if conflict.get("resolved_at"):
+                    raise ValidationError("Conflict is already resolved")
+                field = str(conflict.get("field") or "")
+                mutable_fields = {"spare_sr", "delivered_bom", "new_sn"}
+                if resolution == "accept-incoming" and field not in mutable_fields:
+                    raise ValidationError(
+                        f"Incoming {field or 'conflict'} cannot replace an immutable or structural fact"
+                    )
+                if resolution == "accept-incoming" and field in mutable_fields:
+                    key = {
+                        "spare_sr": "spare_sr",
+                        "delivered_bom": "delivered_bom",
+                        "new_sn": "new_sn",
+                    }[field]
+                    if field == "spare_sr" and any(
+                        candidate.get("request_id") != request_id
+                        and candidate.get("spare_sr") == conflict.get("incoming")
+                        for candidate in self.store.iter_spare_requests()
+                    ):
+                        raise ValidationError(
+                            f"Spare SR {conflict.get('incoming')} already belongs to another active request"
+                        )
+                    (request if field == "spare_sr" else target)[key] = conflict.get("incoming")
+                conflict["resolved_at"] = iso_now()
+                conflict["resolution"] = resolution
+                conflict["note"] = note.strip()
+                request_history(
+                    request,
+                    "conflict-resolved",
+                    {
+                        "itemId": item_id,
+                        "field": field,
+                        "resolution": resolution,
+                        "note": note.strip(),
+                    },
+                )
+                self.store.write_spare_request(staging, request)
+            self._touch_data("spare-request-conflict-resolution")
+            return {"request": self.spare_request(request_id)}
+        finally:
+            self._operation_lock.release()
+
+    def export_spare_return(self, selections: list[dict[str, Any]]) -> dict[str, Any]:
+        if not isinstance(selections, list) or not selections:
+            raise ValidationError("Choose at least one RMA for the return workbook")
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        result: dict[str, Any] | None = None
+        persisted = False
+        try:
+            requests = list(self.store.iter_spare_requests())
+            by_item = {
+                item.get("item_id"): (request, item)
+                for request in requests
+                for item in request.get("items", [])
+            }
+            prepared: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+            for selection in selections:
+                item_id = str(selection.get("itemId") or "")
+                pair = by_item.get(item_id)
+                if pair is None:
+                    raise ValidationError(f"Active item {item_id} was not found")
+                request, item = pair
+                if not item.get("rma"):
+                    raise ValidationError(f"Item {item_id} has no RMA")
+                condition = str(selection.get("condition") or "Faulty").title()
+                prepared.append((request, item, condition))
+            result = export_return_workbook(
+                self._spare_template("spare_return_template_path", "Faulty Return XLSX"),
+                self._spare_export_root(),
+                prepared,
+            )
+            timestamp = iso_now()
+            selected = {item.get("item_id"): condition for _, item, condition in prepared}
+            with self.store.transaction(
+                "spare-return-export",
+                {"items": sorted(selected), "filename": result["filename"]},
+            ) as staging:
+                for request_id in {request["request_id"] for request, _, _ in prepared}:
+                    request = self.store.read_spare_request(request_id, staging)
+                    affected = []
+                    for item in request.get("items", []):
+                        condition = selected.get(item.get("item_id"))
+                        if condition is None:
+                            continue
+                        item["return_condition"] = condition
+                        item["return_exported_at"] = timestamp
+                        item["return_export_filename"] = result["filename"]
+                        item["return_batch_id"] = result["filename"]
+                        affected.append(item["item_id"])
+                    request["export"].setdefault("returns", []).append(
+                        {
+                            "filename": result["filename"],
+                            "path": result["path"],
+                            "subject": result["subject"],
+                            "created_at": timestamp,
+                            "item_ids": affected,
+                        }
+                    )
+                    request_history(
+                        request,
+                        "return-exported",
+                        {"filename": result["filename"], "items": affected},
+                    )
+                    self.store.write_spare_request(staging, request)
+            persisted = True
+            self._touch_data("spare-return-export")
+            return result
+        except Exception:
+            if result is not None and not persisted:
+                exported_path = str(result.get("path") or "").strip()
+                if exported_path:
+                    Path(exported_path).unlink(missing_ok=True)
+            raise
+        finally:
+            self._operation_lock.release()
+
+    def archive_spare_items(
+        self,
+        *,
+        item_ids: list[str],
+        reason: str,
+        note: str,
+        manual_override: bool = False,
+    ) -> dict[str, Any]:
+        normalized_reason = str(reason or "").strip().casefold()
+        if normalized_reason not in {"returned", "cancelled"}:
+            raise ValidationError("Archive reason must be returned or cancelled")
+        clean_ids = {str(value or "").strip() for value in item_ids if str(value or "").strip()}
+        if not clean_ids:
+            raise ValidationError("Choose at least one item to archive")
+        if normalized_reason == "cancelled" and not note.strip():
+            raise ValidationError("Cancellation requires a reason note")
+        if manual_override and not note.strip():
+            raise ValidationError("Manual return confirmation requires a note")
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        try:
+            requests = list(self.store.iter_spare_requests())
+            pairs = {
+                item.get("item_id"): (request, item)
+                for request in requests
+                for item in request.get("items", [])
+                if item.get("item_id") in clean_ids
+            }
+            missing = sorted(clean_ids - set(pairs))
+            if missing:
+                raise ValidationError("Active items were not found: " + ", ".join(missing))
+            if normalized_reason == "returned":
+                for item_id, (_, item) in pairs.items():
+                    if not item.get("warehouse_candidate_at") and not manual_override:
+                        raise ValidationError(
+                            f"{item_id} has no exact warehouse email candidate. Use manual override with a note if verified independently."
+                        )
+            closed_path = self._closed_workbook_path(required=True)
+            assert closed_path is not None
+            archive_results = []
+            for request, item in pairs.values():
+                archive_results.append(
+                    append_archived_item(
+                        closed_path,
+                        request,
+                        item,
+                        reason=normalized_reason,
+                        note=note.strip() or None,
+                    )
+                )
+            with self.store.transaction(
+                "spare-request-archive",
+                {
+                    "items": sorted(clean_ids),
+                    "reason": normalized_reason,
+                    "manual_override": manual_override,
+                },
+            ) as staging:
+                for request_id in {request["request_id"] for request, _ in pairs.values()}:
+                    request = self.store.read_spare_request(request_id, staging)
+                    request["items"] = [
+                        item for item in request.get("items", []) if item.get("item_id") not in clean_ids
+                    ]
+                    if request["items"]:
+                        request_history(
+                            request,
+                            "items-archived",
+                            {"items": sorted(clean_ids), "reason": normalized_reason, "note": note.strip() or None},
+                        )
+                        self.store.write_spare_request(staging, request)
+                    else:
+                        self.store.delete_spare_request(request_id, staging)
+            self.store.purge_state_backups_for_closed_tickets()
+            self._touch_data("spare-request-archive")
+            return {
+                "archived": sorted(clean_ids),
+                "reason": normalized_reason,
+                "closedPath": str(closed_path),
+                "results": archive_results,
+            }
+        finally:
+            self._operation_lock.release()
+
+    def purge_spare_data(self, *, item_ids: list[str] | None = None) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        try:
+            closed_path = self._closed_workbook_path()
+            result = (
+                purge_archived_items(closed_path, item_ids=set(item_ids or []))
+                if closed_path is not None
+                else {"removed": 0, "remaining": 0}
+            )
+            backups_removed = (
+                purge_spare_archive_backups(closed_path, remove_all=True)
+                if closed_path is not None and result.get("removed")
+                else 0
+            )
+            result["backupsRemoved"] = backups_removed
+            self._touch_data("spare-request-purge")
+            return result
+        finally:
+            self._operation_lock.release()
+
+    def enforce_spare_retention(self) -> dict[str, Any]:
+        cutoff = datetime.now(ECUADOR_TIMEZONE) - timedelta(days=180)
+        active_removed = 0
+        with self.store.transaction(
+            "spare-request-retention", {"before": cutoff.isoformat()}, backup=False
+        ) as staging:
+            active_removed = purge_old_active_email_bodies(
+                self.store, staging, before=cutoff
+            )
+        closed_path = self._closed_workbook_path()
+        archived = (
+            purge_archived_items(closed_path, archived_before=cutoff)
+            if closed_path is not None
+            else {"removed": 0, "remaining": 0}
+        )
+        state_backups_removed = 0
+        cutoff_naive = cutoff.replace(tzinfo=None)
+        for path in self.store.list_backups():
+            modified = datetime.fromtimestamp(path.stat().st_mtime)
+            if active_removed or modified < cutoff_naive:
+                path.unlink(missing_ok=True)
+                state_backups_removed += 1
+        archive_backups_removed = (
+            purge_spare_archive_backups(
+                closed_path,
+                before=cutoff,
+                remove_all=bool(archived.get("removed")),
+            )
+            if closed_path is not None
+            else 0
+        )
+        if active_removed or archived.get("removed"):
+            self._touch_data("spare-request-retention")
+        return {
+            "activeEmailBodies": active_removed,
+            "archive": archived,
+            "stateBackups": state_backups_removed,
+            "archiveBackups": archive_backups_removed,
+        }
 
     def edit_ticket(
         self,
@@ -429,6 +1145,18 @@ class ApplicationService:
                 cancel_event=context.cancel_event,
                 progress=context.progress_callback,
             )
+            try:
+                context.report("retention", "Applying 180-day Spare Request retention")
+                retention = self.enforce_spare_retention()
+                removed = int(retention.get("activeEmailBodies") or 0) + int(
+                    retention.get("archive", {}).get("removed") or 0
+                )
+                if removed:
+                    result.notices.append(
+                        f"Spare Request retention purged {removed} record(s) older than 180 days."
+                    )
+            except Exception as exc:
+                result.warnings.append(f"Spare Request retention could not run: {exc}")
             context.report("dashboard", "Updating the dashboard")
             self.latest_startup = result
             self._touch_data("startup" if startup else "manual-query")
@@ -590,6 +1318,8 @@ class ApplicationService:
             "outlook_store_path",
             "template_directory",
             "spare_parts_export_directory",
+            "spare_request_template_path",
+            "spare_return_template_path",
         ):
             path = self.store.configured_directory(key)
             result["paths"][key] = {

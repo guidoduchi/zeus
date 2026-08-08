@@ -11,6 +11,8 @@
 | `lifecycle` | Advanced Search reconciliation and verified publication |
 | `email` | optional Outlook staging and synchronization |
 | `mop` | MOP output generation |
+| `current/spare_requests/active` | explicit Spare Request export plus LASpare/iCare/manual lifecycle transactions |
+| Completed Spare Request rows/email | dedicated `Closed.xlsx` tabs; never copied back to active Markdown |
 
 Every current ticket lives at `current/tickets/<SRNo>/<SRNo>.md`. The first
 Markdown line carries a base64-encoded JSON record marker; the remaining text
@@ -47,23 +49,36 @@ record. The next authorized browser edit, recreation, or publication writes the
 normalized worksheet. The flat primary-sheet columns remain generated export
 summaries, not a second editable hierarchy.
 
-## Workspace projections and request exports
+## Spare Request records and outputs
 
-Service Requests projects current Markdown records. Spare Parts combines those
-current records with the normalized non-email fields already preserved in
-Zeus-validated Closed.xlsx. It flattens each device/part pair for dense
-management and uses a presentation-only row identity composed from the SR and
-current device/part positions. SR is mandatory, pinned first, and remains the
-owner regardless of lifecycle. Current editing targets the parent SR through
-the existing Pendings-first transaction; finalized Closed rows are read-only.
-Closed.xlsx is cached in memory by file identity for dashboard searches, but
-the cache is never an authority and is invalidated when the workbook changes.
+Service Requests projects current ticket Markdown. The top-level Spare Requests
+workspace is different: Active Requests projects independent records under
+`current/spare_requests/active/<request_id>/`; Eligible SR Parts is a reusable
+projection of current `local.spare_parts`; Completed reads the two dedicated
+tabs in validated Closed.xlsx. An eligible source part is never consumed and
+may seed multiple independent requests.
 
-The configured Spare Parts export directory is outside the authority graph.
-Files written there are downstream request artifacts: Zeus may replace or add
-an export only through an explicit future export operation, but startup, Query,
-recovery, and reconciliation never read those files. The workbook schema is
-deliberately deferred until the required email-generation format is defined.
+The request ID is a unique Ecuador `YYMMDDHHmmss` allocated at initial XLSX
+export. One request carries one eight-digit TT, at most one `SR` plus seven-digit
+Spare SR, a profile snapshot, original BOM groups, and quantity-expanded unit
+items. Each unit item owns at most one immutable `C` plus ten-digit RMA. It
+stores requested and delivered BOM separately, plus optional faulty/new serials,
+attendance, dispatch, return export, warehouse candidate, conflicts, and audit
+history. Partial confirmation assigns available RMAs and leaves remaining units
+in Awaiting stock under the same request.
+
+Outlook facts are applied in confirmation-before-dispatch order irrespective of
+message arrival. Existing contradictory TT, Spare SR, RMA, delivered BOM, or New
+SN facts are never silently overwritten. Exact ITSAnet RMA + Spare SR messages
+create candidates only; archive remains an explicit user action.
+
+The configured export directory and local request/return templates are outside
+the authority graph. Request output retains the supplied two sheets and return
+output retains the supplied one sheet; additional units extend rows rather than
+adding sheets. Startup, Query, recovery, and reconciliation never import output
+workbooks. Completed/cancelled items leave active Markdown permanently and are
+appended to `Spare Requests`; associated retained mail is appended to `Spare
+Request Emails`.
 
 ## Missing-Pendings materialization
 
@@ -113,7 +128,7 @@ from the configuration API.
 
 ## Transaction boundary
 
-Markdown records, `state.json`, `closed_index.json`, and email staging form the
+Ticket and Spare Request Markdown records, `state.json`, `closed_index.json`, and email staging form the
 `current/` transaction boundary. A mutation copies this tree below the same
 writable data root, validates it, swaps it atomically, and appends a local audit
 event. Keeping staging below the data root preserves Windows ACL inheritance
@@ -129,4 +144,7 @@ Email staging contains only messages associated with active IDs. Synced ticket
 records retain cumulative seen-message hashes and the newest configured message
 bodies. Final closure removes the ticket directory, staged associations, and
 internal whole-state snapshots that could preserve those bodies. Operational
-workbooks and workbook backups never contain subjects or bodies.
+Pendings workbooks and their backups never contain subjects or bodies. The
+dedicated Spare Request archive email tab is the sole exception and is purged
+with its completed item at 180 days. Active retained spare email is purged at
+the same age; either archive may be purged manually.

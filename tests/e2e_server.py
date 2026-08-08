@@ -18,6 +18,13 @@ if str(PROJECT_ROOT) not in sys.path:
 from zeus2.config import save_config
 from zeus2.excel_export import publish_operational_workbooks
 from zeus2.main import main
+from zeus2.spare_request_excel import append_archived_item
+from zeus2.spare_requests import (
+    create_request_record,
+    normalize_profile,
+    normalize_request_lines,
+    request_subject,
+)
 from zeus2.startup import run_startup
 from zeus2.store import ZeusStore
 from zeus2.tickets import LOCAL_COLUMNS, PENDING_COLUMNS
@@ -142,6 +149,86 @@ def prepare_fixture(root: Path) -> Path:
     with store.transaction("e2e-finalized-spare-parts", {}) as staging:
         store.write_ticket_bundle(staging, finalized)
     publish_operational_workbooks(store, workbooks, create_missing=True)
+    profile = normalize_profile(
+        {
+            "clientInitials": "CNT",
+            "customerName": "Customer Network Team",
+            "siteCode": "UIO",
+            "siteAddress": "Quito operations center",
+            "cloud": "FusionSphere",
+            "requester": {"name": "Zeus User", "email": "user@example.com"},
+            "contact": {"name": "Customer", "email": "customer@example.com"},
+        }
+    )
+    lines = normalize_request_lines(
+        [
+            {
+                "bom": "BOM-01",
+                "amount": 2,
+                "description": "Disk",
+                "part": "Disk",
+                "model": "2288H V5",
+                "device": "server-01",
+                "slot": "Slot 1",
+                "faultySn": "FAULTY-01",
+                "reportDate": "2026-07-01",
+            }
+        ]
+    )
+    active = create_request_record(
+        request_id="260808123456",
+        tt="39400001",
+        source="ticket",
+        profile=profile,
+        lines=lines,
+        export_path=None,
+        subject=request_subject("260808123456", "39400001", lines),
+    )
+    active["spare_sr"] = "SR4956964"
+    active["items"][0].update(
+        {
+            "rma": "C3209937826",
+            "attendance_confirmed_at": "2026-08-02T10:00:00-05:00",
+            "attendance_source": "email",
+            "delivered_bom": "02540255",
+            "new_sn": "NEW-01",
+            "dispatch_at": "2026-08-03T10:00:00-05:00",
+            "dispatch_source": "email",
+        }
+    )
+    active["items"][1].update(
+        {
+            "attendance_confirmed_at": "2026-08-02T10:00:00-05:00",
+            "attendance_source": "email",
+        }
+    )
+    with store.transaction("e2e-spare-request", {}) as staging:
+        store.write_spare_request(staging, active)
+    completed = create_request_record(
+        request_id="260807123456",
+        tt="39400003",
+        source="ticket",
+        profile=profile,
+        lines=normalize_request_lines([{**lines[0], "amount": 1}]),
+        export_path=None,
+        subject="completed",
+    )
+    completed["spare_sr"] = "SR4956963"
+    completed["items"][0].update(
+        {
+            "rma": "C3209937825",
+            "delivered_bom": "BOM-03",
+            "new_sn": "NEW-03",
+            "dispatch_at": "2026-07-15T10:00:00-05:00",
+        }
+    )
+    append_archived_item(
+        workbooks / "Closed.xlsx",
+        completed,
+        completed["items"][0],
+        reason="returned",
+        note="E2E completed fixture",
+    )
     return home
 
 

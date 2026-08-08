@@ -12,8 +12,10 @@ flowchart TD
     Service --> Jobs["Jobs + scheduler"]
     Service --> Edit["Pendings edit transaction"]
     Service --> Core["Reconcile / publish / mail / MOP"]
+    Service --> Spare["Spare request / XLSX / mail"]
     Core --> Store["Transactional Markdown store"]
-    Store --> Views["SR / Spare Parts projections"]
+    Spare --> Store
+    Store --> Views["SR / Spare Request views"]
     Closed["Validated Closed.xlsx"] --> Views
 ```
 
@@ -33,6 +35,9 @@ publication, mail, and MOP generation.
 | `zeus2/excel_export.py` | verified publication, restore, and database-driven Pendings recreation |
 | `zeus2/application/serialization.py` | stable dashboard/detail API shapes and sorting |
 | `zeus2/application/settings.py` | typed configuration payload and validation |
+| `zeus2/spare_requests.py` | independent request schema, validation, status, identity, and local managers |
+| `zeus2/spare_request_excel.py` | template-preserving request/return exports and Closed archive tabs |
+| `zeus2/spare_request_mail.py` | LASpare/iCare/warehouse parsing, replay, association, conflicts, and retention |
 | `zeus2/web/server.py` | loopback HTTP/static/API boundary and security headers |
 | `zeus2/web/runtime.py` | owned-instance registration and verified shutdown |
 | `zeus2/web/tray.py` | native Windows notification-area commands |
@@ -48,10 +53,10 @@ scheduled query, or manual job. The job manager serializes these with publish,
 restore, email, MOP, and browser-edit mutations.
 
 The dashboard endpoint accepts a validated workspace key. Each workspace owns
-its schema and sort vocabulary, but a selected row resolves to the same ticket
-detail endpoint. This registry boundary allows Other Tasks and Rectifications
-to be added later without making Spare Parts or Service Requests special cases
-inside the persistence model.
+its schema and sort vocabulary. Service Request rows resolve to ticket detail;
+active Spare Request rows resolve to their independent request detail; eligible
+rows intentionally resolve through the originating ticket before export. This
+boundary allows future workspaces without conflating their persistence models.
 
 Server-Sent Events are short local long-polls containing job/configuration/data
 events. The UI updates visible activity immediately and rereads committed data
@@ -79,6 +84,8 @@ Python module directly; they do not install or execute frontend tooling.
 ## Verification layers
 
 - core regression tests preserve the 2.0.3 data and recovery contracts;
+- Spare Request tests cover unit expansion, immutable identities, partial/out-of-order
+  mail, template sheet preservation, return output, archive gating, and retention;
 - application tests cover Pendings-only bootstrap, web edits, conflicts,
   deletion/recreation journals, serialized jobs, local HTTP security,
   no-query GETs, and safe stale records;

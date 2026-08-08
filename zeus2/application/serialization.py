@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import hashlib
 from copy import deepcopy
+from datetime import datetime
 from typing import Any, Iterable
 
 from ..aging import aging_for_ticket, report_sort_key
 from ..mail import strip_quoted_history
+from ..spare_request_excel import read_archived_items
+from ..spare_requests import (
+    ECUADOR_TIMEZONE,
+    aging_color as spare_aging_color,
+    dispatch_age_days,
+    item_status,
+    lifecycle_color,
+    request_overall_status,
+)
 from ..store import ZeusStore
 from ..tickets import normalize_local
-from ..utils import json_dumps, normalize_ticket_id, parse_date
+from ..utils import json_dumps, normalize_ticket_id, parse_date, parse_datetime
 
 
 COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
@@ -67,6 +77,42 @@ SPARE_PART_DEFAULT_SORT_DIRECTIONS = {
     "cloud": "asc",
     "device": "asc",
     "part": "asc",
+    "bom": "asc",
+}
+
+SPARE_REQUEST_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
+    {"key": "ticketId", "label": "TT", "width": 94, "default": True},
+    {"key": "rma", "label": "RMA", "width": 132, "default": True},
+    {"key": "emailLabel", "label": "Email", "width": 126, "default": True},
+    {"key": "emailCount", "label": "Emails", "width": 66, "default": True},
+    {"key": "risk", "label": "", "width": 18, "default": True},
+    {"key": "spareSr", "label": "Spare SR", "width": 104, "default": True},
+    {"key": "statusLabel", "label": "Status", "width": 170, "default": True},
+    {"key": "dispatchAgeDays", "label": "Days", "width": 62, "default": True},
+    {"key": "requestedBom", "label": "Requested BOM", "width": 145, "default": True},
+    {"key": "deliveredBom", "label": "Delivered BOM", "width": 145, "default": True},
+    {"key": "part", "label": "Part", "width": 175, "default": True},
+    {"key": "newSn", "label": "New SN", "width": 160, "default": True},
+    {"key": "site", "label": "Site", "width": 100, "default": True},
+    {"key": "cloud", "label": "Cloud", "width": 125, "default": True},
+    {"key": "device", "label": "Device", "width": 155, "default": False},
+    {"key": "model", "label": "Model", "width": 145, "default": False},
+    {"key": "slot", "label": "Slot", "width": 110, "default": False},
+    {"key": "requestId", "label": "Export ID", "width": 128, "default": False},
+    {"key": "conflictCount", "label": "Conflicts", "width": 78, "default": False},
+    {"key": "archiveReason", "label": "Archive reason", "width": 125, "default": False},
+    {"key": "archivedAt", "label": "Archived at", "width": 165, "default": False},
+    {"key": "notes", "label": "Archive note", "width": 260, "default": False, "flex": True},
+)
+
+SPARE_REQUEST_DEFAULT_SORT_DIRECTIONS = {
+    "tt": "desc",
+    "rma": "asc",
+    "email": "desc",
+    "status": "asc",
+    "age": "desc",
+    "site": "asc",
+    "cloud": "asc",
     "bom": "asc",
 }
 
@@ -511,4 +557,276 @@ def spare_parts_dashboard_payload(
         },
         "spareParts": rows,
         "columns": [deepcopy(column) for column in SPARE_PART_COLUMN_DEFINITIONS],
+    }
+
+
+SPARE_STATUS_LABELS = {
+    "awaiting_confirmation": "Awaiting LASpare",
+    "awaiting_stock": "Awaiting stock",
+    "awaiting_dispatch": "Awaiting dispatch",
+    "dispatched": "Dispatched",
+    "awaiting_warehouse": "Awaiting warehouse",
+    "awaiting_user_confirmation": "Confirm warehouse return",
+    "cancelled": "Cancelled",
+    "returned": "Returned",
+}
+
+
+def spare_request_revision(request: dict[str, Any]) -> str:
+    """Return an optimistic-concurrency token for one independent request."""
+
+    return hashlib.sha256(
+        json_dumps(request, indent=None).encode("utf-8")
+    ).hexdigest()
+
+
+def _spare_email_facts(
+    request: dict[str, Any], *, now: datetime | None = None
+) -> tuple[int | None, str, str | None, int]:
+    email = request.get("email", {})
+    total = int(email.get("total_received") or 0) + int(email.get("total_sent") or 0)
+    last = parse_datetime(email.get("last_activity_at"))
+    if last is None:
+        return None, "No email", "grey", total
+    current = now or datetime.now(ECUADOR_TIMEZONE)
+    if current.tzinfo is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=ECUADOR_TIMEZONE)
+    elif current.tzinfo is None and last.tzinfo is not None:
+        current = current.replace(tzinfo=ECUADOR_TIMEZONE)
+    days = max(0, (current.date() - last.date()).days)
+    color = "red" if days >= 7 else "yellow" if days >= 3 else None
+    return days, f"{days}d inactive", color, total
+
+
+def _request_conflict_count(request: dict[str, Any]) -> int:
+    unresolved = sum(
+        not value.get("resolved_at") for value in request.get("conflicts", [])
+    )
+    return unresolved + sum(
+        sum(not value.get("resolved_at") for value in item.get("conflicts", []))
+        for item in request.get("items", [])
+    )
+
+
+def serialize_spare_request_item(
+    request: dict[str, Any], item: dict[str, Any]
+) -> dict[str, Any]:
+    email_days, email_label, email_color, email_count = _spare_email_facts(request)
+    age = dispatch_age_days(item)
+    status = item_status(item, request)
+    lifecycle = lifecycle_color(item, request)
+    age_color = spare_aging_color(age)
+    conflicts = _request_conflict_count(request)
+    profile = request.get("profile", {})
+    return {
+        "rowId": item.get("item_id"),
+        "requestId": request.get("request_id"),
+        "itemId": item.get("item_id"),
+        "ticketId": request.get("tt"),
+        "rma": item.get("rma") or "—",
+        "spareSr": request.get("spare_sr") or "—",
+        "status": status,
+        "statusLabel": SPARE_STATUS_LABELS.get(status, status.replace("_", " ").title()),
+        "lifecycleColor": lifecycle,
+        "dispatchAgeDays": age,
+        "dispatchAgeColor": age_color,
+        "emailInactivityDays": email_days,
+        "emailLabel": email_label,
+        "emailColor": email_color,
+        "emailCount": email_count,
+        "requestedBom": item.get("requested_bom") or "—",
+        "deliveredBom": item.get("delivered_bom") or "—",
+        "part": item.get("part") or item.get("requested_description") or "—",
+        "model": item.get("model") or "—",
+        "device": item.get("device") or "—",
+        "slot": item.get("slot") or "—",
+        "faultySn": item.get("faulty_sn") or "—",
+        "newSn": item.get("new_sn") or "—",
+        "site": profile.get("site_code") or "—",
+        "cloud": profile.get("cloud") or "—",
+        "conflictCount": conflicts,
+        "risk": "red" if conflicts or age_color == "red" else "yellow" if age_color == "yellow" or email_color == "yellow" else "grey" if lifecycle == "grey" else "none",
+        "readOnly": False,
+        "source": "active",
+    }
+
+
+def _archived_spare_row(row: dict[str, Any]) -> dict[str, Any]:
+    status = str(row.get("Status") or "returned").casefold()
+    email_days = row.get("Email inactivity days")
+    return {
+        "rowId": str(row.get("Item ID") or ""),
+        "requestId": str(row.get("Request ID") or ""),
+        "itemId": str(row.get("Item ID") or ""),
+        "ticketId": str(row.get("TT") or ""),
+        "rma": row.get("RMA") or "—",
+        "spareSr": row.get("Spare SR") or "—",
+        "status": status,
+        "statusLabel": SPARE_STATUS_LABELS.get(status, status.replace("_", " ").title()),
+        "lifecycleColor": "grey",
+        "dispatchAgeDays": None,
+        "dispatchAgeColor": None,
+        "emailInactivityDays": email_days,
+        "emailLabel": "No email" if email_days in (None, "") else f"{int(email_days)}d at archive",
+        "emailColor": None,
+        "emailCount": int(row.get("Emails received") or 0) + int(row.get("Emails sent") or 0),
+        "requestedBom": row.get("Requested BOM") or "—",
+        "deliveredBom": row.get("Delivered BOM") or "—",
+        "part": row.get("Part") or row.get("Description") or "—",
+        "model": row.get("Model") or "—",
+        "device": row.get("Device") or "—",
+        "slot": row.get("Slot") or "—",
+        "faultySn": row.get("Faulty SN") or "—",
+        "newSn": row.get("New SN") or "—",
+        "site": row.get("Site") or "—",
+        "cloud": row.get("Cloud") or "—",
+        "conflictCount": 0,
+        "risk": "grey",
+        "archivedAt": row.get("Archived At"),
+        "archiveReason": row.get("Archive Reason"),
+        "notes": row.get("Notes"),
+        "readOnly": True,
+        "source": "closed",
+    }
+
+
+def _eligible_spare_rows(store: ZeusStore) -> list[dict[str, Any]]:
+    rows = _spare_part_rows(store.iter_tickets(status="active"), store.config)
+    return [
+        {**row, "eligible": True}
+        for row in rows
+        if row.get("hasPart") and row.get("bom") != "—"
+    ]
+
+
+def _spare_request_search_text(row: dict[str, Any]) -> str:
+    return "\n".join(
+        str(value)
+        for key, value in row.items()
+        if key not in {"risk", "emailColor", "dispatchAgeColor", "lifecycleColor"}
+        and value not in (None, "", "—")
+    ).casefold()
+
+
+def _spare_request_sort_value(row: dict[str, Any], mode: str) -> Any:
+    if mode in {"tt", "sr"}:
+        return int(row.get("ticketId") or 0)
+    if mode == "rma":
+        return None if row.get("rma") == "—" else str(row.get("rma"))
+    if mode == "email":
+        return row.get("emailInactivityDays")
+    if mode == "age":
+        return row.get("dispatchAgeDays")
+    if mode == "bom":
+        return str(row.get("requestedBom") or row.get("bom") or "").casefold()
+    return str(row.get(mode) or "").casefold()
+
+
+def spare_requests_dashboard_payload(
+    store: ZeusStore,
+    *,
+    view: str = "active",
+    sort: str = "tt",
+    direction: str | None = None,
+    search: str = "",
+    dataset_revision: int = 0,
+    closed_path: Any = None,
+) -> dict[str, Any]:
+    """Serialize independent requests, reusable SR candidates, or Closed rows."""
+
+    direction = direction or SPARE_REQUEST_DEFAULT_SORT_DIRECTIONS.get(sort, "asc")
+    requests = list(store.iter_spare_requests())
+    if view == "eligible":
+        rows = _eligible_spare_rows(store)
+        columns = tuple(
+            {**column, "label": "TT"} if column.get("key") == "ticketId" else column
+            for column in SPARE_PART_COLUMN_DEFINITIONS
+        )
+    elif view == "completed":
+        rows = [_archived_spare_row(row) for row in read_archived_items(closed_path)] if closed_path else []
+        columns = SPARE_REQUEST_COLUMN_DEFINITIONS
+    else:
+        rows = [
+            serialize_spare_request_item(request, item)
+            for request in requests
+            for item in request.get("items", [])
+        ]
+        columns = SPARE_REQUEST_COLUMN_DEFINITIONS
+    query = search.strip().casefold()
+    if query:
+        rows = [row for row in rows if query in _spare_request_search_text(row)]
+    mode = "sr" if view == "eligible" and sort == "tt" else sort
+    rows.sort(key=lambda row: str(row.get("rowId") or ""))
+    present = [row for row in rows if _spare_request_sort_value(row, mode) not in (None, "")]
+    missing = [row for row in rows if _spare_request_sort_value(row, mode) in (None, "")]
+    present.sort(
+        key=lambda row: _spare_request_sort_value(row, mode),
+        reverse=direction == "desc",
+    )
+    active_items = [item for request in requests for item in request.get("items", [])]
+    statuses = [
+        item_status(item, request)
+        for request in requests
+        for item in request.get("items", [])
+    ]
+    return {
+        "workspace": "spare-requests",
+        "view": view,
+        "datasetRevision": dataset_revision,
+        "sort": sort,
+        "direction": direction,
+        "search": search,
+        "stats": {
+            "activeRequests": len(requests),
+            "activeItems": len(active_items),
+            "awaitingStock": statuses.count("awaiting_stock"),
+            "awaitingDispatch": statuses.count("awaiting_dispatch"),
+            "dispatched": sum(status in {"dispatched", "awaiting_warehouse", "awaiting_user_confirmation"} for status in statuses),
+            "warehouseCandidates": statuses.count("awaiting_user_confirmation"),
+            "conflicts": sum(_request_conflict_count(request) for request in requests),
+            "eligibleParts": len(_eligible_spare_rows(store)),
+            "completedItems": len(read_archived_items(closed_path)) if closed_path else 0,
+        },
+        "spareRequests": present + missing if view != "eligible" else [],
+        "eligibleParts": present + missing if view == "eligible" else [],
+        "columns": [deepcopy(column) for column in columns],
+    }
+
+
+def serialize_spare_request_detail(request: dict[str, Any]) -> dict[str, Any]:
+    email_days, email_label, email_color, email_count = _spare_email_facts(request)
+    return {
+        "requestId": request.get("request_id"),
+        "revision": spare_request_revision(request),
+        "ticketId": request.get("tt"),
+        "ttEditable": bool(request.get("tt_editable")),
+        "source": request.get("source"),
+        "spareSr": request.get("spare_sr"),
+        "status": request_overall_status(request),
+        "profile": deepcopy(request.get("profile") or {}),
+        "requestLines": deepcopy(request.get("request_lines") or []),
+        "items": [
+            {
+                **deepcopy(item),
+                "status": item_status(item, request),
+                "statusLabel": SPARE_STATUS_LABELS.get(item_status(item, request), item_status(item, request)),
+                "lifecycleColor": lifecycle_color(item, request),
+                "dispatchAgeDays": dispatch_age_days(item),
+                "dispatchAgeColor": spare_aging_color(dispatch_age_days(item)),
+            }
+            for item in request.get("items", [])
+        ],
+        "export": deepcopy(request.get("export") or {}),
+        "email": {
+            **deepcopy(request.get("email") or {}),
+            "inactivityDays": email_days,
+            "label": email_label,
+            "color": email_color,
+            "count": email_count,
+        },
+        "conflicts": deepcopy(request.get("conflicts") or []),
+        "conflictCount": _request_conflict_count(request),
+        "history": deepcopy(request.get("history") or []),
+        "createdAt": request.get("created_at"),
+        "updatedAt": request.get("updated_at"),
     }

@@ -21,26 +21,27 @@ test("the dashboard owns wheel scrolling and opens the ticket panel", async ({ p
   await expect(page.getByRole("button", { name: "Work fields" })).toBeVisible();
 });
 
-test("Service Requests and Spare Parts switch as independent management views", async ({ page }) => {
+test("Service Requests and Spare Requests switch as independent management views", async ({ page }) => {
   await page.goto("/");
   const serviceRequests = page.getByRole("button", { name: "Service Requests" });
-  const spareParts = page.getByRole("button", { name: "Spare Parts" });
+  const spareRequests = page.getByRole("button", { name: "Spare Requests" });
   await expect(serviceRequests).toHaveAttribute("aria-pressed", "true");
 
-  await spareParts.click();
-  await expect(spareParts).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByLabel("Spare Parts summary")).toContainText("Parts 34");
-  await expect(page.getByRole("columnheader", { name: "BOM" })).toBeVisible();
-  await expect(page.getByPlaceholder("Search SR, device, part, BOM, serial, site…")).toBeVisible();
+  await spareRequests.click();
+  await expect(spareRequests).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Spare Requests summary")).toContainText("Active requests 1");
+  await expect(page.getByLabel("Spare Requests summary")).toContainText("Unit items 2");
+  await expect(page.getByRole("columnheader", { name: "RMA" })).toBeVisible();
+  await expect(page.getByPlaceholder("Search TT, RMA, Spare SR, BOM, serial, site…")).toBeVisible();
 
   const spareRows = page.locator("[data-row-id]");
   await expect(spareRows.first()).toBeVisible();
-  expect(await spareRows.count()).toBe(34);
+  expect(await spareRows.count()).toBe(2);
   await spareRows.first().click();
-  const detail = page.getByRole("complementary", { name: /SR \d{8} detail/ });
+  const detail = page.getByRole("complementary", { name: /Spare Request \d{12} detail/ });
   await expect(detail).toBeVisible();
-  await expect(detail.getByRole("button", { name: /^Spare Parts/ })).toHaveClass(/active/);
-  await expect(detail.getByRole("button", { name: /Add damaged part/ })).toBeVisible();
+  await expect(detail.getByRole("button", { name: /^Items/ })).toHaveClass(/active/);
+  await expect(detail.getByText("Requested BOM").first()).toBeVisible();
 
   await serviceRequests.click();
   await expect(serviceRequests).toHaveAttribute("aria-pressed", "true");
@@ -48,26 +49,28 @@ test("Service Requests and Spare Parts switch as independent management views", 
   await expect(page.getByRole("columnheader", { name: "Emails" })).toBeVisible();
 });
 
-test("Spare Parts keeps SR first and preserves finalized SR ownership", async ({ page }) => {
+test("eligible SR parts seed exports and completed items stay read-only", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Spare Parts" }).click();
+  await page.getByRole("button", { name: "Spare Requests" }).click();
+  await page.getByRole("tab", { name: "Eligible SR Parts" }).click();
   const headers = page.locator(".grid-header [role=columnheader]");
-  await expect(headers.first()).toHaveText("SR");
+  await expect(headers.first()).toHaveText("TT");
 
-  const search = page.getByPlaceholder("Search SR, device, part, BOM, serial, site…");
-  await search.fill("39400002");
-  const archived = page.locator('[data-row-id="39400002:1:1"]');
+  const search = page.getByPlaceholder("Search TT, RMA, Spare SR, BOM, serial, site…");
+  await search.fill("39400001");
+  const eligible = page.locator('[data-row-id="39400001:1:1"]');
+  await expect(eligible).toBeVisible();
+  await eligible.click();
+  const exportDialog = page.getByRole("dialog", { name: "Export Spare Request" });
+  await expect(exportDialog).toBeVisible();
+  await expect(exportDialog.getByLabel("TT · 8 digits")).toHaveValue("39400001");
+  await exportDialog.getByRole("button", { name: "Cancel" }).click();
+
+  await page.getByRole("tab", { name: "Completed" }).click();
+  await search.fill("39400003");
+  const archived = page.locator('[data-row-id="260807123456-0001"]');
   await expect(archived).toBeVisible();
-  await expect(archived).toHaveAttribute("data-ticket-id", "39400002");
   await expect(archived).toHaveAttribute("data-read-only", "true");
-  await archived.click();
-
-  const detail = page.getByRole("complementary", { name: "SR 39400002 detail" });
-  await expect(detail.getByText("Closed · read-only")).toBeVisible();
-  await expect(detail.getByText(/remain assigned to this SR/i)).toBeVisible();
-  await expect(detail.getByLabel("Device 1 part 1 BOM (part number)")).toBeDisabled();
-  await expect(detail.getByRole("button", { name: /Save through Pendings/ })).toHaveCount(0);
-  await expect(detail.getByRole("button", { name: /Add damaged part/ })).toHaveCount(0);
 });
 
 test("field choices persist and a manual source query is visible", async ({ page }) => {

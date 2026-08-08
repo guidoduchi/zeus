@@ -3,6 +3,10 @@ import type {
   BootstrapPayload,
   DashboardPayload,
   Job,
+  SpareReferenceData,
+  SpareRequestDetail,
+  SpareRequestPrefill,
+  SpareRequestView,
   SettingsPayload,
   TicketDetail,
   WorkspaceKey,
@@ -52,9 +56,108 @@ export function getDashboard(
   sort: string,
   direction: "asc" | "desc",
   search: string,
+  view: SpareRequestView = "active",
 ): Promise<DashboardPayload> {
-  const query = new URLSearchParams({ workspace, sort, direction, search });
+  const query = new URLSearchParams({ workspace, sort, direction, search, view });
   return request<DashboardPayload>(`/api/dashboard?${query}`);
+}
+
+export function getSpareRequest(requestId: string): Promise<SpareRequestDetail> {
+  return request<SpareRequestDetail>(`/api/spare-requests/${requestId}`);
+}
+
+export function getSpareRequestPrefill(ticketId: string): Promise<SpareRequestPrefill> {
+  return request<SpareRequestPrefill>(`/api/spare-requests/prefill/${ticketId}`);
+}
+
+export function getSpareReferenceData(): Promise<SpareReferenceData> {
+  return request<SpareReferenceData>("/api/spare-requests/reference-data");
+}
+
+export function saveSpareReferenceData(value: SpareReferenceData): Promise<SpareReferenceData> {
+  return request<SpareReferenceData>("/api/spare-requests/reference-data", {
+    method: "PATCH",
+    body: JSON.stringify({ value }),
+  });
+}
+
+export function exportSpareRequest(payload: Record<string, unknown>): Promise<{
+  request: SpareRequestDetail;
+  filename: string;
+  path: string;
+  subject: string;
+  warnings: string[];
+}> {
+  return request("/api/spare-requests/export", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function reexportSpareRequest(requestId: string): Promise<{
+  request: SpareRequestDetail;
+  filename: string;
+  path: string;
+  subject: string;
+}> {
+  return request(`/api/spare-requests/${requestId}/re-export`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function saveSpareRequest(
+  requestId: string,
+  revision: string,
+  changes: Record<string, unknown>,
+  itemUpdates: Array<Record<string, unknown>>,
+): Promise<{ request: SpareRequestDetail }> {
+  return request(`/api/spare-requests/${requestId}`, {
+    method: "PATCH",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision, changes, itemUpdates }),
+  });
+}
+
+export function exportSpareReturn(selections: Array<{ itemId: string; condition: "Faulty" | "New" }>): Promise<{
+  filename: string;
+  path: string;
+  subject: string;
+  warnings: string[];
+}> {
+  return request("/api/spare-requests/returns/export", {
+    method: "POST",
+    body: JSON.stringify({ selections }),
+  });
+}
+
+export function archiveSpareItems(payload: {
+  itemIds: string[];
+  reason: "returned" | "cancelled";
+  note: string;
+  manualOverride?: boolean;
+}): Promise<{ archived: string[]; reason: string; closedPath: string }> {
+  return request("/api/spare-requests/archive", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function resolveSpareConflict(
+  requestId: string,
+  payload: { itemId?: string; conflictIndex: number; resolution: "keep-existing" | "accept-incoming"; note: string },
+): Promise<{ request: SpareRequestDetail }> {
+  return request(`/api/spare-requests/${requestId}/conflicts/resolve`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function purgeSpareArchive(itemIds: string[]): Promise<{ removed: number; remaining: number }> {
+  return request("/api/spare-requests/purge", {
+    method: "POST",
+    body: JSON.stringify({ itemIds }),
+  });
 }
 
 export function getTicket(ticketId: string): Promise<TicketDetail> {

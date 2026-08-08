@@ -3,10 +3,12 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import uuid
 import zipfile
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -18,6 +20,12 @@ from .config import (
     load_config,
     resolve_path_setting,
     save_config,
+)
+from .spare_requests import (
+    decode_request_record,
+    normalize_request_id,
+    render_request_markdown,
+    validate_request_record,
 )
 from .tickets import LOCAL_COLUMNS, UPSTREAM_COLUMNS, empty_email, normalize_local
 from .utils import (
@@ -215,6 +223,7 @@ class ZeusStore:
         self.current = self.root / "current"
         self.tickets = self.current / "tickets"
         self.staging = self.current / "email_staging"
+        self.spare_requests = self.current / "spare_requests" / "active"
         self.backups = self.root / "backups"
         self.audit_dir = self.root / "audit"
         self.audit_file = self.audit_dir / "events.ndjson"
@@ -239,6 +248,13 @@ class ZeusStore:
         ensure_config(self.config_home)
         if create_current and not self.current.exists():
             self._create_empty_current(self.current)
+        elif create_current:
+            # Additive 3.1.1 migration: existing Zeus 2/3 stores gain the
+            # independent Spare Request tree without rewriting ticket data.
+            self.spare_requests.mkdir(parents=True, exist_ok=True)
+            unmatched = self.unmatched_spare_messages_file()
+            if not unmatched.exists():
+                atomic_write_text(unmatched, "")
 
     @staticmethod
     def _empty_state() -> dict[str, Any]:
@@ -266,6 +282,8 @@ class ZeusStore:
         (path / "tickets").mkdir(parents=True, exist_ok=True)
         (path / "email_staging").mkdir(parents=True, exist_ok=True)
         atomic_write_text(path / "email_staging" / "messages.ndjson", "")
+        (path / "spare_requests" / "active").mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path / "spare_requests" / "unmatched_messages.ndjson", "")
         atomic_write_json(path / "closed_index.json", {
             "schema_version": 1,
             "ticket_ids": [],
@@ -298,6 +316,80 @@ class ZeusStore:
 
     def staging_file(self, current_path: Path | None = None) -> Path:
         return (current_path or self.current) / "email_staging" / "messages.ndjson"
+
+    def spare_request_root(self, current_path: Path | None = None) -> Path:
+        return (current_path or self.current) / "spare_requests"
+
+    def spare_request_active(self, current_path: Path | None = None) -> Path:
+        return self.spare_request_root(current_path) / "active"
+
+    def spare_request_dir(
+        self, request_id: str, current_path: Path | None = None
+    ) -> Path:
+        return self.spare_request_active(current_path) / normalize_request_id(request_id)
+
+    def spare_request_file(
+        self, request_id: str, current_path: Path | None = None
+    ) -> Path:
+        normalized = normalize_request_id(request_id)
+        return self.spare_request_dir(normalized, current_path) / f"{normalized}.md"
+
+    def unmatched_spare_messages_file(self, current_path: Path | None = None) -> Path:
+        return self.spare_request_root(current_path) / "unmatched_messages.ndjson"
+
+    def read_spare_request(
+        self, request_id: str, current_path: Path | None = None
+    ) -> dict[str, Any]:
+        path = self.spare_request_file(request_id, current_path)
+        if not path.is_file():
+            raise StoreError(f"Spare Request not found: {normalize_request_id(request_id)}")
+        with path.open("r", encoding="utf-8") as handle:
+            first_line = handle.readline().rstrip("\n")
+        try:
+            return decode_request_record(first_line, path)
+        except ValueError as exc:
+            raise StoreError(str(exc)) from exc
+
+    def iter_spare_request_ids(
+        self, current_path: Path | None = None
+    ) -> Iterator[str]:
+        base = self.spare_request_active(current_path)
+        if not base.exists():
+            return
+        for directory in sorted(base.iterdir(), key=lambda item: item.name, reverse=True):
+            if not directory.is_dir() or not re.fullmatch(r"\d{12}", directory.name):
+                continue
+            markdown = directory / f"{directory.name}.md"
+            if markdown.is_file():
+                yield directory.name
+
+    def iter_spare_requests(
+        self, current_path: Path | None = None
+    ) -> Iterator[dict[str, Any]]:
+        for request_id in self.iter_spare_request_ids(current_path):
+            yield self.read_spare_request(request_id, current_path)
+
+    def write_spare_request(
+        self, current_path: Path, request: dict[str, Any]
+    ) -> Path:
+        prepared = deepcopy(request)
+        request_id = normalize_request_id(prepared.get("request_id"))
+        prepared["request_id"] = request_id
+        prepared["updated_at"] = iso_now()
+        try:
+            validate_request_record(prepared, request_id)
+        except ValueError as exc:
+            raise StoreError(str(exc)) from exc
+        directory = self.spare_request_dir(request_id, current_path)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{request_id}.md"
+        atomic_write_text(path, render_request_markdown(prepared))
+        return path
+
+    def delete_spare_request(self, request_id: str, current_path: Path) -> None:
+        directory = self.spare_request_dir(request_id, current_path)
+        if directory.exists():
+            shutil.rmtree(directory)
 
     def read_ticket(self, ticket_id: str, current_path: Path | None = None) -> dict[str, Any]:
         path = self.ticket_file(ticket_id, current_path)
@@ -415,6 +507,30 @@ class ZeusStore:
                 continue
             ticket = self.read_ticket(directory.name, current_path)
             self.validate_ticket(ticket, directory.name)
+        spare_root = self.spare_request_active(current_path)
+        if not spare_root.is_dir():
+            raise StoreError("Spare Request directory is missing")
+        global_rmas: set[str] = set()
+        global_spare_srs: set[str] = set()
+        for directory in spare_root.iterdir():
+            if not directory.is_dir():
+                continue
+            request = self.read_spare_request(directory.name, current_path)
+            try:
+                validate_request_record(request, directory.name)
+            except ValueError as exc:
+                raise StoreError(str(exc)) from exc
+            spare_sr = request.get("spare_sr")
+            if spare_sr and spare_sr in global_spare_srs:
+                raise StoreError(f"Spare SR {spare_sr} belongs to more than one active request")
+            if spare_sr:
+                global_spare_srs.add(str(spare_sr))
+            for item in request.get("items", []):
+                rma = item.get("rma")
+                if rma and rma in global_rmas:
+                    raise StoreError(f"RMA {rma} belongs to more than one active Spare Request")
+                if rma:
+                    global_rmas.add(str(rma))
         index = self.closed_index(current_path)
         ids = index.get("ticket_ids", [])
         if not isinstance(ids, list) or len(ids) != len(set(ids)):
@@ -434,6 +550,22 @@ class ZeusStore:
                     if not isinstance(value, dict) or not value.get("message_key"):
                         raise StoreError(
                             f"Invalid email staging message at line {line_number}"
+                        )
+        unmatched_path = self.unmatched_spare_messages_file(current_path)
+        if unmatched_path.exists():
+            with unmatched_path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        value = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise StoreError(
+                            f"Invalid unmatched Spare Request email at line {line_number}"
+                        ) from exc
+                    if not isinstance(value, dict) or not value.get("message_key"):
+                        raise StoreError(
+                            f"Invalid unmatched Spare Request message at line {line_number}"
                         )
 
     def create_backup(

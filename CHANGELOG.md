@@ -1,6 +1,18 @@
 # Changelog
 
-## 3.1.0 - Unreleased
+## 3.1.1 - Unreleased
+
+- Adds independent, per-unit Spare Request records with immutable TT/RMA rules,
+  partial-stock handling, requested-versus-delivered BOM tracking, and conflict
+  review instead of silent overwrites.
+- Adds template-preserving initial and return XLSX exports, local profile/BOM
+  managers, spare-only Outlook parsing, explicit warehouse confirmation, and
+  180-day retention across active email and completed archives.
+- Replaces the old top-level Spare Parts projection with Active Requests,
+  Eligible SR Parts, and Completed Spare Requests views; SR detail continues to
+  own the damaged-device Spare Parts editor.
+
+## 3.1.0
 
 - Added an extensible top-level workspace switcher. Service Requests retains
   the existing ticket dashboard, while Spare Parts presents one dense

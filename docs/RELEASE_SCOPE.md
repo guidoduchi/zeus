@@ -1,15 +1,21 @@
-# Zeus 3.1.0 release scope
+# Zeus 3.1.1 release scope
 
 Included:
 
-- an extensible Service Requests / Spare Parts workspace switcher with
-  independent search, sort, direction, and field preferences;
-- a dense one-row-per-part Spare Parts management projection that opens the
-  parent SR's normalized editor and never becomes a second authority;
-- mandatory SR ownership with SR pinned as the first column, plus read-only
-  continuity for finalized spare-parts rows through validated Closed.xlsx;
-- a configurable, nullable, one-way Spare Parts export destination that is
-  excluded from all source queries and imports;
+- a Service Requests / Spare Requests workspace switcher with independent
+  search, sort, direction, and field preferences;
+- independent active Spare Request Markdown records, unit-level items, partial
+  stock, requested/delivered BOM separation, immutable RMAs, and visible
+  conflict handling;
+- Active Requests, reusable Eligible SR Parts, and Completed archive subviews;
+- configurable local request/return XLSX templates and a one-way export root,
+  with exact sheet preservation, dynamic row extension, and revision-safe names;
+- LASpare confirmation, iCare dispatch/substitution, and exact ITSAnet warehouse
+  candidate parsing from HTML with plain-text fallback and out-of-order replay;
+- explicit partial return export, user-confirmed archive, mandatory cancellation
+  reasons, manual-override notes, and dedicated Closed.xlsx archive/email tabs;
+- local-only profile and BOM managers that ship empty plus fixed 180-day
+  active-email and completed-archive retention;
 - bundled React/TypeScript master-detail interface served by Python;
 - strict `127.0.0.1` binding, local Host/Origin/CSRF controls, and no CORS;
 - browser launch, Windows notification-area lifecycle, clean restart/exit, and
@@ -48,9 +54,8 @@ Deliberately excluded:
 - direct Markdown work-field editing;
 - draggable column resizing;
 - arbitrary/custom managed Excel columns or formulas;
-- the final Spare Part Request XLSX columns/layout until its format is agreed;
-- email subjects, bodies, or attachments in Excel or the dashboard grid;
+- sending email or attaching generated workbooks automatically;
+- email attachments in Excel or the dashboard grid;
 - new Outlook, direct OST parsing, sending, moving, deleting, or marking mail;
-- closed Service Request management outside `Closed.xlsx` (the Spare Parts
-  workspace exposes only its archived non-email hardware projection);
+- reopening completed/cancelled Spare Request items;
 - ticket identifiers other than exactly eight decimal digits.

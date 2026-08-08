@@ -54,13 +54,19 @@ def _path_status(store: ZeusStore, key: str, value: Any) -> dict[str, Any]:
         status["templateCount"] = count
         status["message"] = f"{count} Word template(s) found" if path.is_dir() else "Folder not found"
     elif key == "spare_parts_export_directory":
-        count = sum(1 for _ in path.glob("*.xlsx")) if path.is_dir() else 0
+        count = sum(1 for _ in path.rglob("*.xlsx")) if path.is_dir() else 0
         status["workbookCount"] = count
         status["writeOnly"] = True
         status["message"] = (
             f"Export-only folder · {count} workbook(s)"
             if path.is_dir()
             else "Folder not found"
+        )
+    elif key in {"spare_request_template_path", "spare_return_template_path"}:
+        status["message"] = (
+            f"Template available: {path.name}"
+            if path.is_file() and path.suffix.lower() == ".xlsx"
+            else "XLSX template not found"
         )
     return status
 
@@ -103,6 +109,8 @@ def update_settings(store: ZeusStore, updates: dict[str, Any]) -> dict[str, Any]
             value = coerce_setting_value(key, raw_value, base=store.config_home)
             if spec.kind == "directory" and value is not None and not Path(value).is_dir():
                 raise ValueError(f"Folder does not exist: {value}")
+            if spec.kind == "xlsx_template" and value is not None and not Path(value).is_file():
+                raise ValueError(f"XLSX template does not exist: {value}")
             if get_dotted(config, key) != value:
                 set_dotted(config, key, value)
                 changed.append(key)

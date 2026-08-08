@@ -26,6 +26,10 @@ TICKET_ROUTE = re.compile(r"^/api/tickets/(\d{8})$")
 TICKET_LOCAL_ROUTE = re.compile(r"^/api/tickets/(\d{8})/local$")
 JOB_CANCEL_ROUTE = re.compile(r"^/api/jobs/([a-f0-9]{32})/cancel$")
 MOP_DOWNLOAD_ROUTE = re.compile(r"^/api/tickets/(\d{8})/mops/([^/]+)$")
+SPARE_REQUEST_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})$")
+SPARE_REQUEST_PREFILL_ROUTE = re.compile(r"^/api/spare-requests/prefill/(\d{8})$")
+SPARE_REQUEST_REEXPORT_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/re-export$")
+SPARE_REQUEST_RESOLVE_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/conflicts/resolve$")
 
 
 class ZeusWebServer(ThreadingHTTPServer):
@@ -167,10 +171,11 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/dashboard":
             workspace = query.get("workspace", ["service-requests"])[0]
-            default_sort = "sr" if workspace == "spare-parts" else "report"
+            default_sort = "tt" if workspace == "spare-requests" else "sr" if workspace == "spare-parts" else "report"
             sort = query.get("sort", [default_sort])[0]
             direction = query.get("direction", [None])[0]
             search = query.get("search", [""])[0]
+            view = query.get("view", ["active"])[0]
             self._send_json(
                 HTTPStatus.OK,
                 self.server.service.dashboard(
@@ -178,7 +183,25 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                     sort=sort,
                     direction=direction,
                     search=search,
+                    view=view,
                 ),
+            )
+            return
+        if path == "/api/spare-requests/reference-data":
+            self._send_json(HTTPStatus.OK, self.server.service.spare_reference_data())
+            return
+        prefill_match = SPARE_REQUEST_PREFILL_ROUTE.fullmatch(path)
+        if prefill_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.spare_request_prefill(prefill_match.group(1)),
+            )
+            return
+        spare_request_match = SPARE_REQUEST_ROUTE.fullmatch(path)
+        if spare_request_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.spare_request(spare_request_match.group(1)),
             )
             return
         ticket_match = TICKET_ROUTE.fullmatch(path)
@@ -258,6 +281,64 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 {"candidates": self.server.service.scan_outlook(directory)},
             )
             return
+        if path == "/api/spare-requests/export":
+            self._send_json(
+                HTTPStatus.CREATED,
+                self.server.service.export_spare_request(payload),
+            )
+            return
+        reexport_match = SPARE_REQUEST_REEXPORT_ROUTE.fullmatch(path)
+        if reexport_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.reexport_spare_request(reexport_match.group(1)),
+            )
+            return
+        resolve_match = SPARE_REQUEST_RESOLVE_ROUTE.fullmatch(path)
+        if resolve_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.resolve_spare_conflict(
+                    resolve_match.group(1),
+                    item_id=(str(payload.get("itemId")) if payload.get("itemId") else None),
+                    conflict_index=int(payload.get("conflictIndex", -1)),
+                    resolution=str(payload.get("resolution") or ""),
+                    note=str(payload.get("note") or ""),
+                ),
+            )
+            return
+        if path == "/api/spare-requests/returns/export":
+            selections = payload.get("selections")
+            if not isinstance(selections, list):
+                raise ValidationError("Return selections must be a list")
+            self._send_json(
+                HTTPStatus.CREATED,
+                self.server.service.export_spare_return(selections),
+            )
+            return
+        if path == "/api/spare-requests/archive":
+            item_ids = payload.get("itemIds")
+            if not isinstance(item_ids, list):
+                raise ValidationError("Archive item IDs must be a list")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.archive_spare_items(
+                    item_ids=item_ids,
+                    reason=str(payload.get("reason") or ""),
+                    note=str(payload.get("note") or ""),
+                    manual_override=bool(payload.get("manualOverride")),
+                ),
+            )
+            return
+        if path == "/api/spare-requests/purge":
+            item_ids = payload.get("itemIds")
+            if item_ids is not None and not isinstance(item_ids, list):
+                raise ValidationError("Purge item IDs must be a list")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.purge_spare_data(item_ids=item_ids),
+            )
+            return
         raise NotFoundError("API endpoint not found")
 
     def _patch(self) -> None:
@@ -288,6 +369,34 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 HTTPStatus.OK,
                 self.server.service.save_settings(updates),
+            )
+            return
+        spare_request_match = SPARE_REQUEST_ROUTE.fullmatch(path)
+        if spare_request_match:
+            changes = payload.get("changes") or {}
+            item_updates = payload.get("itemUpdates") or []
+            if not isinstance(changes, dict) or not isinstance(item_updates, list):
+                raise ValidationError("Spare Request changes are invalid")
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.edit_spare_request(
+                    spare_request_match.group(1),
+                    expected_revision=expected_revision,
+                    changes=changes,
+                    item_updates=item_updates,
+                ),
+            )
+            return
+        if path == "/api/spare-requests/reference-data":
+            value = payload.get("value")
+            if not isinstance(value, dict):
+                raise ValidationError("Manager data must be an object")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.save_spare_reference_data(value),
             )
             return
         raise NotFoundError("API endpoint not found")
@@ -352,7 +461,7 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
     def _path_dialog(self, payload: dict[str, Any]) -> None:
         key = str(payload.get("setting") or "")
         spec = SETTING_SPEC_BY_KEY.get(key)
-        if spec is None or spec.kind not in {"directory", "outlook_store"}:
+        if spec is None or spec.kind not in {"directory", "outlook_store", "xlsx_template"}:
             raise ValidationError("Choose a path setting that supports Browse")
         current = self.server.service.store.config
         parts = key.split(".")
@@ -367,6 +476,12 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 initial=initial,
                 title="Choose a Classic Outlook store",
                 filetypes=(("Outlook stores", "*.ost *.pst"), ("All files", "*.*")),
+            )
+        elif spec.kind == "xlsx_template":
+            selected = choose_file(
+                initial=initial,
+                title=spec.label,
+                filetypes=(("Excel workbooks", "*.xlsx"), ("All files", "*.*")),
             )
         else:
             selected = choose_directory(initial=initial, title=spec.label)
@@ -384,6 +499,8 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
         path = self.server.service.store.configured_directory(short_key)
         if path is None:
             raise ValidationError(f"{spec.label} is not configured")
+        if path.is_file():
+            path = path.parent
         open_folder(path)
         self._send_json(HTTPStatus.OK, {"opened": True})
 

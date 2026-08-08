@@ -1,5 +1,6 @@
 export type Risk = "none" | "grey" | "yellow" | "red";
-export type WorkspaceKey = "service-requests" | "spare-parts";
+export type WorkspaceKey = "service-requests" | "spare-requests";
+export type SpareRequestView = "active" | "eligible" | "completed";
 
 export interface ColumnDefinition {
   key: string;
@@ -114,7 +115,171 @@ export interface SparePartsDashboardPayload extends DashboardPayloadBase {
   spareParts: SparePartSummary[];
 }
 
-export type DashboardPayload = ServiceRequestsDashboardPayload | SparePartsDashboardPayload;
+export interface SpareRequestItemSummary {
+  rowId: string;
+  requestId: string;
+  itemId: string;
+  ticketId: string;
+  rma: string;
+  spareSr: string;
+  status: string;
+  statusLabel: string;
+  lifecycleColor: "black" | "grey" | "green";
+  dispatchAgeDays: number | null;
+  dispatchAgeColor: Risk | null;
+  emailInactivityDays: number | null;
+  emailLabel: string;
+  emailColor: Risk | null;
+  emailCount: number;
+  requestedBom: string;
+  deliveredBom: string;
+  part: string;
+  model: string;
+  device: string;
+  slot: string;
+  faultySn: string;
+  newSn: string;
+  site: string;
+  cloud: string;
+  conflictCount: number;
+  risk: Risk;
+  readOnly: boolean;
+  source: "active" | "closed";
+  archivedAt?: string | null;
+  archiveReason?: string | null;
+  notes?: string | null;
+}
+
+export interface SpareRequestStats {
+  activeRequests: number;
+  activeItems: number;
+  awaitingStock: number;
+  awaitingDispatch: number;
+  dispatched: number;
+  warehouseCandidates: number;
+  conflicts: number;
+  eligibleParts: number;
+  completedItems: number;
+}
+
+export interface SpareRequestsDashboardPayload extends DashboardPayloadBase {
+  workspace: "spare-requests";
+  view: SpareRequestView;
+  stats: SpareRequestStats;
+  spareRequests: SpareRequestItemSummary[];
+  eligibleParts: SparePartSummary[];
+}
+
+export type DashboardPayload = ServiceRequestsDashboardPayload | SpareRequestsDashboardPayload;
+
+export interface SpareRequestContact {
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+}
+
+export interface SpareRequestProfile {
+  client_initials: string;
+  customer_name: string;
+  site_code: string;
+  site_name: string | null;
+  site_address: string;
+  cloud: string;
+  requester: SpareRequestContact;
+  contact: SpareRequestContact;
+}
+
+export interface SpareRequestLine {
+  bom: string;
+  amount: number;
+  description: string;
+  part: string | null;
+  model: string | null;
+  device: string | null;
+  slot: string | null;
+  faulty_sn: string | null;
+  report_date: string | null;
+  source_device_number: number | null;
+  source_part_number: number | null;
+}
+
+export interface SpareRequestItem {
+  item_id: string;
+  ordinal: number;
+  requested_bom: string;
+  requested_description: string;
+  part: string | null;
+  model: string | null;
+  device: string | null;
+  slot: string | null;
+  faulty_sn: string | null;
+  rma: string | null;
+  delivered_bom: string | null;
+  new_sn: string | null;
+  dispatch_at: string | null;
+  attendance_confirmed_at: string | null;
+  return_condition: string | null;
+  return_export_filename: string | null;
+  warehouse_candidate_at: string | null;
+  rt: string | null;
+  conflicts: Array<Record<string, unknown>>;
+  status: string;
+  statusLabel: string;
+  lifecycleColor: "black" | "grey" | "green";
+  dispatchAgeDays: number | null;
+  dispatchAgeColor: Risk | null;
+  notes: string | null;
+}
+
+export interface SpareRequestDetail {
+  requestId: string;
+  revision: string;
+  ticketId: string;
+  ttEditable: boolean;
+  source: "ticket" | "manual" | "recovered";
+  spareSr: string | null;
+  status: string;
+  profile: SpareRequestProfile;
+  requestLines: SpareRequestLine[];
+  items: SpareRequestItem[];
+  export: {
+    request_filename: string | null;
+    request_path: string | null;
+    subject: string;
+    revisions: Array<{ filename: string; path: string; created_at: string }>;
+    returns: Array<Record<string, unknown>>;
+  };
+  email: {
+    total_received: number;
+    total_sent: number;
+    last_activity_at: string | null;
+    messages: Array<Record<string, unknown>>;
+    inactivityDays: number | null;
+    label: string;
+    count: number;
+  };
+  conflicts: Array<Record<string, unknown>>;
+  conflictCount: number;
+  history: HistoryEvent[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SpareReferenceData {
+  schemaVersion: number;
+  customers: Array<Record<string, unknown>>;
+  sites: Array<Record<string, unknown>>;
+  requesters: Array<Record<string, unknown>>;
+  boms: Array<Record<string, unknown>>;
+}
+
+export interface SpareRequestPrefill {
+  ticketId: string;
+  ticketExists: boolean;
+  profile: Record<string, unknown>;
+  lines: Array<Record<string, unknown>>;
+  warning: string | null;
+}
 
 export interface EmailMessage {
   messageKey: string | null;

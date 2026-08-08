@@ -2,10 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   cancelJob,
+  exportSpareRequest,
   getBootstrap,
   getDashboard,
+  getSpareRequest,
   getTemplates,
   getTicket,
+  purgeSpareArchive,
   saveTicket,
   startJob,
 } from "./api";
@@ -14,7 +17,11 @@ import { JobBanner } from "./components/JobBanner";
 import { NoticeStrip } from "./components/NoticeStrip";
 import { OperationsModal } from "./components/OperationsModal";
 import { SettingsModal } from "./components/SettingsModal";
+import { SpareManagersModal } from "./components/SpareManagersModal";
 import { SparePartsGrid } from "./components/SparePartsGrid";
+import { SpareRequestDetail } from "./components/SpareRequestDetail";
+import { SpareRequestModal } from "./components/SpareRequestModal";
+import { SpareRequestsGrid } from "./components/SpareRequestsGrid";
 import { StatsBar } from "./components/StatsBar";
 import { TicketDetail } from "./components/TicketDetail";
 import { TicketGrid } from "./components/TicketGrid";
@@ -26,6 +33,9 @@ import type {
   DashboardPayload,
   Job,
   SparePartSummary,
+  SpareRequestDetail as SpareRequestDetailType,
+  SpareRequestItemSummary,
+  SpareRequestView,
   TicketDetail as TicketDetailType,
   WorkspaceKey,
 } from "./types";
@@ -61,24 +71,25 @@ const WORKSPACES: Record<WorkspaceKey, WorkspaceConfiguration> = {
     searchPlaceholder: "Search SR, summary, handler, site…",
     columnsStorageKey: "zeus3.dashboard.columns",
   },
-  "spare-parts": {
-    label: "Spare Parts",
-    defaultSort: "sr",
+  "spare-requests": {
+    label: "Spare Requests",
+    defaultSort: "tt",
     sorts: [
-      { value: "sr", label: "SR" },
-      { value: "planned", label: "Planned" },
+      { value: "tt", label: "TT" },
+      { value: "rma", label: "RMA" },
+      { value: "email", label: "Email inactivity" },
+      { value: "status", label: "Status" },
+      { value: "age", label: "Dispatch age" },
       { value: "site", label: "Site" },
       { value: "cloud", label: "Cloud" },
-      { value: "device", label: "Device" },
-      { value: "part", label: "Part" },
       { value: "bom", label: "BOM" },
     ],
     defaultDirections: {
-      sr: "desc", planned: "asc", site: "asc", cloud: "asc",
-      device: "asc", part: "asc", bom: "asc",
+      tt: "desc", rma: "asc", email: "desc", status: "asc",
+      age: "desc", site: "asc", cloud: "asc", bom: "asc",
     },
-    searchPlaceholder: "Search SR, device, part, BOM, serial, site…",
-    columnsStorageKey: "zeus3.spare-parts.columns",
+    searchPlaceholder: "Search TT, RMA, Spare SR, BOM, serial, site…",
+    columnsStorageKey: "zeus3.spare-requests.columns",
   },
 };
 
@@ -93,13 +104,13 @@ function readPreference(key: string, fallback: string): string {
 }
 
 function workspacePreferenceKey(workspace: WorkspaceKey, name: string): string {
-  const prefix = workspace === "service-requests" ? "zeus3.dashboard" : "zeus3.spare-parts";
+  const prefix = workspace === "service-requests" ? "zeus3.dashboard" : "zeus3.spare-requests";
   return `${prefix}.${name}`;
 }
 
 function readWorkspace(): WorkspaceKey {
-  return readPreference("zeus3.workspace", "service-requests") === "spare-parts"
-    ? "spare-parts"
+  return ["spare-requests", "spare-parts"].includes(readPreference("zeus3.workspace", "service-requests"))
+    ? "spare-requests"
     : "service-requests";
 }
 
@@ -120,18 +131,28 @@ export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceKey>(readWorkspace);
   const [workspacePreferences, setWorkspacePreferences] = useState<Record<WorkspaceKey, WorkspacePreference>>(() => ({
     "service-requests": readWorkspacePreference("service-requests"),
-    "spare-parts": readWorkspacePreference("spare-parts"),
+    "spare-requests": readWorkspacePreference("spare-requests"),
   }));
+  const [spareView, setSpareView] = useState<SpareRequestView>(() => {
+    const saved = readPreference("zeus3.spare-requests.view", "active");
+    return saved === "eligible" || saved === "completed" ? saved : "active";
+  });
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   const [ticket, setTicket] = useState<TicketDetailType | null>(null);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+  const [spareRequest, setSpareRequest] = useState<SpareRequestDetailType | null>(null);
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [ticketLoading, setTicketLoading] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [theme, setTheme] = useState(() => readPreference("zeus3.theme", "dark"));
   const [operationsOpen, setOperationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [spareExportOpen, setSpareExportOpen] = useState(false);
+  const [spareManagersOpen, setSpareManagersOpen] = useState(false);
+  const [spareExportTicketId, setSpareExportTicketId] = useState<string | undefined>();
+  const [spareExportPart, setSpareExportPart] = useState<SparePartSummary | null>(null);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [templates, setTemplates] = useState<Array<{ name: string; path: string }>>([]);
   const [toast, setToast] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(null);
@@ -140,9 +161,12 @@ export default function App() {
   const preference = workspacePreferences[workspace];
   const { search, sort, direction } = preference;
   const workspaceConfig = WORKSPACES[workspace];
+  const columnsStorageKey = workspace === "spare-requests"
+    ? `${workspaceConfig.columnsStorageKey}.${spareView}`
+    : workspaceConfig.columnsStorageKey;
   const { orderedColumns, visibleColumns, visibleKeys, toggle, move, reset } = useColumnPreferences(
     dashboard?.columns || [],
-    workspaceConfig.columnsStorageKey,
+    columnsStorageKey,
   );
 
   const updateWorkspacePreference = useCallback((updates: Partial<WorkspacePreference>) => {
@@ -169,12 +193,13 @@ export default function App() {
     currentSort = sort,
     currentDirection = direction,
     currentSearch = search,
+    currentView = spareView,
   ) => {
     const requestId = ++dashboardRequest.current;
-    const result = await getDashboard(currentWorkspace, currentSort, currentDirection, currentSearch);
+    const result = await getDashboard(currentWorkspace, currentSort, currentDirection, currentSearch, currentView);
     if (requestId === dashboardRequest.current) setDashboard(result);
     return result;
-  }, [direction, search, sort, workspace]);
+  }, [direction, search, sort, spareView, workspace]);
 
   const loadTicket = useCallback(async (ticketId: string) => {
     setTicketLoading(true);
@@ -191,6 +216,20 @@ export default function App() {
     }
   }, [reportError]);
 
+  const loadSpareRequest = useCallback(async (requestId: string) => {
+    setTicketLoading(true);
+    try {
+      setSpareRequest(await getSpareRequest(requestId));
+    } catch (error) {
+      reportError(error);
+      setSpareRequest(null);
+      setSelectedRequestId(null);
+      setSelectedRowId(null);
+    } finally {
+      setTicketLoading(false);
+    }
+  }, [reportError]);
+
   useEffect(() => {
     Promise.all([loadBootstrap(), loadDashboard(), getTemplates()])
       .then(([, , templateResult]) => setTemplates(templateResult.templates))
@@ -199,15 +238,16 @@ export default function App() {
 
   useEffect(() => {
     const timer = window.setTimeout(
-      () => loadDashboard(workspace, sort, direction, search).catch(reportError),
+      () => loadDashboard(workspace, sort, direction, search, spareView).catch(reportError),
       140,
     );
     localStorage.setItem("zeus3.workspace", workspace);
     localStorage.setItem(workspacePreferenceKey(workspace, "sort"), sort);
     localStorage.setItem(workspacePreferenceKey(workspace, "direction"), direction);
     localStorage.setItem(workspacePreferenceKey(workspace, "search"), search);
+    localStorage.setItem("zeus3.spare-requests.view", spareView);
     return () => window.clearTimeout(timer);
-  }, [direction, loadDashboard, reportError, search, sort, workspace]);
+  }, [direction, loadDashboard, reportError, search, sort, spareView, workspace]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -229,6 +269,7 @@ export default function App() {
           loadDashboard().catch(reportError);
           loadBootstrap().catch(reportError);
           if (selectedTicketId) loadTicket(selectedTicketId);
+          if (selectedRequestId) loadSpareRequest(selectedRequestId);
         } else if (envelope.type === "configuration") {
           loadBootstrap().catch(reportError);
         }
@@ -240,7 +281,7 @@ export default function App() {
     source.addEventListener("dataset", receive);
     source.addEventListener("configuration", receive);
     return () => source.close();
-  }, [bootstrap?.instanceId, loadBootstrap, loadDashboard, loadTicket, reportError, selectedTicketId]);
+  }, [bootstrap?.instanceId, loadBootstrap, loadDashboard, loadSpareRequest, loadTicket, reportError, selectedRequestId, selectedTicketId]);
 
   useEffect(() => {
     if (!selectedTicketId) {
@@ -249,6 +290,14 @@ export default function App() {
     }
     loadTicket(selectedTicketId);
   }, [loadTicket, selectedTicketId]);
+
+  useEffect(() => {
+    if (!selectedRequestId) {
+      setSpareRequest(null);
+      return;
+    }
+    loadSpareRequest(selectedRequestId);
+  }, [loadSpareRequest, selectedRequestId]);
 
   useEffect(() => {
     if (!toast) return;
@@ -309,6 +358,10 @@ export default function App() {
   }
 
   const activeJob = useMemo(() => jobs.find((job) => ["queued", "running"].includes(job.status)), [jobs]);
+  const selectedCompletedItem = useMemo(() => {
+    if (dashboard?.workspace !== "spare-requests" || dashboard.view !== "completed") return null;
+    return dashboard.spareRequests.find((row) => row.rowId === selectedRowId) || null;
+  }, [dashboard, selectedRowId]);
   const chooseSort = useCallback((next: string) => {
     updateWorkspacePreference({
       sort: next,
@@ -326,6 +379,7 @@ export default function App() {
 
   const closeDetail = useCallback(() => {
     setSelectedTicketId(null);
+    setSelectedRequestId(null);
     setSelectedRowId(null);
   }, []);
 
@@ -335,23 +389,76 @@ export default function App() {
     setWorkspace(next);
     setDashboard(null);
     setTicket(null);
+    setSpareRequest(null);
     setSelectedTicketId(null);
+    setSelectedRequestId(null);
     setSelectedRowId(null);
     setColumnsOpen(false);
   }, [workspace]);
 
   const selectServiceRequest = useCallback((ticketId: string) => {
+    setSelectedRequestId(null);
     setSelectedTicketId(ticketId);
     setSelectedRowId(ticketId);
   }, []);
 
   const selectSparePart = useCallback((row: SparePartSummary) => {
+    setSelectedRequestId(null);
     setSelectedTicketId(row.ticketId);
     setSelectedRowId(row.rowId);
   }, []);
 
+  const selectSpareRequest = useCallback((row: SpareRequestItemSummary) => {
+    setSelectedTicketId(null);
+    setSelectedRequestId(row.readOnly ? null : row.requestId);
+    setSelectedRowId(row.rowId);
+  }, []);
+
+  const chooseSpareView = useCallback((next: SpareRequestView) => {
+    if (next === spareView) return;
+    dashboardRequest.current += 1;
+    setSpareView(next);
+    setSelectedTicketId(null);
+    setSelectedRequestId(null);
+    setSelectedRowId(null);
+    setTicket(null);
+    setSpareRequest(null);
+  }, [spareView]);
+
+  const openSpareExport = useCallback((ticketId?: string, part: SparePartSummary | null = null) => {
+    setSpareExportTicketId(ticketId);
+    setSpareExportPart(part);
+    setSpareExportOpen(true);
+  }, []);
+
+  const createSpareRequest = useCallback(async (payload: Record<string, unknown>) => {
+    const result = await exportSpareRequest(payload);
+    setWorkspace("spare-requests");
+    setSpareView("active");
+    setSelectedTicketId(null);
+    setSelectedRequestId(result.request.requestId);
+    setSelectedRowId(result.request.items[0]?.item_id || null);
+    setSpareRequest(result.request);
+    try { await navigator.clipboard.writeText(result.subject); } catch { /* The exported file remains complete. */ }
+    setToast({ tone: result.warnings.length ? "info" : "success", message: `Exported ${result.filename}. Email subject copied.${result.warnings.length ? ` ${result.warnings.join(" ")}` : ""}` });
+    await loadDashboard("spare-requests", "tt", "desc", "", "active");
+  }, [loadDashboard]);
+
+  async function purgeSelectedCompleted() {
+    if (!selectedCompletedItem) return;
+    if (!window.confirm(`Permanently purge completed item ${selectedCompletedItem.itemId}? This cannot be undone.`)) return;
+    try {
+      const result = await purgeSpareArchive([selectedCompletedItem.itemId]);
+      setSelectedRowId(null);
+      setToast({ tone: "success", message: `Purged ${result.removed} completed Spare Request item(s) and associated retained email.` });
+      await loadDashboard();
+    } catch (error) {
+      reportError(error);
+    }
+  }
+
   useGlobalCommands({
-    disabled: operationsOpen || settingsOpen,
+    disabled: operationsOpen || settingsOpen || spareExportOpen || spareManagersOpen,
     queryDisabled: Boolean(activeJob),
     onSearch: () => searchRef.current?.focus(),
     onSort: cycleSort,
@@ -373,10 +480,10 @@ export default function App() {
   }
 
   return (
-    <main className={`app-shell ${selectedTicketId ? "with-detail" : ""}`} data-workspace={workspace}>
+    <main className={`app-shell ${selectedTicketId || selectedRequestId ? "with-detail" : ""}`} data-workspace={workspace}>
       <TopBar
-        version={bootstrap?.version || "3.1.0"}
-        detailOpen={Boolean(selectedTicketId)}
+        version={bootstrap?.version || "3.1.1"}
+        detailOpen={Boolean(selectedTicketId || selectedRequestId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
         onWorkspaceChange={chooseWorkspace}
@@ -394,6 +501,7 @@ export default function App() {
       <JobBanner jobs={jobs} onCancel={stopJob} onOpenActivity={() => setOperationsOpen(true)} />
       <StatsBar dashboard={dashboard} />
       <section className="dashboard-toolbar">
+        {workspace === "spare-requests" && <div className="spare-view-switcher" role="tablist" aria-label="Spare Request view">{(["active", "eligible", "completed"] as SpareRequestView[]).map((view) => <button type="button" role="tab" aria-selected={spareView === view} className={spareView === view ? "active" : ""} onClick={() => chooseSpareView(view)} key={view}>{view === "active" ? "Active Requests" : view === "eligible" ? "Eligible SR Parts" : "Completed"}</button>)}</div>}
         <label className="search-box">
           <span>⌕</span>
           <input
@@ -416,6 +524,7 @@ export default function App() {
           </select>
         </div>
         <button type="button" className="toolbar-button" onClick={queryData} disabled={Boolean(activeJob)}>↻ Query data</button>
+        {workspace === "spare-requests" && <><button type="button" className="toolbar-button" onClick={() => openSpareExport()}>+ Manual request</button><button type="button" className="toolbar-button" onClick={() => setSpareManagersOpen(true)}>Managers</button>{spareView === "completed" && <button type="button" className="toolbar-button danger-text" disabled={!selectedCompletedItem} onClick={purgeSelectedCompleted}>Purge selected</button>}</>}
         <div className="columns-anchor">
           <button type="button" className="toolbar-button" onClick={() => setColumnsOpen((value) => !value)}>⚙ Fields</button>
           {columnsOpen && (
@@ -431,12 +540,18 @@ export default function App() {
         </div>
       </section>
       <section className="workspace">
-        {dashboard?.workspace === "spare-parts" ? (
-          <SparePartsGrid
-            rows={dashboard.spareParts}
+        {dashboard?.workspace === "spare-requests" ? (
+          dashboard.view === "eligible" ? <SparePartsGrid
+            rows={dashboard.eligibleParts}
             columns={visibleColumns}
             selectedRowId={selectedRowId}
-            onSelect={selectSparePart}
+            onSelect={(row) => { selectSparePart(row); openSpareExport(row.ticketId, row); }}
+            onCloseDetail={closeDetail}
+          /> : <SpareRequestsGrid
+            rows={dashboard.spareRequests}
+            columns={visibleColumns}
+            selectedRowId={selectedRowId}
+            onSelect={selectSpareRequest}
             onCloseDetail={closeDetail}
           />
         ) : (
@@ -448,15 +563,25 @@ export default function App() {
             onCloseDetail={closeDetail}
           />
         )}
-        <TicketDetail
+        {selectedTicketId && <TicketDetail
           ticket={ticket}
           loading={ticketLoading}
-          initialTab={workspace === "spare-parts" ? "spares" : "overview"}
+          initialTab={workspace === "spare-requests" ? "spares" : "overview"}
           templates={templates}
           onClose={closeDetail}
           onSave={saveLocalFields}
           onGenerateMop={(ticketId, template) => runJob("mop", { ticketId, template })}
-        />
+          onExportSpareRequest={(ticketId) => openSpareExport(ticketId)}
+        />}
+        {selectedRequestId && <SpareRequestDetail
+          request={spareRequest}
+          loading={ticketLoading}
+          onClose={closeDetail}
+          onChanged={(value) => { setSpareRequest(value); if (!value) { setSelectedRequestId(null); setSelectedRowId(null); } }}
+          onRefresh={async () => { await loadDashboard(); }}
+          onError={reportError}
+          onNotice={(message) => setToast({ tone: "success", message })}
+        />}
       </section>
       <footer className="command-strip">
         <span>↑↓ Select</span>
@@ -487,6 +612,8 @@ export default function App() {
           onError={reportError}
         />
       )}
+      {spareExportOpen && <SpareRequestModal initialTicketId={spareExportTicketId} initialPart={spareExportPart} onClose={() => setSpareExportOpen(false)} onExport={createSpareRequest} onError={reportError} />}
+      {spareManagersOpen && <SpareManagersModal onClose={() => setSpareManagersOpen(false)} onSaved={() => setToast({ tone: "success", message: "Local Spare Request managers saved." })} onError={reportError} />}
       {toast && <div className={`toast toast-${toast.tone}`} role="status"><span>{toast.message}</span><button type="button" onClick={() => setToast(null)}>×</button></div>}
     </main>
   );
