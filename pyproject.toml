@@ -12,6 +12,7 @@ authors = [{ name = "Franco" }]
 dependencies = [
     "openpyxl>=3.1,<4",
     "python-docx>=1.1,<2",
+    "tzdata>=2025.2; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]

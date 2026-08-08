@@ -95,6 +95,17 @@ class WindowsLauncherRegressionTests(unittest.TestCase):
         self.assertIn("npm run test", workflow)
         self.assertIn("npm run test:e2e", workflow)
 
+    def test_windows_install_includes_iana_timezone_data(self) -> None:
+        """Windows must supply the database used by ``zoneinfo`` itself."""
+
+        project = tomllib.loads(PROJECT_FILE.read_text(encoding="utf-8"))
+        dependencies = project["project"]["dependencies"]
+
+        self.assertIn(
+            "tzdata>=2025.2; platform_system == 'Windows'",
+            dependencies,
+        )
+
     def test_browser_fixture_is_independent_of_the_unit_test_modules(self) -> None:
         """Playwright starts this file directly from the frontend directory."""
 
