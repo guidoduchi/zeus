@@ -27,9 +27,9 @@ from .tickets import PENDING_COLUMNS
 from .utils import iso_now, parse_date, parse_datetime, sha256_file
 
 
-REQUEST_SHEET = "Huawei Spare Parts Service A. F"
+REQUEST_SHEET = "Spare Parts Request"
 FAULTY_TAG_SHEET = "Faulty Tag Template"
-RETURN_SHEET = "FaultTag 2023"
+RETURN_SHEET = "Fault Tag Return"
 SPARE_ARCHIVE_SHEET = "Spare Requests"
 SPARE_ARCHIVE_EMAIL_SHEET = "Spare Request Emails"
 
@@ -87,19 +87,20 @@ class SpareRequestWorkbookError(RuntimeError):
     pass
 
 
-def _require_template(path: Path, expected_sheets: list[str]) -> Path:
+def _require_template(path: Path, expected_sheet_count: int) -> tuple[Path, tuple[str, ...]]:
     resolved = path.expanduser().resolve()
     if not resolved.is_file() or resolved.suffix.lower() != ".xlsx":
         raise SpareRequestWorkbookError(f"Spare Request template was not found: {resolved}")
     workbook = load_workbook(resolved, read_only=True, data_only=False)
     try:
-        if workbook.sheetnames != expected_sheets:
+        sheet_names = tuple(workbook.sheetnames)
+        if len(sheet_names) != expected_sheet_count:
             raise SpareRequestWorkbookError(
-                "Template worksheet order changed. Expected: " + ", ".join(expected_sheets)
+                f"Template must contain exactly {expected_sheet_count} worksheet(s)"
             )
     finally:
         workbook.close()
-    return resolved
+    return resolved, sheet_names
 
 
 def _shifted_range(value: str, row_offset: int) -> str:
@@ -269,6 +270,23 @@ def _faulty_tag_rows(request: dict[str, Any]) -> list[dict[str, Any]]:
     they do not create additional replacement units or future RMAs.
     """
 
+    items = list(request.get("items") or [])
+    if items:
+        return [
+            {
+                "bom": item.get("requested_bom"),
+                "description": item.get("requested_description"),
+                "part": item.get("part"),
+                "model": item.get("model"),
+                "device": item.get("device"),
+                "slot": item.get("slot"),
+                "faulty_sn": item.get("faulty_sn"),
+                "report_date": item.get("report_date"),
+                "notes": item.get("notes"),
+            }
+            for item in items
+        ]
+
     rows: list[dict[str, Any]] = []
     for line in request.get("request_lines") or []:
         serials = list(line.get("faulty_sns") or [])
@@ -357,12 +375,16 @@ def _atomic_save(workbook: Any, destination: Path) -> Path:
     return final
 
 
-def _validate_initial_export(path: Path, request: dict[str, Any]) -> None:
+def _validate_initial_export(
+    path: Path,
+    request: dict[str, Any],
+    expected_sheet_names: tuple[str, ...],
+) -> None:
     workbook = load_workbook(path, read_only=False, data_only=False, keep_links=True)
     try:
-        if workbook.sheetnames != [REQUEST_SHEET, FAULTY_TAG_SHEET]:
+        if workbook.sheetnames != list(expected_sheet_names):
             raise SpareRequestWorkbookError("Generated request workbook changed template sheets")
-        application = workbook[REQUEST_SHEET]
+        application = workbook.worksheets[0]
         exported_boms = [
             str(application.cell(15 + index * 2, 2).value or "")
             for index in range(len(request.get("request_lines") or []))
@@ -387,17 +409,17 @@ def export_initial_request(
     request: dict[str, Any],
     filename: str,
 ) -> Path:
-    template = _require_template(template_path, [REQUEST_SHEET, FAULTY_TAG_SHEET])
+    template, sheet_names = _require_template(template_path, 2)
     workbook = load_workbook(template, read_only=False, data_only=False, keep_links=True)
     try:
-        _populate_request_sheet(workbook[REQUEST_SHEET], request)
-        _populate_faulty_tag_sheet(workbook[FAULTY_TAG_SHEET], request)
+        _populate_request_sheet(workbook.worksheets[0], request)
+        _populate_faulty_tag_sheet(workbook.worksheets[1], request)
         destination = export_root.expanduser().resolve() / "Requests" / filename
         final = _atomic_save(workbook, destination)
     finally:
         workbook.close()
     try:
-        _validate_initial_export(final, request)
+        _validate_initial_export(final, request, sheet_names)
     except Exception:
         final.unlink(missing_ok=True)
         raise
@@ -444,11 +466,11 @@ def export_return_workbook(
         if condition not in {"Faulty", "New"}:
             raise SpareRequestWorkbookError("Return condition must be Faulty or New")
 
-    template = _require_template(template_path, [RETURN_SHEET])
+    template, sheet_names = _require_template(template_path, 1)
     workbook = load_workbook(template, read_only=False, data_only=False, keep_links=True)
     warnings: list[str] = []
     try:
-        worksheet = workbook[RETURN_SHEET]
+        worksheet = workbook.worksheets[0]
         contact = first_profile.get("contact", {})
         worksheet["A2"] = f"*Customer’s Name：{first_profile.get('customer_name') or ''}"
         worksheet["B3"] = first_profile.get("site_address")
@@ -501,9 +523,10 @@ def export_return_workbook(
 
     check = load_workbook(final, read_only=True, data_only=False)
     try:
-        if check.sheetnames != [RETURN_SHEET]:
+        if check.sheetnames != list(sheet_names):
             raise SpareRequestWorkbookError("Generated return workbook changed template sheets")
-        values = [check[RETURN_SHEET].cell(8 + index, 9).value for index in range(len(selections))]
+        worksheet = check.worksheets[0]
+        values = [worksheet.cell(8 + index, 9).value for index in range(len(selections))]
         if values != rmas:
             raise SpareRequestWorkbookError("Generated return workbook failed RMA verification")
     finally:

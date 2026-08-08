@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.1.5 - 2026-08-08
+
+- Removes organization-specific names, sender addresses, domains, and worksheet
+  titles from the distributable application. Trusted mail roles are configured
+  locally, while selected XLSX worksheet names are preserved by position.
+- Replaces native browser confirmation and prompt boxes with Zeus-themed local
+  dialogs across data managers, protected drafts, configuration, operations,
+  conflict resolution, and archive purging.
+- Rebuilds Global data as a friendly Zeus Operations-style card workspace with
+  contextual counts, descriptions, record lists, and editors.
+- Moves faulty serial evidence to the damaged-device level, removes New SN from
+  the SR Spare Parts entry form, adds part notes, and makes unique newline slot
+  entries derive physical-unit quantity automatically.
+- Prefetches and caches Service Requests and Spare Requests projections in the
+  browser and server so workspace changes refresh in place instead of reopening
+  the full workbench loading screen.
+
 ## 3.1.4 - 2026-08-08
 
 - Fixes the successful-save revision race that could misclassify Zeus's own

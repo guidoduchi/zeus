@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { stopZeus } from "../api";
 import type { Job } from "../types";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -14,6 +16,8 @@ interface Props {
 }
 
 export function OperationsModal({ jobs, outlookEnabled, outlookAvailable, onClose, onSettings, onRun, onCancel, onError }: Props) {
+  const [confirmation, setConfirmation] = useState<"publish" | "shutdown" | null>(null);
+  const [stopping, setStopping] = useState(false);
   const active = jobs.filter((job) => job.status === "queued" || job.status === "running");
   const outlookReady = outlookEnabled && outlookAvailable;
   const outlookMessage = !outlookEnabled
@@ -21,15 +25,23 @@ export function OperationsModal({ jobs, outlookEnabled, outlookAvailable, onClos
     : !outlookAvailable
       ? "The configured Outlook store is unavailable."
       : "Scan eligible active tickets.";
-  return (
+  async function confirmAction() {
+    if (confirmation === "publish") {
+      onRun("publish", { createMissing: true });
+      setConfirmation(null);
+      return;
+    }
+    if (confirmation === "shutdown") {
+      setStopping(true);
+      try { await stopZeus(); } catch (error) { setStopping(false); onError(error); }
+    }
+  }
+
+  return <>
     <Modal title="Zeus operations" subtitle="The local database is authoritative; workbook output is explicit." onClose={onClose} wide>
       <div className="operations-grid">
         <button type="button" onClick={() => onRun("query")}><strong>Check Advanced Search</strong><span>Discover new source workbooks and reconcile online ticket fields. Exported workbooks are never imported.</span></button>
-        <button type="button" onClick={() => {
-          if (window.confirm("Export Pendings.xlsx and Closed.xlsx from the Zeus database now? A successful export will finalize and remove tickets already marked for closure.")) {
-            onRun("publish", { createMissing: true });
-          }
-        }}><strong>Export Pendings & Closed</strong><span>Generate both workbooks from Zeus. Pending closures are deleted from the active database only after a successful export.</span></button>
+        <button type="button" onClick={() => setConfirmation("publish")}><strong>Export Pendings & Closed</strong><span>Generate both workbooks from Zeus. Pending closures are deleted from the active database only after a successful export.</span></button>
         <button type="button" disabled={!outlookReady} onClick={() => onRun("email-fetch")}><strong>Fetch Outlook email</strong><span>{outlookMessage}</span></button>
         <button type="button" disabled={!outlookReady} onClick={() => onRun("email-sync")}><strong>Synchronize staged email</strong><span>{outlookReady ? "Apply already fetched messages to the local database." : outlookMessage}</span></button>
         <button type="button" disabled={!outlookReady} onClick={() => onRun("email-rebuild")}><strong>Rebuild email history</strong><span>{outlookReady ? "Full scan and merge; existing totals never decrease." : outlookMessage}</span></button>
@@ -51,11 +63,17 @@ export function OperationsModal({ jobs, outlookEnabled, outlookAvailable, onClos
       </section>
       <section className="shutdown-row">
         <div><strong>Stop Zeus completely</strong><span>Stops the browser backend; this tab will disconnect.</span></div>
-        <button type="button" className="danger-button" onClick={async () => {
-          if (!window.confirm("Stop Zeus now?")) return;
-          try { await stopZeus(); } catch (error) { onError(error); }
-        }}>Shut down Zeus</button>
+        <button type="button" className="danger-button" onClick={() => setConfirmation("shutdown")}>Shut down Zeus</button>
       </section>
     </Modal>
-  );
+    {confirmation && <ConfirmationDialog
+      title={confirmation === "publish" ? "Export operational workbooks?" : "Stop Zeus completely?"}
+      message={confirmation === "publish" ? "Zeus will generate Pendings.xlsx and Closed.xlsx from the local database. Only a successful paired export will finalize and remove tickets already pending closure." : "The local backend will stop and this browser tab will disconnect. Saved database records will remain intact."}
+      confirmLabel={confirmation === "publish" ? "Export workbooks" : "Shut down Zeus"}
+      tone={confirmation === "shutdown" ? "danger" : "primary"}
+      busy={stopping}
+      onCancel={() => setConfirmation(null)}
+      onConfirm={() => void confirmAction()}
+    />}
+  </>;
 }

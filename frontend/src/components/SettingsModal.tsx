@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { browsePath, getSettings, migrateDataDirectory, openPath, saveSettings } from "../api";
 import type { Setting, SettingsPayload } from "../types";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -74,6 +75,7 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
   const [draft, setDraft] = useState<Record<string, string | boolean>>({});
   const [saving, setSaving] = useState(false);
   const [migrating, setMigrating] = useState(false);
+  const [migrationTarget, setMigrationTarget] = useState<string | null>(null);
 
   useEffect(() => {
     getSettings().then((result) => {
@@ -119,10 +121,7 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
       const result = await browsePath(setting.key);
       if (result.cancelled || !result.path) return;
       if (setting.kind === "data_directory") {
-        if (!window.confirm(`Move all Zeus data to ${result.path}? Zeus will verify the clone, restart, and only then remove the original data folder.`)) return;
-        setMigrating(true);
-        await migrateDataDirectory(result.path);
-        window.setTimeout(() => window.location.reload(), 2500);
+        setMigrationTarget(result.path);
         return;
       }
       setDraft((current) => ({ ...current, [setting.key]: result.path! }));
@@ -132,7 +131,20 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
     }
   }
 
-  return (
+  async function confirmMigration() {
+    if (!migrationTarget) return;
+    setMigrating(true);
+    try {
+      await migrateDataDirectory(migrationTarget);
+      setMigrationTarget(null);
+      window.setTimeout(() => window.location.reload(), 2500);
+    } catch (error) {
+      setMigrating(false);
+      onError(error);
+    }
+  }
+
+  return <>
     <Modal
       title="Zeus configuration"
       subtitle="Validated controls replace direct JSON editing. Path dialogs open on this Windows computer."
@@ -165,5 +177,13 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
         </div>
       )}
     </Modal>
-  );
+    {migrationTarget && <ConfirmationDialog
+      title="Move the Zeus data folder?"
+      message={`Zeus will clone and verify every mutable record at ${migrationTarget}, perform a soft restart, and remove the old data folder only after the new location starts successfully.`}
+      confirmLabel="Verify and move data"
+      busy={migrating}
+      onCancel={() => setMigrationTarget(null)}
+      onConfirm={() => void confirmMigration()}
+    />}
+  </>;
 }

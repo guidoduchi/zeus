@@ -104,7 +104,7 @@ describe("SpareRequestModal", () => {
     expect(screen.getByLabelText("TT · 8 digits")).toBeEnabled();
   });
 
-  it("autocompletes global data and submits newline-only faulty serials for one BOM", async () => {
+  it("autocompletes global data and derives one BOM quantity from newline slots", async () => {
     const user = userEvent.setup();
     const onExport = vi.fn().mockResolvedValue(undefined);
     api.getSpareReferenceData.mockResolvedValue({
@@ -133,9 +133,14 @@ describe("SpareRequestModal", () => {
     expect(screen.getByLabelText("Site address *")).toHaveValue("Av. Example 123");
     await user.type(screen.getByLabelText("BOM *"), "SERVER-001");
     await user.type(
-      screen.getByLabelText(/^Faulty component serial numbers · one per line/),
+      screen.getByLabelText(/^Slots · one per line/),
+      "DIMM101{enter}DIMM203{enter}DIMM103",
+    );
+    await user.type(
+      screen.getByLabelText(/^Damaged-device serial evidence · one per line/),
       "CPU-SN-001{enter}MEMORY,SN,002{enter}MEZZ-SN-003",
     );
+    await user.type(screen.getByLabelText("Notes"), "Diagnostics completed");
     await user.click(screen.getByRole("button", { name: "Export XLSX & create request" }));
 
     expect(onExport).toHaveBeenCalledTimes(1);
@@ -145,8 +150,10 @@ describe("SpareRequestModal", () => {
     expect(payload.lines).toHaveLength(1);
     expect(payload.lines[0]).toMatchObject({
       bom: "SERVER-001",
-      amount: 1,
+      amount: 3,
+      slot: "DIMM101\nDIMM203\nDIMM103",
       faultySns: ["CPU-SN-001", "MEMORY,SN,002", "MEZZ-SN-003"],
+      notes: "Diagnostics completed",
     });
   });
 });

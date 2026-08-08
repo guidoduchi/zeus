@@ -9,7 +9,7 @@ describe("TopBar workspace switcher", () => {
     const onWorkspaceChange = vi.fn();
     render(
       <TopBar
-        version="3.1.4"
+        version="3.1.5"
         detailOpen={false}
         workspace="service-requests"
         stagedMessages={0}

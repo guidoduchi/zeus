@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any
 
 from .utils import iso_now, normalize_ticket_id
@@ -137,6 +138,31 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
+def newline_values(value: Any) -> list[str]:
+    """Return unique, non-blank values from a newline-delimited field."""
+
+    supplied = value if isinstance(value, list) else [value]
+    candidates = [
+        line
+        for candidate in supplied
+        for line in re.split(r"\r?\n", str(candidate or ""))
+    ]
+    values: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        key = text.casefold()
+        if text and key not in seen:
+            seen.add(key)
+            values.append(text)
+    return values
+
+
+def newline_text(value: Any) -> str | None:
+    values = newline_values(value)
+    return "\n".join(values) or None
+
+
 def spare_parts_from_legacy(fields: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Upgrade one historical flat spare record into the normalized shape."""
 
@@ -144,16 +170,22 @@ def spare_parts_from_legacy(fields: dict[str, Any] | None) -> list[dict[str, Any
     device = _optional_text(values.get("Device"))
     model = _optional_text(values.get("Model"))
     part = {
-        "slot": _optional_text(values.get("Slot")),
+        "slot": newline_text(values.get("Slot")),
         "part": _optional_text(values.get("Part")),
         "bom": _optional_text(values.get("BOM")),
-        "faulty_sn": _optional_text(values.get("Old SN")),
         "new_sn": _optional_text(values.get("New SN")),
+        "notes": None,
     }
     has_part = any(value is not None for value in part.values())
-    if device is None and model is None and not has_part:
+    faulty_sns = newline_values(values.get("Old SN"))
+    if device is None and model is None and not faulty_sns and not has_part:
         return []
-    return [{"device": device, "model": model, "parts": [part] if has_part else []}]
+    return [{
+        "device": device,
+        "model": model,
+        "faulty_sns": faulty_sns,
+        "parts": [part] if has_part else [],
+    }]
 
 
 def normalize_spare_parts(
@@ -174,23 +206,40 @@ def normalize_spare_parts(
             continue
         device = _optional_text(candidate.get("device"))
         model = _optional_text(candidate.get("model"))
+        faulty_sns = newline_values(
+            candidate.get("faulty_sns", candidate.get("faulty_sn"))
+        )
+        faulty_keys = {serial.casefold() for serial in faulty_sns}
         parts: list[dict[str, Any]] = []
         raw_parts = candidate.get("parts")
         if isinstance(raw_parts, list):
             for raw_part in raw_parts:
                 if not isinstance(raw_part, dict):
                     continue
+                # 3.1.4 stored diagnostic serials on each part. Upgrade them
+                # into the damaged-device evidence list without losing them.
+                for serial in newline_values(
+                    raw_part.get("faulty_sns", raw_part.get("faulty_sn"))
+                ):
+                    if serial.casefold() not in faulty_keys:
+                        faulty_sns.append(serial)
+                        faulty_keys.add(serial.casefold())
                 part = {
-                    "slot": _optional_text(raw_part.get("slot")),
+                    "slot": newline_text(raw_part.get("slots", raw_part.get("slot"))),
                     "part": _optional_text(raw_part.get("part")),
                     "bom": _optional_text(raw_part.get("bom")),
-                    "faulty_sn": _optional_text(raw_part.get("faulty_sn")),
                     "new_sn": _optional_text(raw_part.get("new_sn")),
+                    "notes": _optional_text(raw_part.get("notes")),
                 }
                 if any(item is not None for item in part.values()):
                     parts.append(part)
-        if device is not None or model is not None or parts:
-            devices.append({"device": device, "model": model, "parts": parts})
+        if device is not None or model is not None or faulty_sns or parts:
+            devices.append({
+                "device": device,
+                "model": model,
+                "faulty_sns": faulty_sns,
+                "parts": parts,
+            })
     return devices
 
 
@@ -211,7 +260,7 @@ def spare_part_rows(spare_parts: Any) -> list[dict[str, Any]]:
                     "Slot": item.get("slot"),
                     "Part": item.get("part"),
                     "BOM": item.get("bom"),
-                    "Faulty SN": item.get("faulty_sn"),
+                    "Faulty SN": "\n".join(device.get("faulty_sns") or []) or None,
                     "New SN": item.get("new_sn"),
                 }
             )

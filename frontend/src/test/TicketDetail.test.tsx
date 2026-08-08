@@ -168,7 +168,9 @@ describe("TicketDetail", () => {
   });
 
   it("labels genuine overlapping conflicts as restore-before-save", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const nativeConfirm = vi.spyOn(window, "confirm").mockImplementation(() => {
+      throw new Error("Native browser confirmations are forbidden");
+    });
     const current = {
       ...detail,
       revision: "new-revision",
@@ -188,7 +190,9 @@ describe("TicketDetail", () => {
     expect(await screen.findByText(/same database work fields changed/i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Save to Zeus" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Restore changes" }));
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/does not save to the database/i));
+    expect(screen.getByRole("dialog", { name: "Restore protected SR 12345678 changes?" })).toBeVisible();
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Restore for review" }));
     expect(screen.queryByText(/same database work fields changed/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save to Zeus" })).toBeEnabled();
     expect(screen.getByLabelText("Notes")).toHaveValue("Protected note");
@@ -224,17 +228,19 @@ describe("TicketDetail", () => {
     await user.click(screen.getByRole("button", { name: /add damaged device/i }));
     await user.type(screen.getByLabelText("Device 1 name"), "server-a");
     await user.type(screen.getByLabelText("Device 1 model"), "2288H V5");
-    await user.type(screen.getByLabelText("Device 1 part 1 Slot"), "Slot 1");
+    await user.type(screen.getByLabelText("Device 1 faulty serial numbers"), "OLD-1{enter}OLD-2");
+    await user.type(screen.getByLabelText("Device 1 part 1 Slots"), "DIMM101{enter}DIMM203{enter}DIMM103");
     await user.type(screen.getByLabelText("Device 1 part 1 Part"), "Disk");
     await user.type(screen.getByLabelText("Device 1 part 1 BOM (part number)"), "BOM-1");
-    await user.type(screen.getByLabelText("Device 1 part 1 Faulty SN"), "OLD-1");
+    await user.type(screen.getByLabelText("Device 1 part 1 Notes"), "Diagnostics completed");
     await user.click(screen.getByRole("button", { name: /add damaged part/i }));
-    await user.type(screen.getByLabelText("Device 1 part 2 Slot"), "Slot 2");
+    await user.type(screen.getByLabelText("Device 1 part 2 Slots"), "Slot 2");
     await user.type(screen.getByLabelText("Device 1 part 2 BOM (part number)"), "BOM-2");
     await user.click(screen.getByRole("button", { name: /add damaged device/i }));
     await user.type(screen.getByLabelText("Device 2 name"), "server-b");
     await user.type(screen.getByLabelText("Device 2 part 1 Part"), "Memory");
-    await user.type(screen.getByLabelText("Device 2 part 1 New SN"), "NEW-3");
+    await user.type(screen.getByLabelText("Device 2 part 1 BOM (part number)"), "BOM-3");
+    expect(screen.queryByLabelText(/New SN/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /save to zeus/i }));
 
     expect(onSave).toHaveBeenCalledWith("12345678", "revision", {
@@ -242,15 +248,17 @@ describe("TicketDetail", () => {
         {
           device: "server-a",
           model: "2288H V5",
+          faulty_sns: ["OLD-1", "OLD-2"],
           parts: [
-            { slot: "Slot 1", part: "Disk", bom: "BOM-1", faulty_sn: "OLD-1", new_sn: null },
-            { slot: "Slot 2", part: null, bom: "BOM-2", faulty_sn: null, new_sn: null },
+            { slot: "DIMM101\nDIMM203\nDIMM103", part: "Disk", bom: "BOM-1", notes: "Diagnostics completed", new_sn: null },
+            { slot: "Slot 2", part: null, bom: "BOM-2", notes: null, new_sn: null },
           ],
         },
         {
           device: "server-b",
           model: null,
-          parts: [{ slot: null, part: "Memory", bom: null, faulty_sn: null, new_sn: "NEW-3" }],
+          faulty_sns: [],
+          parts: [{ slot: null, part: "Memory", bom: "BOM-3", notes: null, new_sn: null }],
         },
       ],
     });

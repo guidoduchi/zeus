@@ -19,7 +19,10 @@ from zeus2.spare_request_excel import (
     export_initial_request,
     export_return_workbook,
 )
-from zeus2.spare_request_mail import apply_spare_request_messages, parse_icare_dispatch
+from zeus2.spare_request_mail import (
+    apply_spare_request_messages,
+    parse_dispatch_notification,
+)
 from zeus2.spare_requests import (
     ECUADOR_TIMEZONE,
     SpareRequestError,
@@ -63,7 +66,7 @@ def lines_input(amount: int = 2) -> list[dict]:
             "part": "Controller board",
             "model": "S6730",
             "device": "SW-UIO-01",
-            "slot": "1/0/1",
+            "slot": "",
             "faultySn": "FAULTY-1",
             "reportDate": "2026-07-01",
         }
@@ -204,8 +207,122 @@ class SpareRequestDomainTests(unittest.TestCase):
         )
         self.assertEqual(
             request["export"]["subject"],
-            "[TT 39416095] [SPARE PARTS REQUEST] 260808123456 Controller board for S6730 SW-UIO-01 1/0/1",
+            "[TT 39416095] [SPARE PARTS REQUEST] 260808123456 Controller board for S6730 SW-UIO-01",
         )
+
+    def test_newline_slots_derive_quantity_and_assign_one_slot_per_item(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "request.xlsx"
+            create_request_template(template)
+            lines = normalize_request_lines(
+                [{
+                    **lines_input(amount=99)[0],
+                    "part": "DIMM",
+                    "description": "DIMM",
+                    "slot": "DIMM101\nDIMM203\nDIMM103\nDIMM101",
+                    "faultySns": "SERVER-SN-01\nMEMORY-SN-02",
+                    "notes": "Memory diagnostics completed before this request.",
+                }]
+            )
+            self.assertEqual(lines[0]["amount"], 3)
+            self.assertEqual(lines[0]["slots"], ["DIMM101", "DIMM203", "DIMM103"])
+            request = create_request_record(
+                request_id="260808123456",
+                tt="39416095",
+                source="manual",
+                profile=normalize_profile(profile_input()),
+                lines=lines,
+                export_path=None,
+                subject=request_subject("260808123456", "39416095", lines),
+                created_at="2026-08-08T12:34:56-05:00",
+            )
+            self.assertEqual(len(request["items"]), 3)
+            self.assertEqual(
+                [item["slot"] for item in request["items"]],
+                ["DIMM101", "DIMM203", "DIMM103"],
+            )
+            self.assertEqual(
+                {item["requested_bom"] for item in request["items"]},
+                {"02312RCC"},
+            )
+            self.assertTrue(all(item["notes"] == lines[0]["notes"] for item in request["items"]))
+            self.assertTrue(
+                all(
+                    item["faulty_sns"] == ["SERVER-SN-01", "MEMORY-SN-02"]
+                    for item in request["items"]
+                )
+            )
+            exported = export_initial_request(
+                template,
+                root / "exports",
+                request,
+                request_filename(request["request_id"], request["tt"], request["profile"], lines),
+            )
+            workbook = load_workbook(exported, read_only=True)
+            try:
+                self.assertEqual(workbook.worksheets[0]["C15"].value, 3)
+                self.assertEqual(
+                    [workbook.worksheets[1][f"B{row}"].value for row in (12, 14, 16)],
+                    ["02312RCC"] * 3,
+                )
+                descriptions = [
+                    workbook.worksheets[1][f"D{row}"].value for row in (12, 14, 16)
+                ]
+                for slot, description in zip(lines[0]["slots"], descriptions, strict=True):
+                    self.assertIn(slot, description)
+            finally:
+                workbook.close()
+
+    def test_export_preserves_neutral_template_sheet_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request_template = root / "request.xlsx"
+            return_template = root / "return.xlsx"
+            create_request_template(request_template)
+            create_return_template(return_template)
+            request_book = load_workbook(request_template)
+            request_book.worksheets[0].title = "Local Request Form"
+            request_book.worksheets[1].title = "Local Fault Evidence"
+            request_book.save(request_template)
+            request_book.close()
+            return_book = load_workbook(return_template)
+            return_book.worksheets[0].title = "Local Return Form"
+            return_book.save(return_template)
+            return_book.close()
+
+            request = request_record(1)
+            exported = export_initial_request(
+                request_template,
+                root / "exports",
+                request,
+                request_filename(request["request_id"], request["tt"], request["profile"], request["request_lines"]),
+            )
+            check = load_workbook(exported, read_only=True)
+            try:
+                self.assertEqual(check.sheetnames, ["Local Request Form", "Local Fault Evidence"])
+            finally:
+                check.close()
+
+            request["spare_sr"] = "SR4956964"
+            request["items"][0].update(
+                {
+                    "rma": "C3209937821",
+                    "delivered_bom": "02540255",
+                    "new_sn": "NEW-1",
+                }
+            )
+            returned_path = export_return_workbook(
+                return_template,
+                root / "exports",
+                [(request, request["items"][0], "Faulty")],
+            )["path"]
+            returned = load_workbook(returned_path, read_only=True)
+            try:
+                self.assertEqual(returned.sheetnames, ["Local Return Form"])
+                self.assertEqual(returned.worksheets[0]["I8"].value, "C3209937821")
+            finally:
+                returned.close()
 
     def test_request_and_return_exports_preserve_template_sheet_contracts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -256,6 +373,15 @@ class SpareRequestMailTests(unittest.TestCase):
     def test_out_of_order_dispatch_and_partial_stock_resolve_per_unit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            config = load_config(root / "home")
+            config["email"].update(
+                {
+                    "request_confirmation_sender": "request-confirmation@example.test",
+                    "dispatch_notification_sender": "dispatch@example.test",
+                    "warehouse_sender_domain": "@warehouse.example.test",
+                }
+            )
+            save_config(root / "home", config)
             store = ZeusStore(root / "data", config_home=root / "home")
             store.ensure_layout()
             with store.transaction("seed", {}) as staging:
@@ -264,8 +390,8 @@ class SpareRequestMailTests(unittest.TestCase):
                 "message_key": "dispatch",
                 "timestamp": "2026-08-07T09:00:00-05:00",
                 "direction": "received",
-                "sender": "iCare",
-                "sender_address": "icare@huawei.com",
+                "sender": "Dispatch Service",
+                "sender_address": "dispatch@example.test",
                 "subject": "Spare Request SR4956964 TT 39416095",
                 "body": "",
                 "html_body": "<table><tr><th>Order No.</th><th>Line No.</th><th>Item</th><th>QTY</th><th>SN</th></tr><tr><td>C3209937826</td><td>10</td><td>02540255</td><td>1</td><td>NEW-1</td></tr></table>",
@@ -274,8 +400,8 @@ class SpareRequestMailTests(unittest.TestCase):
                 "message_key": "confirmation",
                 "timestamp": "2026-08-08T10:00:00-05:00",
                 "direction": "received",
-                "sender": "LASpare",
-                "sender_address": "laspare@huawei.com",
+                "sender": "Request Service",
+                "sender_address": "request-confirmation@example.test",
                 "subject": "TT 39416095 request 260808123456",
                 "body": "TT: 39416095",
                 "html_body": "<table><tr><th>SR</th><th>RMA</th><th>ITEM</th><th>ITEM Description</th></tr><tr><td>SR4956964</td><td>C3209937826</td><td>02312RCC</td><td>Controller board</td></tr><tr><td>SR4956964</td><td>C3209937827</td><td>02312RCC</td><td>Controller board</td></tr></table>",
@@ -297,14 +423,15 @@ class SpareRequestMailTests(unittest.TestCase):
             self.assertEqual(item_status(request["items"][1], request), "awaiting_dispatch")
             self.assertEqual(item_status(request["items"][2], request), "awaiting_stock")
 
-    def test_icare_plain_text_fallback_uses_order_number_as_rma(self) -> None:
-        fact = parse_icare_dispatch(
+    def test_dispatch_plain_text_fallback_uses_order_number_as_rma(self) -> None:
+        fact = parse_dispatch_notification(
             {
-                "subject": "iCare delivery",
-                "sender_address": "icare@huawei.com",
+                "subject": "Dispatch delivery",
+                "sender_address": "dispatch@example.test",
                 "body": "Order No.  Line No.  Item  QTY  SN\nC3209937826  10  02540255  1  NEW-1",
                 "html_body": "",
-            }
+            },
+            "dispatch@example.test",
         )
         self.assertIsNotNone(fact)
         assert fact is not None
@@ -312,11 +439,12 @@ class SpareRequestMailTests(unittest.TestCase):
         self.assertEqual(fact["assignments"][0]["line_number"], "10")
         self.assertEqual(fact["assignments"][0]["delivered_bom"], "02540255")
         self.assertIsNone(
-            parse_icare_dispatch(
+            parse_dispatch_notification(
                 {
                     "sender_address": "attacker@example.com",
                     "body": "C3209937826  10  02540255  1  NEW-1",
-                }
+                },
+                "dispatch@example.test",
             )
         )
 

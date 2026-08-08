@@ -9,6 +9,7 @@ import {
 } from "../api";
 import { isEditingArea } from "../hooks/useGlobalCommands";
 import type { SpareRequestDetail as Detail, SpareRequestItem } from "../types";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 
 interface Props {
   request: Detail | null;
@@ -31,6 +32,12 @@ interface ItemDraft {
   condition: "Faulty" | "New";
 }
 
+interface PendingResolution {
+  itemId: string | undefined;
+  index: number;
+  resolution: "keep-existing" | "accept-incoming";
+}
+
 function datetimeInput(value: string | null): string {
   return value ? value.slice(0, 16) : "";
 }
@@ -49,6 +56,8 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
   const [archiveReason, setArchiveReason] = useState<"returned" | "cancelled">("returned");
   const [manualOverride, setManualOverride] = useState(false);
   const [working, setWorking] = useState(false);
+  const [pendingResolution, setPendingResolution] = useState<PendingResolution | null>(null);
+  const [resolutionNote, setResolutionNote] = useState("");
 
   useEffect(() => {
     if (!request) return;
@@ -165,15 +174,26 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
     } catch (error) { onError(error); } finally { setWorking(false); }
   }
 
-  async function resolve(itemId: string | undefined, index: number, resolution: "keep-existing" | "accept-incoming") {
-    const resolutionNote = window.prompt("Resolution note (required)", note);
-    if (!resolutionNote) return;
+  function beginResolution(itemId: string | undefined, index: number, resolution: "keep-existing" | "accept-incoming") {
+    setPendingResolution({ itemId, index, resolution });
+    setResolutionNote(note);
+  }
+
+  async function resolvePending() {
+    if (!pendingResolution || !resolutionNote.trim()) return;
     setWorking(true);
     try {
-      const result = await resolveSpareConflict(currentRequest.requestId, { itemId, conflictIndex: index, resolution, note: resolutionNote });
+      const result = await resolveSpareConflict(currentRequest.requestId, {
+        itemId: pendingResolution.itemId,
+        conflictIndex: pendingResolution.index,
+        resolution: pendingResolution.resolution,
+        note: resolutionNote.trim(),
+      });
       onChanged(result.request);
       await onRefresh();
       onNotice("Conflict resolved with an audit note.");
+      setPendingResolution(null);
+      setResolutionNote("");
     } catch (error) { onError(error); } finally { setWorking(false); }
   }
 
@@ -186,7 +206,7 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
     ...request.items.flatMap((item) => item.conflicts.map((conflict, index) => ({ conflict, index, itemId: item.item_id }))),
   ].filter(({ conflict }) => !conflict.resolved_at);
 
-  return (
+  return <>
     <aside className="detail-panel spare-request-detail" aria-label={`Spare Request ${request.requestId} detail`}>
       <header className="detail-header">
         <div><span>REQUEST {request.requestId}</span><h2>TT {request.ticketId} · {request.spareSr || "Spare SR pending"}</h2></div>
@@ -206,7 +226,7 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
             <button type="button" className="secondary-button field-button" disabled={working} onClick={reexport}>Re-export request XLSX</button>
             <button type="button" className="secondary-button field-button" onClick={() => copySubject(request.export.subject)}>Copy request subject</button>
           </div>
-          {allConflicts.length > 0 && <section className="conflict-panel"><header><strong>{allConflicts.length} unresolved conflict(s)</strong><span>Nothing was overwritten</span></header>{allConflicts.map(({ conflict, index, itemId }, position) => { const field = String(conflict.field || ""); const canAccept = ["spare_sr", "delivered_bom", "new_sn"].includes(field); return <article key={`${itemId}-${index}-${position}`}><div><strong>{field || "field"}</strong><span>{itemId || "request"}</span><p>Existing: {conflictValue(conflict, "existing")} · Incoming: {conflictValue(conflict, "incoming")}</p></div><div><button type="button" className="secondary-button" onClick={() => resolve(itemId, index, "keep-existing")}>Keep existing</button>{canAccept && <button type="button" className="secondary-button" onClick={() => resolve(itemId, index, "accept-incoming")}>Accept incoming</button>}</div></article>; })}</section>}
+          {allConflicts.length > 0 && <section className="conflict-panel"><header><strong>{allConflicts.length} unresolved conflict(s)</strong><span>Nothing was overwritten</span></header>{allConflicts.map(({ conflict, index, itemId }, position) => { const field = String(conflict.field || ""); const canAccept = ["spare_sr", "delivered_bom", "new_sn"].includes(field); return <article key={`${itemId}-${index}-${position}`}><div><strong>{field || "field"}</strong><span>{itemId || "request"}</span><p>Existing: {conflictValue(conflict, "existing")} · Incoming: {conflictValue(conflict, "incoming")}</p></div><div><button type="button" className="secondary-button" onClick={() => beginResolution(itemId, index, "keep-existing")}>Keep existing</button>{canAccept && <button type="button" className="secondary-button" onClick={() => beginResolution(itemId, index, "accept-incoming")}>Accept incoming</button>}</div></article>; })}</section>}
           <div className="request-item-list">
             {request.items.map((item: SpareRequestItem) => {
               const draft = drafts[item.item_id];
@@ -236,5 +256,16 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
         {tab === "history" && <div className="history-list">{request.history.map((event, index) => <article key={`${event.timestamp}-${index}`}><time>{event.timestamp}</time><strong>{event.action}</strong><pre>{JSON.stringify(event.summary, null, 2)}</pre></article>)}</div>}
       </div>
     </aside>
-  );
+    {pendingResolution && <ConfirmationDialog
+      title={pendingResolution.resolution === "keep-existing" ? "Keep the existing value?" : "Accept the incoming value?"}
+      message="A resolution note is required so this decision remains auditable in the local request history."
+      confirmLabel="Resolve conflict"
+      busy={working}
+      confirmDisabled={!resolutionNote.trim()}
+      onCancel={() => setPendingResolution(null)}
+      onConfirm={() => void resolvePending()}
+    >
+      <label className="form-field"><span>Resolution note *</span><textarea value={resolutionNote} onChange={(event) => setResolutionNote(event.target.value)} autoFocus /></label>
+    </ConfirmationDialog>}
+  </>;
 }

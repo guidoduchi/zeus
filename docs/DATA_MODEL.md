@@ -14,7 +14,7 @@
 | `global/user_profile.json` | explicit local profile setup/edit |
 | `global/reference_data.json` | structured Global data manager |
 | `global/spare_request_boms.json` | Spare Requests BOM catalog |
-| `current/spare_requests/active` | explicit Spare Request export plus LASpare/iCare/manual lifecycle transactions |
+| `current/spare_requests/active` | explicit Spare Request export plus configured-mail and manual lifecycle transactions |
 | Completed Spare Request rows/email | dedicated `Closed.xlsx` tabs; never copied back to active Markdown |
 
 Every current ticket lives at `current/tickets/<SRNo>/<SRNo>.md`. The first
@@ -41,11 +41,13 @@ is never required to build or query the database.
 ## Spare-parts hierarchy
 
 `local.spare_parts` is a list of damaged devices. Each device stores `device`,
-`model`, and a list of parts; each part stores `slot`, `part`, `bom`,
-`faulty_sn`, and `new_sn`. An explicit export emits a normalized `Spare Parts`
-worksheet with one row per part and explicit Device # and Part # ordering. Every
-exported SR has at least one row: a blank sentinel means that the ticket
-deliberately has no spare-parts record.
+`model`, newline-delimited `faulty_sns`, and a list of parts; each part stores
+newline-delimited `slot`, `part`, `bom`, and `notes`. Legacy part-level fault
+and replacement serials upgrade without data loss, but new replacement serials
+belong to the independent Spare Request lifecycle. An explicit export emits a
+normalized `Spare Parts` worksheet with one row per part and explicit Device #
+and Part # ordering. Every exported SR has at least one row: a blank sentinel
+means that the ticket deliberately has no spare-parts record.
 
 Legacy records with single Model, Device, Slot, Part, BOM, Old SN, and New SN
 values migrate to one device/part record. The next explicit export writes the
@@ -64,9 +66,11 @@ may seed multiple independent requests.
 The request ID is a unique Ecuador `YYMMDDHHmmss` allocated at initial XLSX
 export. One request carries one eight-digit TT, at most one `SR` plus seven-digit
 Spare SR, a profile snapshot, original BOM groups, and quantity-expanded unit
-items. Each group stores exactly one requested BOM, its multiplier, and zero or
-more newline-delimited faulty serials. Quantity alone creates unit records and
-Fault Tag rows. Those serials are group-level evidence, not positional unit
+items. Each group stores exactly one requested BOM, zero or more unique slots,
+notes, and the damaged device's faulty-serial evidence. When slots exist, their
+unique newline count determines quantity and each unit receives one slot; a
+slotless manual group retains an explicit multiplier. Those serials are
+device-level evidence, not positional unit
 assignments: one whole-server BOM can retain the serials of several damaged
 internal parts, and every unit's single Faulty SN cell contains the whole list.
 Each unit item owns at most one immutable `C`
@@ -92,8 +96,9 @@ exports.
 
 Outlook facts are applied in confirmation-before-dispatch order irrespective of
 message arrival. Existing contradictory TT, Spare SR, RMA, delivered BOM, or New
-SN facts are never silently overwritten. Exact ITSAnet RMA + Spare SR messages
-create candidates only; archive remains an explicit user action.
+SN facts are never silently overwritten. Warehouse messages with exact RMA +
+Spare SR matches create candidates only; archive remains an explicit user
+action.
 
 The configured export directory and local request/return templates are outside
 the authority graph. Request output retains the supplied two sheets and return

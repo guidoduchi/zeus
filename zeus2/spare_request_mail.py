@@ -29,11 +29,6 @@ SPARE_WORDS = re.compile(
     r"spare\s*(?:parts?)?\s*(?:request)?|fault\s*tag|other\s+edi|delivery\s+requirement",
     re.IGNORECASE,
 )
-WAREHOUSE_DOMAIN = "@itsanet.com"
-LASPARE_ADDRESS = "laspare@huawei.com"
-ICARE_ADDRESS = "icare@huawei.com"
-
-
 class _TableParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -133,8 +128,37 @@ def _request_id_from_message(message: dict[str, Any]) -> str | None:
     return match.group(1) if match else None
 
 
-def parse_laspare_confirmation(message: dict[str, Any]) -> dict[str, Any] | None:
-    if sender_address(message) != LASPARE_ADDRESS:
+def _trusted_sender(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _trusted_domain(value: Any) -> str:
+    domain = str(value or "").strip().casefold()
+    if not domain:
+        return ""
+    return domain if domain.startswith("@") else f"@{domain}"
+
+
+def spare_mail_trust(config: dict[str, Any]) -> dict[str, str]:
+    email = config.get("email", {}) if isinstance(config, dict) else {}
+    return {
+        "request_confirmation_sender": _trusted_sender(
+            email.get("request_confirmation_sender")
+        ),
+        "dispatch_notification_sender": _trusted_sender(
+            email.get("dispatch_notification_sender")
+        ),
+        "warehouse_sender_domain": _trusted_domain(
+            email.get("warehouse_sender_domain")
+        ),
+    }
+
+
+def parse_request_confirmation(
+    message: dict[str, Any], trusted_sender: str
+) -> dict[str, Any] | None:
+    expected_sender = _trusted_sender(trusted_sender)
+    if not expected_sender or sender_address(message) != expected_sender:
         return None
     aliases = {
         "spare_sr": {"sr", "spare sr", "spare parts sr"},
@@ -194,8 +218,11 @@ def parse_laspare_confirmation(message: dict[str, Any]) -> dict[str, Any] | None
     }
 
 
-def parse_icare_dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
-    if sender_address(message) != ICARE_ADDRESS:
+def parse_dispatch_notification(
+    message: dict[str, Any], trusted_sender: str
+) -> dict[str, Any] | None:
+    expected_sender = _trusted_sender(trusted_sender)
+    if not expected_sender or sender_address(message) != expected_sender:
         return None
     aliases = {
         "order_number": {"order no", "order number", "order no order no"},
@@ -216,10 +243,10 @@ def parse_icare_dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
                 line_number = _value(row, mapping.get("line_number"))
                 spare_sr = None
                 try:
-                    # Huawei iCare uses Order No. for the C-prefixed RMA and
-                    # Line No. for the order line.  Accept the older inverse
-                    # layout as a compatibility fallback, but never infer an
-                    # RMA from an arbitrary numeric line.
+                    # The supported dispatch format uses Order No. for the
+                    # C-prefixed RMA and Line No. for the order line. Accept
+                    # the older inverse layout as a compatibility fallback,
+                    # but never infer an RMA from an arbitrary numeric line.
                     rma = normalize_rma(order_number, required=True)
                 except ValueError:
                     try:
@@ -294,9 +321,12 @@ def sender_address(message: dict[str, Any]) -> str:
     return match.group(0).casefold() if match else ""
 
 
-def warehouse_candidates(message: dict[str, Any]) -> list[dict[str, str | None]]:
+def warehouse_candidates(
+    message: dict[str, Any], trusted_domain: str
+) -> list[dict[str, str | None]]:
     address = sender_address(message)
-    if not address.endswith(WAREHOUSE_DOMAIN):
+    expected_domain = _trusted_domain(trusted_domain)
+    if not expected_domain or not address.endswith(expected_domain):
         return []
     text = _message_text(message)
     spare_srs = {normalize_spare_sr(match.group(0)) for match in SPARE_SR_PATTERN.finditer(text)}
@@ -317,6 +347,9 @@ def is_spare_candidate(
     request_ids: Iterable[str] = (),
     spare_srs: Iterable[str] = (),
     rmas: Iterable[str] = (),
+    request_confirmation_sender: str = "",
+    dispatch_notification_sender: str = "",
+    warehouse_sender_domain: str = "",
 ) -> bool:
     text = f"{subject}\n{sender}\n{sender_address_value}"
     lowered = text.casefold()
@@ -329,7 +362,18 @@ def is_spare_candidate(
     if any(value and value.casefold() in lowered for value in rmas):
         return True
     address = sender_address_value.casefold()
-    return address in {LASPARE_ADDRESS, ICARE_ADDRESS} or address.endswith(WAREHOUSE_DOMAIN)
+    trusted_addresses = {
+        value
+        for value in (
+            _trusted_sender(request_confirmation_sender),
+            _trusted_sender(dispatch_notification_sender),
+        )
+        if value
+    }
+    trusted_domain = _trusted_domain(warehouse_sender_domain)
+    return address in trusted_addresses or bool(
+        trusted_domain and address.endswith(trusted_domain)
+    )
 
 
 def _read_ndjson(path: Path) -> list[dict[str, Any]]:
@@ -590,7 +634,7 @@ def _apply_confirmation(
         _associate_message(request, message, item_ids, retained)
         request_history(
             request,
-            "laspare-confirmation",
+            "request-confirmation",
             {"messageKey": message.get("message_key"), "items": sorted(item_ids)},
         )
     return set(affected), matched_all
@@ -666,7 +710,7 @@ def _apply_dispatch(
         _associate_message(request, message, item_ids, retained)
         request_history(
             request,
-            "icare-dispatch",
+            "dispatch-notification",
             {"messageKey": message.get("message_key"), "items": sorted(item_ids)},
         )
     return set(affected), matched_all
@@ -767,6 +811,7 @@ def apply_spare_request_messages(
         if row.get("RMA")
     } if closed_path is not None else set()
     retained = int(store.config.get("email", {}).get("retained_message_count", 7))
+    trust = spare_mail_trust(store.config)
     message_state: dict[str, dict[str, Any]] = {
         str(message["message_key"]): {"message": message, "matched": False, "complete": True}
         for message in messages
@@ -777,7 +822,9 @@ def apply_spare_request_messages(
     # confirmation appears in the same rebuild.
     for state in message_state.values():
         message = state["message"]
-        fact = parse_laspare_confirmation(message)
+        fact = parse_request_confirmation(
+            message, trust["request_confirmation_sender"]
+        )
         if fact:
             affected, complete = _apply_confirmation(
                 message, fact, requests, request_id_index, retained, archived_rmas
@@ -786,14 +833,16 @@ def apply_spare_request_messages(
             state["complete"] = complete
     for state in message_state.values():
         message = state["message"]
-        fact = parse_icare_dispatch(message)
+        fact = parse_dispatch_notification(
+            message, trust["dispatch_notification_sender"]
+        )
         if fact:
             affected, complete = _apply_dispatch(message, fact, requests, retained)
             state["matched"] = state["matched"] or bool(affected)
             state["complete"] = state["complete"] and complete
     for state in message_state.values():
         message = state["message"]
-        facts = warehouse_candidates(message)
+        facts = warehouse_candidates(message, trust["warehouse_sender_domain"])
         if facts:
             affected, complete = _apply_warehouse(message, facts, requests, retained)
             state["matched"] = state["matched"] or bool(affected)

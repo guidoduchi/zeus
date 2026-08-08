@@ -15,6 +15,7 @@ import {
 } from "./api";
 import { BomCatalogModal } from "./components/BomCatalogModal";
 import { ColumnChooser } from "./components/ColumnChooser";
+import { ConfirmationDialog } from "./components/ConfirmationDialog";
 import { DraftsModal } from "./components/DraftsModal";
 import { FilterBar } from "./components/FilterBar";
 import { GlobalDataModal } from "./components/GlobalDataModal";
@@ -200,6 +201,16 @@ function workspacePreferenceKey(workspace: WorkspaceKey, name: string): string {
   return `${prefix}.${name}`;
 }
 
+function dashboardCacheKey(
+  workspace: WorkspaceKey,
+  sort: string,
+  direction: SortDirection,
+  search: string,
+  view: SpareRequestView,
+): string {
+  return JSON.stringify([workspace, sort, direction, search, view]);
+}
+
 function readWorkspace(): WorkspaceKey {
   return ["spare-requests", "spare-parts"].includes(readPreference("zeus3.workspace", "service-requests"))
     ? "spare-requests"
@@ -248,6 +259,7 @@ export default function App() {
   const [spareExportTicketId, setSpareExportTicketId] = useState<string | undefined>();
   const [spareExportPart, setSpareExportPart] = useState<SparePartSummary | null>(null);
   const [columnsOpen, setColumnsOpen] = useState(false);
+  const [purgeConfirmationOpen, setPurgeConfirmationOpen] = useState(false);
   const [templates, setTemplates] = useState<Array<{ name: string; path: string }>>([]);
   const [toast, setToast] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(null);
   const [draftCount, setDraftCount] = useState(countUnsavedDrafts);
@@ -255,6 +267,8 @@ export default function App() {
   const [ticketInitialTab, setTicketInitialTab] = useState<"overview" | "work" | "spares">("overview");
   const searchRef = useRef<HTMLInputElement>(null);
   const dashboardRequest = useRef(0);
+  const dashboardCache = useRef(new Map<string, DashboardPayload>());
+  const dashboardPrefetches = useRef(new Set<string>());
   const preference = workspacePreferences[workspace];
   const { search, sort, direction } = preference;
   const workspaceConfig = WORKSPACES[workspace];
@@ -309,9 +323,35 @@ export default function App() {
   ) => {
     const requestId = ++dashboardRequest.current;
     const result = await getDashboard(currentWorkspace, currentSort, currentDirection, currentSearch, currentView);
+    dashboardCache.current.set(
+      dashboardCacheKey(currentWorkspace, currentSort, currentDirection, currentSearch, currentView),
+      result,
+    );
     if (requestId === dashboardRequest.current) setDashboard(result);
     return result;
   }, [direction, search, sort, spareView, workspace]);
+
+  const prefetchDashboard = useCallback((
+    targetWorkspace: WorkspaceKey,
+    targetSort: string,
+    targetDirection: SortDirection,
+    targetSearch: string,
+    targetView: SpareRequestView,
+  ) => {
+    const key = dashboardCacheKey(
+      targetWorkspace,
+      targetSort,
+      targetDirection,
+      targetSearch,
+      targetView,
+    );
+    if (dashboardCache.current.has(key) || dashboardPrefetches.current.has(key)) return;
+    dashboardPrefetches.current.add(key);
+    getDashboard(targetWorkspace, targetSort, targetDirection, targetSearch, targetView)
+      .then((result) => dashboardCache.current.set(key, result))
+      .catch(() => undefined)
+      .finally(() => dashboardPrefetches.current.delete(key));
+  }, []);
 
   const loadTicket = useCallback(async (ticketId: string) => {
     setTicketLoading(true);
@@ -355,9 +395,14 @@ export default function App() {
 
   useEffect(() => {
     if (!bootstrap || bootstrap.onboarding.required) return;
+    const currentDashboardMatches = dashboard?.workspace === workspace
+      && (
+        workspace !== "spare-requests"
+        || (dashboard.workspace === "spare-requests" && dashboard.view === spareView)
+      );
     const timer = window.setTimeout(
       () => loadDashboard(workspace, sort, direction, search, spareView).catch(reportError),
-      140,
+      currentDashboardMatches ? 140 : 0,
     );
     localStorage.setItem("zeus3.workspace", workspace);
     localStorage.setItem(workspacePreferenceKey(workspace, "sort"), sort);
@@ -366,6 +411,21 @@ export default function App() {
     localStorage.setItem("zeus3.spare-requests.view", spareView);
     return () => window.clearTimeout(timer);
   }, [bootstrap?.onboarding.required, bootstrap?.instanceId, direction, loadDashboard, reportError, search, sort, spareView, workspace]);
+
+  useEffect(() => {
+    if (!bootstrap || bootstrap.onboarding.required || !dashboard) return;
+    const targetWorkspace: WorkspaceKey = workspace === "service-requests"
+      ? "spare-requests"
+      : "service-requests";
+    const target = workspacePreferences[targetWorkspace];
+    prefetchDashboard(
+      targetWorkspace,
+      target.sort,
+      target.direction,
+      target.search,
+      targetWorkspace === "spare-requests" ? spareView : "active",
+    );
+  }, [bootstrap, dashboard?.datasetRevision, prefetchDashboard, spareView, workspace, workspacePreferences]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -420,6 +480,7 @@ export default function App() {
           setJobs((current) => [next, ...current.filter((job) => job.id !== next.id)].slice(0, 100));
           if (next.status === "failed") setToast({ tone: "error", message: `${next.label}: ${next.message}` });
         } else if (envelope.type === "dataset") {
+          dashboardCache.current.clear();
           loadDashboard().catch(reportError);
           loadBootstrap().catch(reportError);
           if (selectedTicketId) loadTicket(selectedTicketId);
@@ -538,8 +599,16 @@ export default function App() {
   const chooseWorkspace = useCallback((next: WorkspaceKey) => {
     if (next === workspace) return;
     dashboardRequest.current += 1;
+    const nextPreference = workspacePreferences[next];
+    const cached = dashboardCache.current.get(dashboardCacheKey(
+      next,
+      nextPreference.sort,
+      nextPreference.direction,
+      nextPreference.search,
+      next === "spare-requests" ? spareView : "active",
+    ));
     setWorkspace(next);
-    setDashboard(null);
+    setDashboard(cached || null);
     setTicket(null);
     setSpareRequest(null);
     setSelectedTicketId(null);
@@ -547,7 +616,7 @@ export default function App() {
     setSelectedRowId(null);
     setColumnsOpen(false);
     setTicketInitialTab(next === "spare-requests" ? "spares" : "overview");
-  }, [workspace]);
+  }, [spareView, workspace, workspacePreferences]);
 
   const informProtectedTicketMove = useCallback((nextTicketId: string | null) => {
     if (
@@ -586,26 +655,42 @@ export default function App() {
   const chooseSpareView = useCallback((next: SpareRequestView) => {
     if (next === spareView) return;
     dashboardRequest.current += 1;
+    const preference = workspacePreferences["spare-requests"];
+    const cached = dashboardCache.current.get(dashboardCacheKey(
+      "spare-requests",
+      preference.sort,
+      preference.direction,
+      preference.search,
+      next,
+    ));
     setSpareView(next);
+    if (cached) setDashboard(cached);
     setSelectedTicketId(null);
     setSelectedRequestId(null);
     setSelectedRowId(null);
     setTicket(null);
     setSpareRequest(null);
-  }, [spareView]);
+  }, [spareView, workspacePreferences]);
 
   const reviewProtectedDraft = useCallback((ticketId: string, kind: TicketDraftKind) => {
     if (workspace !== "service-requests") {
       dashboardRequest.current += 1;
+      const preference = workspacePreferences["service-requests"];
       setWorkspace("service-requests");
-      setDashboard(null);
+      setDashboard(dashboardCache.current.get(dashboardCacheKey(
+        "service-requests",
+        preference.sort,
+        preference.direction,
+        preference.search,
+        "active",
+      )) || null);
     }
     setDraftsOpen(false);
     setTicketInitialTab(kind === "spares" ? "spares" : "work");
     setSelectedRequestId(null);
     setSelectedTicketId(ticketId);
     setSelectedRowId(ticketId);
-  }, [workspace]);
+  }, [workspace, workspacePreferences]);
 
   const openSpareExport = useCallback((ticketId?: string, part: SparePartSummary | null = null) => {
     if (bootstrap && !bootstrap.spareRequestExport.requestReady) {
@@ -652,9 +737,9 @@ export default function App() {
 
   async function purgeSelectedCompleted() {
     if (!selectedCompletedItem) return;
-    if (!window.confirm(`Permanently purge completed item ${selectedCompletedItem.itemId}? This cannot be undone.`)) return;
     try {
       const result = await purgeSpareArchive([selectedCompletedItem.itemId]);
+      setPurgeConfirmationOpen(false);
       setSelectedRowId(null);
       setToast({ tone: "success", message: `Purged ${result.removed} completed Spare Request item(s) and associated retained email.` });
       await loadDashboard();
@@ -663,7 +748,7 @@ export default function App() {
     }
   }
 
-  const keyboardDisabled = operationsOpen || settingsOpen || spareExportOpen || globalDataOpen || bomCatalogOpen || draftsOpen || Boolean(bootstrap?.onboarding.required);
+  const keyboardDisabled = operationsOpen || settingsOpen || spareExportOpen || globalDataOpen || bomCatalogOpen || draftsOpen || purgeConfirmationOpen || Boolean(bootstrap?.onboarding.required);
 
   useGlobalCommands({
     disabled: keyboardDisabled,
@@ -779,7 +864,7 @@ export default function App() {
   return (
     <main className={`app-shell ${selectedTicketId || selectedRequestId ? "with-detail" : ""}`} data-workspace={workspace}>
       <TopBar
-        version={bootstrap.version || "3.1.4"}
+        version={bootstrap.version || "3.1.5"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
@@ -822,7 +907,7 @@ export default function App() {
           </select>
         </div>
         <button type="button" className="toolbar-button" onClick={queryData} disabled={Boolean(activeJob)}>↻ Check Advanced Search</button>
-        {workspace === "spare-requests" && <><button type="button" className="toolbar-button" onClick={() => openSpareExport()}>+ Manual request</button><button type="button" className="toolbar-button" onClick={() => setBomCatalogOpen(true)}>BOM catalog</button>{spareView === "completed" && <button type="button" className="toolbar-button danger-text" disabled={!selectedCompletedItem} onClick={purgeSelectedCompleted}>Purge selected</button>}</>}
+        {workspace === "spare-requests" && <><button type="button" className="toolbar-button" onClick={() => openSpareExport()}>+ Manual request</button><button type="button" className="toolbar-button" onClick={() => setBomCatalogOpen(true)}>BOM catalog</button>{spareView === "completed" && <button type="button" className="toolbar-button danger-text" disabled={!selectedCompletedItem} onClick={() => setPurgeConfirmationOpen(true)}>Purge selected</button>}</>}
         {dashboard.workspace === "service-requests" ? (
           <FilterBar
             definitions={serviceFilters.definitions}
@@ -942,6 +1027,7 @@ export default function App() {
       {globalDataOpen && <GlobalDataModal onClose={() => setGlobalDataOpen(false)} onSaved={() => { loadBootstrap().catch(reportError); setToast({ tone: "success", message: "Global data saved locally." }); }} onError={reportError} />}
       {draftsOpen && <DraftsModal onClose={() => setDraftsOpen(false)} onReview={reviewProtectedDraft} onSaved={(tickets) => { if (selectedTicketId && tickets[selectedTicketId]) setTicket(tickets[selectedTicketId]); loadDashboard().catch(reportError); }} onError={reportError} onNotice={(message) => setToast({ tone: "success", message })} />}
       {bomCatalogOpen && <BomCatalogModal onClose={() => setBomCatalogOpen(false)} onSaved={() => setToast({ tone: "success", message: "BOM catalog saved locally." })} onError={reportError} />}
+      {purgeConfirmationOpen && selectedCompletedItem && <ConfirmationDialog title={`Purge ${selectedCompletedItem.itemId}?`} message="This permanently removes the completed item and its retained email from the local archive. This action cannot be undone." confirmLabel="Permanently purge" tone="danger" onCancel={() => setPurgeConfirmationOpen(false)} onConfirm={() => void purgeSelectedCompleted()} />}
       {toast && <div className={`toast toast-${toast.tone}`} role="status"><span>{toast.message}</span><button type="button" onClick={() => setToast(null)}>×</button></div>}
     </main>
   );

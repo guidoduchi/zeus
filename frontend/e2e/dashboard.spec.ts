@@ -22,10 +22,24 @@ test("the dashboard owns wheel scrolling and opens the ticket panel", async ({ p
 });
 
 test("Service Requests and Spare Requests switch as independent management views", async ({ page }) => {
+  const sparePrefetch = page.waitForResponse((response) =>
+    response.url().includes("/api/dashboard?")
+      && response.url().includes("workspace=spare-requests")
+      && response.ok()
+  );
   await page.goto("/");
   const serviceRequests = page.getByRole("button", { name: "Service Requests" });
   const spareRequests = page.getByRole("button", { name: "Spare Requests" });
   await expect(serviceRequests).toHaveAttribute("aria-pressed", "true");
+  await sparePrefetch;
+  await page.evaluate(() => {
+    (window as typeof window & { __zeusBootSeen?: boolean }).__zeusBootSeen = false;
+    new MutationObserver(() => {
+      if (document.querySelector(".boot-screen")) {
+        (window as typeof window & { __zeusBootSeen?: boolean }).__zeusBootSeen = true;
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  });
 
   await spareRequests.click();
   await expect(spareRequests).toHaveAttribute("aria-pressed", "true");
@@ -48,6 +62,9 @@ test("Service Requests and Spare Requests switch as independent management views
   await expect(page.getByPlaceholder("Search SR, summary, handler, site…")).toBeVisible();
   await expect(page.getByRole("columnheader", { name: "Last Email" })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: "Emails" })).toHaveCount(0);
+  expect(await page.evaluate(() =>
+    (window as typeof window & { __zeusBootSeen?: boolean }).__zeusBootSeen
+  )).toBe(false);
 });
 
 test("eligible SR parts seed exports and completed items stay read-only", async ({ page }) => {

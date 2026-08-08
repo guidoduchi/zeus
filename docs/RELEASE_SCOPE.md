@@ -1,4 +1,4 @@
-# Zeus 3.1.4 release scope
+# Zeus 3.1.5 release scope
 
 Included:
 
@@ -12,9 +12,9 @@ Included:
 - autocomplete Spare Request inputs, automatically derived customer initials,
   one unified customer-contact name, and an explicit configuration prompt when
   export destinations or templates are absent;
-- quantity-only physical-unit, future-RMA, and Fault Tag expansion, with every
-  unit retaining all newline-delimited component serials together in one cell;
-
+- slot-derived physical-unit, future-RMA, and Fault Tag expansion, with a manual
+  multiplier for slotless groups and every unit retaining the damaged device's
+  newline-delimited faulty serial evidence together in one cell;
 - a Service Requests / Spare Requests workspace switcher with independent
   search, sort, direction, and field preferences;
 - independent active Spare Request Markdown records, unit-level items, partial
@@ -23,8 +23,9 @@ Included:
 - Active Requests, reusable Eligible SR Parts, and Completed archive subviews;
 - configurable local request/return XLSX templates and a one-way export root,
   with exact sheet preservation, dynamic row extension, and revision-safe names;
-- LASpare confirmation, iCare dispatch/substitution, and exact ITSAnet warehouse
-  candidate parsing from HTML with plain-text fallback and out-of-order replay;
+- locally configured confirmation sender, dispatch/substitution sender, and
+  warehouse domain parsing from HTML with plain-text fallback and out-of-order
+  replay;
 - explicit partial return export, user-confirmed archive, mandatory cancellation
   reasons, manual-override notes, and dedicated Closed.xlsx archive/email tabs;
 - local-only structured Global data and BOM managers that ship empty plus fixed
@@ -59,9 +60,14 @@ Included:
   disables no-op saves, blocks accidental dismissal while dirty, autocompletes
   SR-based contact imports, explains each collection, and visibly includes the
   current profile as the default requester;
+- an Operations-style Global data card workspace plus Zeus-themed local
+  confirmations in place of native browser prompt/confirm boxes;
 - fixed Work/Spare action rails that remain above the global command strip;
 - a normalized, repeatable database-owned damaged-device and spare-parts editor
-  emitted as a one-row-per-part worksheet on export, with legacy scalar migration;
+  with device-level faulty serials, multi-slot BOM groups, notes, no New SN entry,
+  and one-row-per-part compatibility output with legacy scalar migration;
+- prefetched browser workspaces and revision/date-aware server dashboard caching
+  so Service Requests and Spare Requests switch without a repeated boot screen;
 - service filters for Planning/MW/Severity and Spare Request filters for Status,
   dispatch risk, Site, Cloud, conflicts, and RMA state, using OR-within/AND-across;
 - visible serialized startup, scheduled, and manual Advanced Search checks;

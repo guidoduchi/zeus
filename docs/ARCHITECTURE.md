@@ -41,7 +41,7 @@ publication, mail, and MOP generation.
 | `zeus2/storage_migration.py` | capacity checks, verified clone/restart handoff, rollback, and original cleanup |
 | `zeus2/spare_requests.py` | independent request schema, validation, status, identity, and fault-evidence grouping |
 | `zeus2/spare_request_excel.py` | template-preserving request/return exports and Closed archive tabs |
-| `zeus2/spare_request_mail.py` | LASpare/iCare/warehouse parsing, replay, association, conflicts, and retention |
+| `zeus2/spare_request_mail.py` | configured confirmation, dispatch, and warehouse parsing, replay, association, conflicts, and retention |
 | `zeus2/web/server.py` | loopback HTTP/static/API boundary and security headers |
 | `zeus2/web/runtime.py` | owned-instance registration and verified shutdown |
 | `zeus2/web/tray.py` | native Windows notification-area commands |

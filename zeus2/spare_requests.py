@@ -10,6 +10,7 @@ from typing import Any, Iterable, TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from .reference_data import ReferenceDataError, derive_client_initials
+from .tickets import newline_values
 from .utils import iso_now, json_dumps, parse_datetime
 
 if TYPE_CHECKING:
@@ -173,7 +174,17 @@ def normalize_request_lines(value: Any) -> list[dict[str, Any]]:
         if not isinstance(raw, dict):
             raise SpareRequestError(f"Request line {index} must be an object")
         bom = _required_text(raw.get("bom"), f"Request line {index} BOM", maximum=120)
-        raw_amount = raw.get("amount", 1)
+        slots = newline_values(raw.get("slots", raw.get("slot")))
+        if len(slots) > 1000:
+            raise SpareRequestError(f"Request line {index} cannot contain more than 1000 slots")
+        if any(len(slot) > 120 for slot in slots):
+            raise SpareRequestError(
+                f"Request line {index} slots cannot exceed 120 characters each"
+            )
+        # Explicit slots describe physical placements and therefore own the
+        # unit quantity. A multiplier remains available for slotless/manual
+        # replacement groups.
+        raw_amount = len(slots) if slots else raw.get("amount", 1)
         try:
             if isinstance(raw_amount, bool):
                 raise ValueError
@@ -204,9 +215,11 @@ def normalize_request_lines(value: Any) -> list[dict[str, Any]]:
                 "part": _optional_text(raw.get("part"), maximum=300) or description,
                 "model": _optional_text(raw.get("model"), maximum=300),
                 "device": _optional_text(raw.get("device"), maximum=300),
-                "slot": _optional_text(raw.get("slot"), maximum=300),
+                "slots": slots,
+                "slot": "\n".join(slots) or None,
                 "faulty_sns": faulty_sns,
                 "faulty_sn": "\n".join(faulty_sns) or None,
+                "notes": _optional_text(raw.get("notes"), maximum=2000),
                 "report_date": _optional_text(raw.get("reportDate") or raw.get("report_date"), maximum=100),
                 "source_device_number": raw.get("deviceNumber"),
                 "source_part_number": raw.get("partNumber"),
@@ -277,7 +290,15 @@ def next_request_id(existing: Iterable[str] = (), *, now: datetime | None = None
     raise SpareRequestError("Zeus could not allocate a unique request timestamp")
 
 
-def _new_item(request_id: str, ordinal: int, line: dict[str, Any]) -> dict[str, Any]:
+def _new_item(
+    request_id: str,
+    ordinal: int,
+    line: dict[str, Any],
+    *,
+    unit_index: int,
+) -> dict[str, Any]:
+    slots = list(line.get("slots") or [])
+    unit_slot = slots[unit_index] if unit_index < len(slots) else line.get("slot")
     return {
         "item_id": f"{request_id}-{ordinal:04d}",
         "ordinal": ordinal,
@@ -286,7 +307,7 @@ def _new_item(request_id: str, ordinal: int, line: dict[str, Any]) -> dict[str, 
         "part": line.get("part"),
         "model": line.get("model"),
         "device": line.get("device"),
-        "slot": line.get("slot"),
+        "slot": unit_slot,
         # Fault evidence is independent of requested quantity. Keeping the
         # complete group on each unit prevents loss when units archive at
         # different times, without pretending a serial maps to one RMA.
@@ -310,7 +331,7 @@ def _new_item(request_id: str, ordinal: int, line: dict[str, Any]) -> dict[str, 
         "warehouse_candidate_at": None,
         "warehouse_message_key": None,
         "conflicts": [],
-        "notes": None,
+        "notes": line.get("notes"),
     }
 
 
@@ -334,8 +355,8 @@ def create_request_record(
     items: list[dict[str, Any]] = []
     ordinal = 1
     for line in lines:
-        for _ in range(int(line["amount"])):
-            items.append(_new_item(identifier, ordinal, line))
+        for unit_index in range(int(line["amount"])):
+            items.append(_new_item(identifier, ordinal, line, unit_index=unit_index))
             ordinal += 1
     return {
         "schema_version": SPARE_REQUEST_SCHEMA_VERSION,

@@ -10,6 +10,7 @@ from ..tickets import (
     normalize_done,
     normalize_local,
     normalize_spare_parts,
+    newline_values,
 )
 from ..utils import normalize_ticket_id, parse_date
 from .errors import ConflictError, ValidationError
@@ -73,8 +74,11 @@ def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
         raise ValidationError("Spare Parts must be a list of devices")
     if len(value) > 200:
         raise ValidationError("A ticket cannot contain more than 200 damaged devices")
-    device_keys = {"device", "model", "parts"}
-    part_keys = {"slot", "part", "bom", "faulty_sn", "new_sn"}
+    device_keys = {"device", "model", "faulty_sns", "faulty_sn", "parts"}
+    # Legacy faulty_sn/new_sn values remain accepted so protected 3.1.4
+    # drafts can be upgraded safely. New UI records use device faulty_sns and
+    # part slot/part/bom/notes.
+    part_keys = {"slot", "slots", "part", "bom", "faulty_sn", "new_sn", "notes"}
     total_parts = 0
     for device_index, device in enumerate(value, start=1):
         if not isinstance(device, dict):
@@ -93,6 +97,26 @@ def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
                 )
             if field is not None and len(str(field)) > 10_000:
                 raise ValidationError(f"Spare Parts device {device_index} {key} is too long")
+        raw_serials = device.get("faulty_sns", device.get("faulty_sn"))
+        if raw_serials is not None and not isinstance(raw_serials, (str, list)):
+            raise ValidationError(
+                f"Spare Parts device {device_index} faulty serials must be text, a list, or blank"
+            )
+        if isinstance(raw_serials, list) and any(
+            isinstance(value, (dict, list, tuple, set)) for value in raw_serials
+        ):
+            raise ValidationError(
+                f"Spare Parts device {device_index} faulty serials must contain text only"
+            )
+        serials = newline_values(raw_serials)
+        if len(serials) > 1000:
+            raise ValidationError(
+                f"Spare Parts device {device_index} cannot contain more than 1,000 faulty serials"
+            )
+        if any(len(serial) > 120 for serial in serials):
+            raise ValidationError(
+                f"Spare Parts device {device_index} faulty serials cannot exceed 120 characters each"
+            )
         parts = device.get("parts", [])
         if not isinstance(parts, list):
             raise ValidationError(f"Spare Parts device {device_index} parts must be a list")
@@ -110,13 +134,23 @@ def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
                     f"Spare Parts device {device_index}, part {part_index} has unknown fields: "
                     + ", ".join(unknown_part)
                 )
+            slots = newline_values(part.get("slots", part.get("slot")))
+            if len(slots) > 1000:
+                raise ValidationError(
+                    f"Spare Parts device {device_index}, part {part_index} cannot contain more than 1,000 slots"
+                )
+            if any(len(slot) > 120 for slot in slots):
+                raise ValidationError(
+                    f"Spare Parts device {device_index}, part {part_index} slots cannot exceed 120 characters each"
+                )
             for key, field in part.items():
-                if field is not None and isinstance(field, (dict, list, tuple, set)):
+                collection_allowed = key in {"slot", "slots"} and isinstance(field, list)
+                if field is not None and isinstance(field, (dict, list, tuple, set)) and not collection_allowed:
                     raise ValidationError(
                         f"Spare Parts device {device_index}, part {part_index} {key} "
                         "must be text or blank"
                     )
-                if field is not None and len(str(field)) > 10_000:
+                if field is not None and not collection_allowed and len(str(field)) > 10_000:
                     raise ValidationError(
                         f"Spare Parts device {device_index}, part {part_index} {key} is too long"
                     )

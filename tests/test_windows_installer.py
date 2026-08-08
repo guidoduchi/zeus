@@ -18,9 +18,35 @@ WINDOWS_WORKFLOW = (
 PROJECT_FILE = Path(__file__).resolve().parents[1] / "pyproject.toml"
 VERSION_FILE = Path(__file__).resolve().parents[1] / "zeus2" / "version.py"
 E2E_SERVER = Path(__file__).resolve().parent / "e2e_server.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class WindowsInstallerRegressionTests(unittest.TestCase):
+    def test_distributable_source_is_vendor_neutral(self) -> None:
+        forbidden = (
+            "hua" + "wei",
+            "i" + "care",
+            "la" + "spare",
+            "itsa" + "net",
+        )
+        paths = [PROJECT_ROOT / "README.md", *sorted((PROJECT_ROOT / "docs").glob("*.md"))]
+        paths.extend(sorted((PROJECT_ROOT / "zeus2").rglob("*.py")))
+        paths.extend(
+            path
+            for path in sorted((PROJECT_ROOT / "frontend" / "src").rglob("*"))
+            if path.suffix in {".css", ".ts", ".tsx"} and "test" not in path.parts
+        )
+
+        matches = []
+        for path in paths:
+            content = path.read_text(encoding="utf-8").lower()
+            matches.extend(
+                f"{path.relative_to(PROJECT_ROOT)}: {value}"
+                for value in forbidden
+                if value in content
+            )
+        self.assertEqual(matches, [])
+
     def test_negative_python_manager_exit_falls_through_to_compatible_python(self) -> None:
         """A missing ``py`` runtime must not be mistaken for probe success.
 
@@ -119,12 +145,12 @@ class WindowsLauncherRegressionTests(unittest.TestCase):
         self.assertNotIn("taskkill", script.lower())
         self.assertNotIn("python.exe /f", script.lower())
 
-    def test_release_version_is_3_1_4_everywhere(self) -> None:
+    def test_release_version_is_3_1_5_everywhere(self) -> None:
         project = tomllib.loads(PROJECT_FILE.read_text(encoding="utf-8"))
-        self.assertEqual(project["project"]["version"], "3.1.4")
+        self.assertEqual(project["project"]["version"], "3.1.5")
         self.assertEqual(project["project"]["scripts"]["zeus"], "zeus2.main:main")
-        self.assertIn('__version__ = "3.1.4"', VERSION_FILE.read_text(encoding="utf-8"))
-        self.assertIn("Zeus 3.1.4", SETUP_SCRIPT.read_text(encoding="utf-8"))
+        self.assertIn('__version__ = "3.1.5"', VERSION_FILE.read_text(encoding="utf-8"))
+        self.assertIn("Zeus 3.1.5", SETUP_SCRIPT.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

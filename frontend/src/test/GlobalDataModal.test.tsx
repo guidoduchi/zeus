@@ -16,7 +16,9 @@ vi.mock("../api", () => api);
 
 describe("GlobalDataModal", () => {
   beforeEach(() => {
-    vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.spyOn(window, "confirm").mockImplementation(() => {
+      throw new Error("Native browser confirmations are forbidden");
+    });
     api.getGlobalReferenceData.mockResolvedValue({
       schemaVersion: 2,
       organizations: [{ id: "org-1", name: "Claro Ecuador" }],
@@ -68,12 +70,12 @@ describe("GlobalDataModal", () => {
     );
 
     await user.click(await screen.findByRole("button", { name: /Customer contacts/ }));
-    await user.click(screen.getByRole("button", { name: "+ Add" }));
+    await user.click(screen.getByRole("button", { name: "+ Add contact" }));
     await user.selectOptions(screen.getByLabelText("Customer organization *"), "org-1");
     await user.type(screen.getByLabelText("Customer name *"), "Juan Piguave");
 
     await user.click(screen.getByRole("button", { name: /Requesters/ }));
-    await user.click(screen.getByRole("button", { name: "+ Add" }));
+    await user.click(screen.getByRole("button", { name: "+ Add requester" }));
     await user.type(screen.getByLabelText("Requester name *"), "Favorite Engineer");
     await user.type(screen.getByLabelText("Email *"), "favorite@example.com");
     await user.type(screen.getByLabelText("Phone *"), "+593982222222");
@@ -103,7 +105,7 @@ describe("GlobalDataModal", () => {
     await user.click(await screen.findByRole("button", { name: /Requesters/ }));
     expect(screen.getByText("Default requester from My profile.")).toBeVisible();
     expect(screen.getByDisplayValue("Nebby Operator")).toBeDisabled();
-    expect(screen.getByText(/profile is always the default requester/i)).toBeVisible();
+    expect(screen.getAllByText(/profile is always the default requester/i)).toHaveLength(2);
 
     await user.click(screen.getByRole("button", { name: /Sites/ }));
     expect(screen.getByText("Sites identify spare-part dispatch and return locations.")).toBeVisible();
@@ -129,6 +131,9 @@ describe("GlobalDataModal", () => {
 
     await user.click(screen.getByRole("button", { name: "Cancel changes" }));
     expect(onClose).not.toHaveBeenCalled();
-    expect(window.confirm).toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Discard unsaved Global data?" })).toBeVisible();
+    expect(window.confirm).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

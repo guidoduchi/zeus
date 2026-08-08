@@ -18,7 +18,7 @@ OUTLOOK_STORE_SUFFIXES = {".ost", ".pst"}
 # Runtime markers (processed filenames, hashes and successful operation times)
 # live in current/state.json and are never accepted from this file.
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 7,
+    "schema_version": 8,
     "paths": {
         # ``None`` keeps the mutable database under ``%LOCALAPPDATA%\\Zeus\\data``.
         # A configured value is only written by the verified migration workflow;
@@ -43,6 +43,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "retained_message_count": 7,
         "incremental_overlap_days": 7,
         "fetch_new_ticket_history_automatically": True,
+        # Organization-specific senders stay in local configuration rather
+        # than being embedded in the distributable application.
+        "request_confirmation_sender": None,
+        "dispatch_notification_sender": None,
+        "warehouse_sender_domain": None,
     },
     "aging": {
         "calendar_days": True,
@@ -138,7 +143,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Spare Request XLSX template",
         "Paths",
         "xlsx_template",
-        "Local two-sheet Huawei request template. The file remains outside the installation and repository.",
+        "Local two-sheet request template. Worksheet names are preserved from the selected file.",
         nullable=True,
     ),
     SettingSpec(
@@ -210,6 +215,30 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Email",
         "boolean",
         "Fetch and synchronize history when a new ticket is discovered.",
+    ),
+    SettingSpec(
+        "email.request_confirmation_sender",
+        "Request-confirmation sender",
+        "Email",
+        "text",
+        "Exact trusted email address used for Spare SR and RMA assignment messages.",
+        nullable=True,
+    ),
+    SettingSpec(
+        "email.dispatch_notification_sender",
+        "Dispatch-notification sender",
+        "Email",
+        "text",
+        "Exact trusted email address used for delivered BOM and new-serial messages.",
+        nullable=True,
+    ),
+    SettingSpec(
+        "email.warehouse_sender_domain",
+        "Warehouse sender domain",
+        "Email",
+        "text",
+        "Trusted email domain for return/warehouse messages, for example @warehouse.example.",
+        nullable=True,
     ),
     SettingSpec(
         "aging.calendar_days",
@@ -406,7 +435,7 @@ def _migrate_legacy_keys(saved: dict[str, Any]) -> dict[str, Any]:
     migrated.pop("updatefile_dir", None)
     migrated.pop("mail", None)
     paths.pop("update_directory", None)
-    migrated["schema_version"] = 7
+    migrated["schema_version"] = 8
     return migrated
 
 
@@ -466,6 +495,14 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
         raise ValueError("email.sync_mode must be 'scheduled' or 'after_fetch'")
     if not isinstance(email.get("fetch_new_ticket_history_automatically"), bool):
         raise ValueError("email.fetch_new_ticket_history_automatically must be true or false")
+    for key in (
+        "request_confirmation_sender",
+        "dispatch_notification_sender",
+        "warehouse_sender_domain",
+    ):
+        value = email.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"email.{key} must be text or null")
 
     aging = config.get("aging", {})
     if aging.get("calendar_days") is not True:
@@ -513,7 +550,7 @@ def load_config(home: Path) -> dict[str, Any]:
     migrated = _migrate_legacy_keys(saved)
     _assert_known_structure(migrated)
     config = deep_merge(DEFAULT_CONFIG, migrated)
-    config["schema_version"] = 7
+    config["schema_version"] = 8
     _validate(config)
     return config
 
@@ -523,7 +560,7 @@ def save_config(home: Path, config: dict[str, Any]) -> Path:
     resolved_home.mkdir(parents=True, exist_ok=True)
     _assert_known_structure(config)
     prepared = deep_merge(DEFAULT_CONFIG, config)
-    prepared["schema_version"] = 7
+    prepared["schema_version"] = 8
     _validate(prepared, validate_paths=True)
     path = config_path(resolved_home)
     atomic_write_json(path, prepared)

@@ -1,4 +1,4 @@
-# Zeus 3.1.4
+# Zeus 3.1.5
 
 Zeus is a strictly local ticket workstation. Its Python backend runs in the
 background, serves a bundled React interface on `127.0.0.1`, and opens that
@@ -196,19 +196,21 @@ derived from that name rather than entered manually.
 
 Each request has one immutable eight-digit TT (manual TTs may be corrected with
 an audit note), one Ecuador export timestamp ID, and at most one seven-digit
-Spare SR. Each BOM group requests one BOM with a quantity multiplier; multiple
-groups may be added to one request. Quantity alone determines the number of
-physical unit records, future RMAs, and Fault Tag rows. Faulty serials are
-entered one per line and describe damaged components independently from that
-requested BOM—for example, CPU, memory, and mezzanine serials may support one
-whole-server BOM. Every unit's single Faulty SN cell contains the complete
-component-serial list. Each unit can receive
-one immutable `C` plus ten-digit RMA, a delivered/substitute BOM distinct from
-the requested BOM, and one New SN. Out-of-order LASpare and iCare messages are
-reconciled; contradictory facts become visible conflicts instead of overwrites.
-Warehouse messages from `@itsanet.com` only create candidates when both exact
-RMA and Spare SR match. A user must still confirm the return or provide a noted
-manual override.
+Spare SR. Each BOM group requests one BOM for one or more slots entered one per
+line; the unique slot count determines the number of physical unit records,
+future RMAs, and Fault Tag rows. A slotless manual request may instead use an
+explicit quantity multiplier, and multiple BOM groups may be added to one
+request. Faulty serials are entered once at damaged-device level, one per line,
+and describe the evidence supporting every BOM group for that device. In a
+slotted group, each physical unit receives one slot while retaining the complete
+device serial list plus the group's notes. Each unit can later receive one
+immutable `C` plus ten-digit RMA, a delivered/substitute BOM distinct from the
+requested BOM, and one New SN. Out-of-order request-confirmation and
+dispatch-notification messages
+are reconciled; contradictory facts become visible conflicts instead of
+overwrites. Trusted senders and any warehouse domain are configured locally.
+Warehouse candidates still require both an exact RMA and Spare SR match, and a
+user must confirm the return or provide a noted manual override.
 
 Protected fields are:
 

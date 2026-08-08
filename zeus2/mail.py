@@ -14,7 +14,11 @@ from threading import Event
 from typing import Any, Callable, Iterable
 
 from .diagnostics import record_exception
-from .spare_request_mail import apply_spare_request_messages, is_spare_candidate
+from .spare_request_mail import (
+    apply_spare_request_messages,
+    is_spare_candidate,
+    spare_mail_trust,
+)
 from .store import ZeusStore
 from .utils import (
     atomic_write_json,
@@ -172,7 +176,7 @@ def _clean_message_body(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def extract_ticket_ids(subject: str, known_ids: set[str]) -> list[str]:
-    """Apply the locked Huawei subject classifier.
+    """Apply the locked subject classifier.
 
     ``Spare Request`` subjects exclusively trust TT tokens.  All other
     subjects accept any standalone known eight-digit ID, because Outlook I/O
@@ -656,6 +660,7 @@ def _folder_metadata(
     request_ids: set[str],
     spare_srs: set[str],
     rmas: set[str],
+    mail_trust: dict[str, str],
     cancel_event: Event | None,
     callback: ProgressCallback | None,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -710,6 +715,7 @@ def _folder_metadata(
                 request_ids=request_ids,
                 spare_srs=spare_srs,
                 rmas=rmas,
+                **mail_trust,
             )
             if not ticket_ids and not spare_candidate:
                 continue
@@ -776,6 +782,7 @@ def _fetch_outlook_messages_on_worker(
         for item in request.get("items", [])
         if item.get("rma")
     }
+    mail_trust = spare_mail_trust(store.config)
     if not known_ids:
         return [], {"scanned": 0, "matched": 0, "folders": 0, "full_scan": True}
     state = store.state().get("email_state", {})
@@ -817,6 +824,7 @@ def _fetch_outlook_messages_on_worker(
                 request_ids=request_ids,
                 spare_srs=spare_srs,
                 rmas=rmas,
+                mail_trust=mail_trust,
                 cancel_event=cancel_event,
                 callback=progress,
             )
@@ -965,6 +973,7 @@ def import_mail_csv(store: ZeusStore, csv_path: Path) -> dict[str, Any]:
         for item in request.get("items", [])
         if item.get("rma")
     }
+    mail_trust = spare_mail_trust(store.config)
     messages: list[dict[str, Any]] = []
     scanned = 0
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -982,6 +991,7 @@ def import_mail_csv(store: ZeusStore, csv_path: Path) -> dict[str, Any]:
                 request_ids=request_ids,
                 spare_srs=spare_srs,
                 rmas=rmas,
+                **mail_trust,
             )
             if (not ids and not spare_candidate) or direction is None or timestamp is None:
                 continue

@@ -211,12 +211,11 @@ def prepare_fixture(root: Path) -> Path:
         [
             {
                 "bom": "BOM-01",
-                "amount": 2,
                 "description": "Disk",
                 "part": "Disk",
                 "model": "2288H V5",
                 "device": "server-01",
-                "slot": "Slot 1",
+                "slots": ["Slot 1", "Slot 2"],
                 "faultySn": "FAULTY-01",
                 "reportDate": "2026-07-01",
             }
@@ -256,7 +255,7 @@ def prepare_fixture(root: Path) -> Path:
         tt="39400003",
         source="ticket",
         profile=profile,
-        lines=normalize_request_lines([{**lines[0], "amount": 1}]),
+        lines=normalize_request_lines([{**lines[0], "slots": ["Slot 3"]}]),
         export_path=None,
         subject="completed",
     )

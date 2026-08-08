@@ -27,7 +27,7 @@ export function TopBar({
     <header className="top-bar">
       <div className="top-title">
         <span className="bolt" aria-hidden="true">ϟ</span>
-        <strong>ZEUS {version || "3.1.4"}</strong>
+        <strong>ZEUS {version || "3.1.5"}</strong>
         <span className="top-separator">|</span>
         <nav className="workspace-switcher" aria-label="Zeus workspace">
           <button

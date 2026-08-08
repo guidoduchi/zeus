@@ -288,7 +288,46 @@ class DatabaseFirstSourceTests(WebFixture):
         updated = self.store.read_ticket("12345678")
         self.assertEqual(updated["local"]["fields"]["Planned Date"], "2026-08-21")
         self.assertEqual(updated["local"]["fields"]["Spare"], "Y")
-        self.assertEqual(updated["local"]["spare_parts"], spare_parts)
+        self.assertEqual(
+            updated["local"]["spare_parts"],
+            [
+                {
+                    "device": "server-a",
+                    "model": "2288H V5",
+                    "faulty_sns": ["FAULTY-1", "FAULTY-2"],
+                    "parts": [
+                        {
+                            "slot": "Slot 1",
+                            "part": "Disk",
+                            "bom": "BOM-9000",
+                            "new_sn": "NEW-1",
+                            "notes": None,
+                        },
+                        {
+                            "slot": "Slot 2",
+                            "part": "Disk",
+                            "bom": "BOM-9001",
+                            "new_sn": None,
+                            "notes": None,
+                        },
+                    ],
+                },
+                {
+                    "device": "server-b",
+                    "model": "CH121 V5",
+                    "faulty_sns": ["FAULTY-3"],
+                    "parts": [
+                        {
+                            "slot": "DIMM 3",
+                            "part": "Memory",
+                            "bom": "BOM-9002",
+                            "new_sn": "NEW-3",
+                            "notes": None,
+                        }
+                    ],
+                },
+            ],
+        )
 
         publish_operational_workbooks(self.store, self.books, create_missing=True)
         workbook = load_workbook(self.books / "Pendings.xlsx", data_only=False)
@@ -351,7 +390,7 @@ class DatabaseFirstSourceTests(WebFixture):
         filtered = spare_parts_dashboard_payload(self.store, search="FAULTY-2")
         self.assertEqual(
             [row["bom"] for row in filtered["spareParts"]],
-            ["BOM-9001"],
+            ["BOM-9000", "BOM-9001"],
         )
 
     def test_spare_parts_export_folder_is_configurable_but_never_queried(self) -> None:
@@ -830,7 +869,27 @@ class JobManagerTests(unittest.TestCase):
 
 
 class ApplicationServiceContractTests(WebFixture):
-    def test_spare_prefill_recognizes_new_customer_organization_columns(self) -> None:
+    def test_dashboard_projection_is_cached_until_the_dataset_changes(self) -> None:
+        self.seed_database()
+        service = ApplicationService(self.store)
+        try:
+            with patch(
+                "zeus2.application.service.dashboard_payload",
+                wraps=dashboard_payload,
+            ) as serializer:
+                first = service.dashboard(sort="report", search="")
+                first["tickets"].clear()
+                second = service.dashboard(sort="report", search="")
+                self.assertEqual(serializer.call_count, 1)
+                self.assertEqual(len(second["tickets"]), 1)
+
+                service._touch_data("cache-test")
+                service.dashboard(sort="report", search="")
+                self.assertEqual(serializer.call_count, 2)
+        finally:
+            service.stop()
+
+    def test_spare_prefill_maps_customer_and_multislot_device_data(self) -> None:
         self.seed_database()
         ticket = self.store.read_ticket("12345678")
         ticket["upstream"]["fields"].update(
@@ -840,16 +899,53 @@ class ApplicationServiceContractTests(WebFixture):
                 "Contact Email": "customer@example.com",
             }
         )
+        ticket["local"]["spare_parts"] = [
+            {
+                "device": "server-a",
+                "model": "Server Model",
+                "faulty_sns": ["SERVER-SN-01", "MEMORY-SN-02"],
+                "parts": [
+                    {
+                        "slot": "DIMM101\nDIMM203\nDIMM103",
+                        "part": "DIMM",
+                        "bom": "BOM-9000",
+                        "notes": "Memory diagnostics completed.",
+                        "new_sn": None,
+                    }
+                ],
+            }
+        ]
         self.store.write_ticket_bundle(self.store.current, ticket)
         service = ApplicationService(self.store)
         try:
-            profile = service.spare_request_prefill("12345678")["profile"]
+            prefill = service.spare_request_prefill("12345678")
         finally:
             service.stop()
 
+        profile = prefill["profile"]
         self.assertEqual(profile["customerOrganization"], "Customer Org from Advanced Search")
         self.assertEqual(profile["customerName"], "Customer Contact from Advanced Search")
         self.assertEqual(profile["contact"]["email"], "customer@example.com")
+        self.assertEqual(
+            prefill["lines"],
+            [
+                {
+                    "bom": "BOM-9000",
+                    "amount": 3,
+                    "description": "DIMM",
+                    "part": "DIMM",
+                    "model": "Server Model",
+                    "device": "server-a",
+                    "slot": "DIMM101\nDIMM203\nDIMM103",
+                    "slots": ["DIMM101", "DIMM203", "DIMM103"],
+                    "faultySn": "SERVER-SN-01\nMEMORY-SN-02",
+                    "notes": "Memory diagnostics completed.",
+                    "reportDate": "2026-07-01 10:00:00",
+                    "deviceNumber": 1,
+                    "partNumber": 1,
+                }
+            ],
+        )
 
     def test_legacy_email_threads_are_compacted_without_resynchronizing(self) -> None:
         self.seed_database()

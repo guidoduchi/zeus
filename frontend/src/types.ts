@@ -198,8 +198,10 @@ export interface SpareRequestLine {
   model: string | null;
   device: string | null;
   slot: string | null;
+  slots: string[];
   faulty_sn: string | null;
   faulty_sns: string[];
+  notes?: string | null;
   report_date: string | null;
   source_device_number: number | null;
   source_part_number: number | null;
@@ -374,13 +376,16 @@ export interface SparePart {
   slot: string | null;
   part: string | null;
   bom: string | null;
-  faulty_sn: string | null;
-  new_sn: string | null;
+  notes?: string | null;
+  /** Upgrade-only fields retained from 3.1.4 records and drafts. */
+  faulty_sn?: string | null;
+  new_sn?: string | null;
 }
 
 export interface SpareDevice {
   device: string | null;
   model: string | null;
+  faulty_sns?: string[];
   parts: SparePart[];
 }
 

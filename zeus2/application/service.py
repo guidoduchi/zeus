@@ -62,8 +62,8 @@ from ..storage_migration import (
 )
 from ..startup import StartupResult, reconcile_advanced_and_new_mail, run_startup
 from ..store import StoreError, ZeusStore
-from ..tickets import empty_email
-from ..utils import iso_now, normalize_ticket_id
+from ..tickets import empty_email, newline_values
+from ..utils import iso_now, local_today, normalize_ticket_id
 from .edits import edit_ticket_in_database, edit_tickets_in_database
 from .errors import (
     BusyError,
@@ -111,6 +111,8 @@ class ApplicationService:
         self.jobs = JobManager(self.broker)
         self._operation_lock = threading.Lock()
         self._revision_lock = threading.Lock()
+        self._dashboard_cache_lock = threading.Lock()
+        self._dashboard_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
         self._closed_archive_lock = threading.Lock()
         self._closed_archive_signature: tuple[Any, ...] | None = None
         self._closed_archive_cache: tuple[dict[str, Any], ...] = ()
@@ -132,6 +134,8 @@ class ApplicationService:
         with self._revision_lock:
             self._dataset_revision += 1
             revision = self._dataset_revision
+        with self._dashboard_cache_lock:
+            self._dashboard_cache.clear()
         self.broker.publish(
             "dataset",
             {"revision": revision, "reason": reason, "timestamp": iso_now()},
@@ -436,20 +440,39 @@ class ApplicationService:
         direction = direction or default_directions[sort]
         if direction not in {"asc", "desc"}:
             raise ValidationError(f"Unsupported dashboard sort direction: {direction}")
+        if workspace == "spare-requests" and view not in {"active", "eligible", "completed"}:
+            raise ValidationError(f"Unsupported Spare Requests view: {view}")
+        revision = self.dataset_revision
+        cache_key = (
+            revision,
+            local_today().isoformat(),
+            workspace,
+            sort,
+            direction,
+            search,
+            view,
+        )
+        with self._dashboard_cache_lock:
+            cached = self._dashboard_cache.get(cache_key)
+        if cached is not None:
+            return deepcopy(cached)
         arguments: dict[str, Any] = {
             "sort": sort,
             "direction": direction,
             "search": search,
-            "dataset_revision": self.dataset_revision,
+            "dataset_revision": revision,
         }
         if workspace == "spare-parts":
             arguments["closed_tickets"] = self._closed_archive_tickets()
         elif workspace == "spare-requests":
-            if view not in {"active", "eligible", "completed"}:
-                raise ValidationError(f"Unsupported Spare Requests view: {view}")
             arguments["view"] = view
             arguments["closed_path"] = self._closed_workbook_path()
-        return serializer(self.store, **arguments)
+        result = serializer(self.store, **arguments)
+        with self._dashboard_cache_lock:
+            if len(self._dashboard_cache) >= 64:
+                self._dashboard_cache.pop(next(iter(self._dashboard_cache)))
+            self._dashboard_cache[cache_key] = deepcopy(result)
+        return result
 
     def ticket(self, ticket_id: str) -> dict[str, Any]:
         normalized_ticket_id = normalize_ticket_id(ticket_id)
@@ -598,16 +621,19 @@ class ApplicationService:
             for part_number, part in enumerate(device.get("parts") or [], start=1):
                 if not part.get("bom"):
                     continue
+                slots = newline_values(part.get("slot"))
                 lines.append(
                     {
                         "bom": part.get("bom"),
-                        "amount": 1,
+                        "amount": max(1, len(slots)),
                         "description": part.get("part") or part.get("bom"),
                         "part": part.get("part"),
                         "model": device.get("model"),
                         "device": device.get("device"),
-                        "slot": part.get("slot"),
-                        "faultySn": part.get("faulty_sn"),
+                        "slot": "\n".join(slots) or None,
+                        "slots": slots,
+                        "faultySn": "\n".join(device.get("faulty_sns") or []) or None,
+                        "notes": part.get("notes"),
                         "reportDate": first("Report Date", "ReportDate", "Created Date"),
                         "deviceNumber": device_number,
                         "partNumber": part_number,
@@ -1371,6 +1397,8 @@ class ApplicationService:
             result = update_settings(self.store, updates)
         finally:
             self._operation_lock.release()
+        with self._dashboard_cache_lock:
+            self._dashboard_cache.clear()
         self._schedule_wakeup.set()
         self.broker.publish("configuration", {"changed": result.get("changed", [])})
         return result

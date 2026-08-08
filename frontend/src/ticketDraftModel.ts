@@ -1,5 +1,5 @@
 import type { StoredDraft, TicketDraftKind } from "./drafts";
-import type { SpareDevice, SparePart, TicketDetail } from "./types";
+import type { SpareDevice, TicketDetail } from "./types";
 
 export const WORK_FIELDS = [
   "Planned Date",
@@ -12,11 +12,19 @@ export const WORK_FIELDS = [
 
 export type WorkField = typeof WORK_FIELDS[number];
 export type WorkDraft = Record<string, string>;
-export type DraftPart = Record<keyof SparePart, string>;
+export interface DraftPart {
+  slot: string;
+  part: string;
+  bom: string;
+  notes: string;
+  /** Hidden compatibility value; the Spare Request lifecycle owns new SNs. */
+  new_sn: string;
+}
 
 export interface DraftDevice {
   device: string;
   model: string;
+  faulty_sns: string;
   parts: DraftPart[];
 }
 
@@ -59,18 +67,43 @@ export function changedWorkFields(
 }
 
 export function emptyPart(): DraftPart {
-  return { slot: "", part: "", bom: "", faulty_sn: "", new_sn: "" };
+  return { slot: "", part: "", bom: "", notes: "", new_sn: "" };
+}
+
+export function newlineValues(value: unknown): string[] {
+  const raw = (Array.isArray(value) ? value : [value]).flatMap((candidate) =>
+    String(candidate || "").split(/\r?\n/)
+  );
+  const values: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of raw) {
+    const text = String(candidate || "").trim();
+    const key = text.toLocaleLowerCase();
+    if (text && !seen.has(key)) {
+      seen.add(key);
+      values.push(text);
+    }
+  }
+  return values;
+}
+
+export function requestedQuantity(slot: unknown): number {
+  return Math.max(1, newlineValues(slot).length);
 }
 
 export function spareDraft(value: SpareDevice[]): DraftDevice[] {
   return value.map((device) => ({
     device: device.device || "",
     model: device.model || "",
+    faulty_sns: newlineValues([
+      ...(device.faulty_sns || []),
+      ...device.parts.flatMap((part) => newlineValues(part.faulty_sn)),
+    ]).join("\n"),
     parts: device.parts.map((part) => ({
       slot: part.slot || "",
       part: part.part || "",
       bom: part.bom || "",
-      faulty_sn: part.faulty_sn || "",
+      notes: part.notes || "",
       new_sn: part.new_sn || "",
     })),
   }));
@@ -79,11 +112,11 @@ export function spareDraft(value: SpareDevice[]): DraftDevice[] {
 export function cleanSpareParts(value: DraftDevice[] | SpareDevice[]): SpareDevice[] {
   return value.flatMap((device) => {
     const parts = device.parts.flatMap((part) => {
-      const cleaned: SparePart = {
-        slot: String(part.slot || "").trim() || null,
+      const cleaned = {
+        slot: newlineValues(part.slot).join("\n") || null,
         part: String(part.part || "").trim() || null,
         bom: String(part.bom || "").trim() || null,
-        faulty_sn: String(part.faulty_sn || "").trim() || null,
+        notes: String(part.notes || "").trim() || null,
         new_sn: String(part.new_sn || "").trim() || null,
       };
       return Object.values(cleaned).some(Boolean) ? [cleaned] : [];
@@ -91,9 +124,12 @@ export function cleanSpareParts(value: DraftDevice[] | SpareDevice[]): SpareDevi
     const cleaned: SpareDevice = {
       device: String(device.device || "").trim() || null,
       model: String(device.model || "").trim() || null,
+      faulty_sns: newlineValues(
+        "faulty_sns" in device ? device.faulty_sns : "",
+      ),
       parts,
     };
-    return cleaned.device || cleaned.model || cleaned.parts.length ? [cleaned] : [];
+    return cleaned.device || cleaned.model || cleaned.faulty_sns?.length || cleaned.parts.length ? [cleaned] : [];
   });
 }
 

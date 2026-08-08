@@ -13,6 +13,7 @@ import type {
   SparePartSummary,
   SpareReferenceData,
 } from "../types";
+import { requestedQuantity } from "../ticketDraftModel";
 import { Modal } from "./Modal";
 
 interface LineDraft {
@@ -24,6 +25,7 @@ interface LineDraft {
   device: string;
   slot: string;
   faultySn: string;
+  notes: string;
   reportDate: string;
   deviceNumber?: number;
   partNumber?: number | null;
@@ -40,7 +42,7 @@ interface Props {
 
 const EMPTY_LINE: LineDraft = {
   bom: "", amount: "1", description: "", part: "", model: "", device: "",
-  slot: "", faultySn: "", reportDate: "",
+  slot: "", faultySn: "", notes: "", reportDate: "",
 };
 
 function normalized(value: unknown): string {
@@ -61,13 +63,14 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
   });
   const [lines, setLines] = useState<LineDraft[]>(initialPart ? [{
     bom: initialPart.bom === "—" ? "" : initialPart.bom,
-    amount: "1",
+    amount: String(requestedQuantity(initialPart.slot === "—" ? "" : initialPart.slot)),
     description: initialPart.part === "—" ? initialPart.bom : initialPart.part,
     part: initialPart.part === "—" ? "" : initialPart.part,
     model: initialPart.model === "—" ? "" : initialPart.model,
     device: initialPart.device === "—" ? "" : initialPart.device,
     slot: initialPart.slot === "—" ? "" : initialPart.slot,
     faultySn: initialPart.faultySn === "—" ? "" : initialPart.faultySn,
+    notes: "",
     reportDate: "",
     deviceNumber: initialPart.deviceNumber,
     partNumber: initialPart.partNumber,
@@ -157,7 +160,11 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
   }
 
   function updateLine(index: number, key: keyof LineDraft, value: string) {
-    setLines((current) => current.map((line, position) => position === index ? { ...line, [key]: value } : line));
+    setLines((current) => current.map((line, position) => {
+      if (position !== index) return line;
+      if (key === "slot") return { ...line, slot: value, amount: String(requestedQuantity(value)) };
+      return { ...line, [key]: value };
+    }));
   }
 
   function chooseBom(index: number, value: string) {
@@ -204,6 +211,7 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
           part: String(raw.part || ""), model: String(raw.model || ""),
           device: String(raw.device || ""), slot: String(raw.slot || ""),
           faultySn: String(raw.faultySn || ""), reportDate: String(raw.reportDate || "").slice(0, 10),
+          notes: String(raw.notes || ""),
           deviceNumber: Number(raw.deviceNumber || 0) || undefined,
           partNumber: Number(raw.partNumber || 0) || null,
         })));
@@ -272,7 +280,7 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
   }
 
   const missing = references?.exportSetup.requestMissing.map((item) => item.label).join(" and ");
-  return <Modal title="Export Spare Request" subtitle="Choose the customer, site, requester, and one BOM per group. Quantity creates physical units; all listed faulty serials stay together as evidence for each unit." onClose={onClose} wide actions={<>
+  return <Modal title="Export Spare Request" subtitle="Choose the customer, site, requester, and one BOM per group. Newline-separated slots set quantity automatically; slotless groups keep a manual multiplier." onClose={onClose} wide actions={<>
     <span className="modal-action-note">{source === "ticket" ? "TT inherited from active SR" : "Manual TT · warning allowed"}</span>
     <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
     <button type="button" className="primary-button" disabled={!canExport || saving} onClick={() => void submit()}>{saving ? "Exporting…" : "Export XLSX & create request"}</button>
@@ -310,10 +318,12 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
           <header><strong>BOM group {index + 1}</strong>{lines.length > 1 && <button type="button" className="text-button danger-text" onClick={() => setLines((current) => current.filter((_, position) => position !== index))}>Remove</button>}</header>
           <div className="form-grid four">
             <label className="form-field"><span>BOM *</span><input list="zeus-bom-options" value={line.bom} onChange={(event) => chooseBom(index, event.target.value)} /></label>
-            <label className="form-field"><span>Quantity multiplier *</span><input type="number" min="1" max="1000" value={line.amount} onChange={(event) => updateLine(index, "amount", event.target.value)} /></label>
+            <label className="form-field"><span>{line.slot.trim() ? "Quantity · from slots" : "Quantity multiplier *"}</span><input type="number" min="1" max="1000" value={line.amount} readOnly={Boolean(line.slot.trim())} onChange={(event) => updateLine(index, "amount", event.target.value)} />{line.slot.trim() && <small>Automatically derived from {requestedQuantity(line.slot)} unique slot line(s).</small>}</label>
             <label className="form-field wide"><span>Description / part *</span><input value={line.description} onChange={(event) => updateLine(index, "description", event.target.value)} /></label>
-            {(["model", "device", "slot"] as const).map((key) => <label className="form-field" key={key}><span>{key[0].toUpperCase() + key.slice(1)}</span><input value={line[key]} onChange={(event) => updateLine(index, key, event.target.value)} /></label>)}
-            <label className="form-field full faulty-serials-field"><span>Faulty component serial numbers · one per line</span><textarea value={line.faultySn} onChange={(event) => updateLine(index, "faultySn", event.target.value)} placeholder={"CPU-SN-001\nMEMORY-SN-002\nMEZZ-SN-003"} /><small>Quantity alone controls the number of physical unit records. Every unit's single Faulty SN cell contains this complete serial list.</small></label>
+            {(["model", "device"] as const).map((key) => <label className="form-field" key={key}><span>{key[0].toUpperCase() + key.slice(1)}</span><input value={line[key]} onChange={(event) => updateLine(index, key, event.target.value)} /></label>)}
+            <label className="form-field full slot-list-field"><span>Slots · one per line</span><textarea value={line.slot} onChange={(event) => updateLine(index, "slot", event.target.value)} placeholder={"DIMM101\nDIMM203\nDIMM103"} /><small>Each unique slot becomes one requested physical unit for this BOM.</small></label>
+            <label className="form-field full faulty-serials-field"><span>Damaged-device serial evidence · one per line</span><textarea value={line.faultySn} onChange={(event) => updateLine(index, "faultySn", event.target.value)} placeholder={"CPU-SN-001\nMEMORY-SN-002\nMEZZ-SN-003"} /><small>The complete evidence list stays attached to every physical unit without changing quantity.</small></label>
+            <label className="form-field full"><span>Notes</span><textarea value={line.notes} onChange={(event) => updateLine(index, "notes", event.target.value)} placeholder="Why this BOM is requested, tests already performed, or anything easy to forget." /></label>
             <label className="form-field"><span>Original TT report date</span><input type="date" value={line.reportDate} onChange={(event) => updateLine(index, "reportDate", event.target.value)} /></label>
           </div>
         </article>)}</div>

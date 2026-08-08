@@ -452,7 +452,7 @@ def _spare_part_rows(
                     "part": part.get("part") or "—",
                     "bom": bom or "—",
                     "bomColor": None if bom else "yellow",
-                    "faultySn": part.get("faulty_sn") or "—",
+                    "faultySn": "\n".join(device.get("faulty_sns") or []) or "—",
                     "newSn": part.get("new_sn") or "—",
                     "summary": summary["summary"],
                     "risk": summary["risk"],
@@ -572,7 +572,7 @@ def spare_parts_dashboard_payload(
 
 
 SPARE_STATUS_LABELS = {
-    "awaiting_confirmation": "Awaiting LASpare",
+    "awaiting_confirmation": "Awaiting confirmation",
     "awaiting_stock": "Awaiting stock",
     "awaiting_dispatch": "Awaiting dispatch",
     "dispatched": "Dispatched",

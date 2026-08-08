@@ -15,11 +15,15 @@ import type {
   RequesterProfile,
   UserProfile,
 } from "../types";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 import { Modal } from "./Modal";
 import { EMPTY_USER_PROFILE, ProfileFields } from "./ProfileSetup";
 
 type CollectionKey = "organizations" | "customers" | "sites" | "requesters";
 type Tab = "profile" | CollectionKey;
+type PendingConfirmation =
+  | { kind: "discard" }
+  | { kind: "delete"; key: CollectionKey; id: string; label: string };
 
 interface Props {
   onClose: () => void;
@@ -86,6 +90,7 @@ export function GlobalDataModal({ onClose, onSaved, onError }: Props) {
   const [ticketSuggestions, setTicketSuggestions] = useState<Array<{ ticketId: string; summary: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null);
 
   useEffect(() => {
     Promise.all([getGlobalReferenceData(), getUserProfile()])
@@ -170,6 +175,15 @@ export function GlobalDataModal({ onClose, onSaved, onError }: Props) {
     setSelected((current) => ({ ...current, [key]: row.id }));
   }
 
+  function chooseTab(tab: Tab) {
+    setActive(tab);
+    if (tab === "profile" || selected[tab]) return;
+    const rows = tab === "requesters" && currentRequester
+      ? [currentRequester, ...data.requesters]
+      : data[tab];
+    if (rows[0]) setSelected((current) => ({ ...current, [tab]: rows[0].id }));
+  }
+
   function updateRow(key: CollectionKey, id: string, changes: Record<string, unknown>) {
     if (id === "__current_user__") return;
     updateCollection(
@@ -184,9 +198,13 @@ export function GlobalDataModal({ onClose, onSaved, onError }: Props) {
       onError(new Error("Move or delete that organization's customer contacts first."));
       return;
     }
-    if (!window.confirm(`Delete this ${key === "customers" ? "customer contact" : key.slice(0, -1)}?`)) return;
-    updateCollection(key, data[key].filter((row) => row.id !== id) as never);
-    setSelected((current) => ({ ...current, [key]: null }));
+    const row = data[key].find((candidate) => candidate.id === id);
+    setConfirmation({
+      kind: "delete",
+      key,
+      id,
+      label: labelFor(key, (row || {}) as unknown as Record<string, unknown>),
+    });
   }
 
   async function importCustomer() {
@@ -253,8 +271,26 @@ export function GlobalDataModal({ onClose, onSaved, onError }: Props) {
   }
 
   function cancel() {
-    if (dirty && !window.confirm("Discard every unsaved Global data change made since the last save?")) return;
+    if (dirty) {
+      setConfirmation({ kind: "discard" });
+      return;
+    }
     onClose();
+  }
+
+  function confirmPending() {
+    if (!confirmation) return;
+    if (confirmation.kind === "discard") {
+      setConfirmation(null);
+      onClose();
+      return;
+    }
+    updateCollection(
+      confirmation.key,
+      data[confirmation.key].filter((row) => row.id !== confirmation.id) as never,
+    );
+    setSelected((current) => ({ ...current, [confirmation.key]: null }));
+    setConfirmation(null);
   }
 
   function editor() {
@@ -308,7 +344,19 @@ export function GlobalDataModal({ onClose, onSaved, onError }: Props) {
     </div>;
   }
 
-  return (
+  const categoryLabels: Record<Tab, string> = {
+    profile: "My profile",
+    organizations: "Customer organizations",
+    customers: "Customer contacts",
+    sites: "Sites",
+    requesters: "Requesters",
+  };
+  const categoryCounts: Record<Tab, number> = {
+    profile: 1,
+    ...counts,
+  };
+
+  return <>
     <Modal
       title="Global data"
       subtitle="Your profile, customer organizations, customer contacts, sites, and requesters are available throughout Zeus and stay on this workstation."
@@ -317,21 +365,34 @@ export function GlobalDataModal({ onClose, onSaved, onError }: Props) {
       wide
       actions={<><span>{dirty ? "Unsaved Global data changes are protected" : "All Global data is saved"}</span><button type="button" className="secondary-button" disabled={saving} onClick={cancel}>{dirty ? "Cancel changes" : "Close"}</button><button type="button" className="primary-button" disabled={loading || saving || !dirty} onClick={save}>{saving ? "Saving…" : "Save global data"}</button></>}
     >
-      {loading ? <div className="detail-loading">Reading local global data…</div> : <div className="manager-layout global-manager-layout">
-        <nav aria-label="Global data collection">
-          <button type="button" className={active === "profile" ? "active" : ""} onClick={() => setActive("profile")}>My profile <small>1</small></button>
-          {(["organizations", "customers", "sites", "requesters"] as CollectionKey[]).map((key) => <button type="button" className={active === key ? "active" : ""} onClick={() => setActive(key)} key={key}>{({ organizations: "Customer orgs", customers: "Customer contacts", sites: "Sites", requesters: "Requesters" })[key]} <small>{counts[key]}</small></button>)}
+      {loading ? <div className="detail-loading">Reading local global data…</div> : <div className="global-data-workspace">
+        <nav className="operations-grid global-category-grid" aria-label="Global data collection">
+          {(["profile", "organizations", "customers", "sites", "requesters"] as Tab[]).map((tab) => (
+            <button type="button" aria-label={categoryLabels[tab]} className={active === tab ? "active" : ""} onClick={() => chooseTab(tab)} key={tab}>
+              <strong>{categoryLabels[tab]}</strong>
+              <span>{MANAGER_DESCRIPTIONS[tab].body}</span>
+              <small>{categoryCounts[tab]} {categoryCounts[tab] === 1 ? "record" : "records"}</small>
+            </button>
+          ))}
         </nav>
         <section className="manager-workspace">
           <div className="source-contract manager-description"><strong>{MANAGER_DESCRIPTIONS[active].title}</strong><span>{MANAGER_DESCRIPTIONS[active].body}</span></div>
           {active === "customers" && <div className="manager-import"><input list="zeus-global-sr-options" inputMode="numeric" maxLength={8} value={importTt} onChange={(event) => setImportTt(event.target.value.replace(/\D/g, ""))} placeholder="Search or choose an SR" aria-label="Service Request to import" /><datalist id="zeus-global-sr-options">{ticketSuggestions.map((ticket) => <option value={ticket.ticketId} label={ticket.summary} key={ticket.ticketId} />)}</datalist><button type="button" className="secondary-button" disabled={!/^\d{8}$/.test(importTt)} onClick={() => void importCustomer()}>Import customer from SR</button></div>}
           {active !== "profile" && <div className="manager-records">
-            <div className="manager-list"><button type="button" className="primary-button" onClick={() => addRow(active)}>+ Add</button>{activeRows.map((row) => <button type="button" className={row.id === activeId ? "selected" : ""} onClick={() => setSelected((current) => ({ ...current, [active]: row.id }))} key={row.id}><span>{labelFor(active, row as unknown as Record<string, unknown>)}</span>{active === "requesters" && Boolean((row as RequesterProfile).pinned) && <em>★</em>}</button>)}</div>
+            <div className="manager-list"><button type="button" className="primary-button" onClick={() => addRow(active)}>+ Add {({ organizations: "organization", customers: "contact", sites: "site", requesters: "requester" })[active]}</button>{activeRows.map((row) => <button type="button" className={row.id === activeId ? "selected" : ""} onClick={() => setSelected((current) => ({ ...current, [active]: row.id }))} key={row.id}><span>{labelFor(active, row as unknown as Record<string, unknown>)}</span>{active === "requesters" && Boolean((row as RequesterProfile).pinned) && <em>★</em>}</button>)}</div>
             <div className="manager-form"><header><strong>{activeRow ? labelFor(active, activeRow as unknown as Record<string, unknown>) : "Editor"}</strong>{activeRow && activeRow.id !== "__current_user__" && <button type="button" className="text-button danger-text" onClick={() => removeRow(active, activeRow.id)}>Delete</button>}</header>{editor()}</div>
           </div>}
           {active === "profile" && editor()}
         </section>
       </div>}
     </Modal>
-  );
+    {confirmation && <ConfirmationDialog
+      title={confirmation.kind === "discard" ? "Discard unsaved Global data?" : `Delete ${confirmation.label}?`}
+      message={confirmation.kind === "discard" ? "Every Global data change made since the last save will be discarded. Your last saved local data will remain unchanged." : "This record will be removed from the current unsaved edit set. Save Global data afterward to commit the deletion."}
+      confirmLabel={confirmation.kind === "discard" ? "Discard changes" : "Delete record"}
+      tone="danger"
+      onCancel={() => setConfirmation(null)}
+      onConfirm={confirmPending}
+    />}
+  </>;
 }
