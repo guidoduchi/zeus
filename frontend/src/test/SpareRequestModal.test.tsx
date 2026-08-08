@@ -133,7 +133,7 @@ describe("SpareRequestModal", () => {
     expect(screen.getByLabelText("Site address *")).toHaveValue("Av. Example 123");
     await user.type(screen.getByLabelText("BOM *"), "SERVER-001");
     await user.type(
-      screen.getByLabelText(/^Faulty serial numbers · one per line/),
+      screen.getByLabelText(/^Faulty component serial numbers · one per line/),
       "CPU-SN-001{enter}MEMORY,SN,002{enter}MEZZ-SN-003",
     );
     await user.click(screen.getByRole("button", { name: "Export XLSX & create request" }));

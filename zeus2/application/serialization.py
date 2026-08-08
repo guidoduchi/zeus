@@ -25,11 +25,10 @@ COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "ticketId", "label": "SR", "width": 94, "default": True},
     {"key": "risk", "label": "", "width": 18, "default": True},
     {"key": "lifecycle", "label": "Life", "width": 108, "default": True},
-    {"key": "done", "label": "Done", "width": 58, "default": True},
+    {"key": "done", "label": "MW", "width": 58, "default": True},
     {"key": "plannedDate", "label": "Planned", "width": 116, "default": True},
     {"key": "ticketAgeDays", "label": "Age", "width": 62, "default": True},
-    {"key": "emailLabel", "label": "Email", "width": 142, "default": True},
-    {"key": "emailCount", "label": "Emails", "width": 68, "default": True},
+    {"key": "emailLabel", "label": "Last Email", "width": 154, "default": True},
     {"key": "severity", "label": "Severity", "width": 92, "default": True},
     {"key": "summary", "label": "Summary", "width": 360, "default": True, "flex": True},
     {"key": "product", "label": "Product", "width": 190, "default": False},
@@ -56,7 +55,7 @@ SPARE_PART_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "faultySn", "label": "Faulty SN", "width": 155, "default": True},
     {"key": "newSn", "label": "New SN", "width": 155, "default": True},
     {"key": "lifecycle", "label": "Life", "width": 108, "default": False},
-    {"key": "done", "label": "Done", "width": 58, "default": False},
+    {"key": "done", "label": "MW", "width": 58, "default": False},
     {"key": "summary", "label": "Summary", "width": 320, "default": False, "flex": True},
 )
 
@@ -83,8 +82,7 @@ SPARE_PART_DEFAULT_SORT_DIRECTIONS = {
 SPARE_REQUEST_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "ticketId", "label": "TT", "width": 94, "default": True},
     {"key": "rma", "label": "RMA", "width": 132, "default": True},
-    {"key": "emailLabel", "label": "Email", "width": 126, "default": True},
-    {"key": "emailCount", "label": "Emails", "width": 66, "default": True},
+    {"key": "emailLabel", "label": "Last Email", "width": 154, "default": True},
     {"key": "risk", "label": "", "width": 18, "default": True},
     {"key": "spareSr", "label": "Spare SR", "width": 104, "default": True},
     {"key": "statusLabel", "label": "Status", "width": 170, "default": True},
@@ -140,6 +138,16 @@ def _risk(*colors: str | None) -> str:
     return "none"
 
 
+def _last_email_label(days: int | None, count: int) -> str:
+    if days is None:
+        return f"No email [{count}]"
+    if days == 0:
+        return f"Today [{count}]"
+    if days == 1:
+        return f"1 day [{count}]"
+    return f"{days} days [{count}]"
+
+
 def serialize_ticket_summary(
     ticket: dict[str, Any], config: dict[str, Any]
 ) -> dict[str, Any]:
@@ -172,7 +180,10 @@ def serialize_ticket_summary(
         "ticketAgeDays": facts.ticket_age_days,
         "ticketAgeColor": facts.ticket_age_color,
         "emailInactivityDays": facts.communication_inactivity_days,
-        "emailLabel": facts.communication_label,
+        "emailLabel": _last_email_label(
+            facts.communication_inactivity_days,
+            email_count,
+        ),
         "emailCount": email_count,
         "emailColor": facts.communication_color,
         "lastEmailDirection": email.get("last_direction"),
@@ -398,7 +409,7 @@ def _spare_part_rows(
     """Flatten normalized ticket hardware without creating another authority.
 
     The row identifiers are presentation identities only.  Every mutation still
-    targets the parent SR and crosses the Pendings-first edit transaction.
+    targets the parent SR and crosses the database edit transaction.
     Device-only records remain visible as incomplete rows so the management
     view can never hide normalized data merely because its first part has not
     been filled yet.
@@ -587,7 +598,7 @@ def _spare_email_facts(
     total = int(email.get("total_received") or 0) + int(email.get("total_sent") or 0)
     last = parse_datetime(email.get("last_activity_at"))
     if last is None:
-        return None, "No email", "grey", total
+        return None, _last_email_label(None, total), "grey", total
     current = now or datetime.now(ECUADOR_TIMEZONE)
     if current.tzinfo is not None and last.tzinfo is None:
         last = last.replace(tzinfo=ECUADOR_TIMEZONE)
@@ -595,7 +606,7 @@ def _spare_email_facts(
         current = current.replace(tzinfo=ECUADOR_TIMEZONE)
     days = max(0, (current.date() - last.date()).days)
     color = "red" if days >= 7 else "yellow" if days >= 3 else None
-    return days, f"{days}d inactive", color, total
+    return days, _last_email_label(days, total), color, total
 
 
 def _request_conflict_count(request: dict[str, Any]) -> int:
@@ -654,6 +665,7 @@ def serialize_spare_request_item(
 def _archived_spare_row(row: dict[str, Any]) -> dict[str, Any]:
     status = str(row.get("Status") or "returned").casefold()
     email_days = row.get("Email inactivity days")
+    email_count = int(row.get("Emails received") or 0) + int(row.get("Emails sent") or 0)
     return {
         "rowId": str(row.get("Item ID") or ""),
         "requestId": str(row.get("Request ID") or ""),
@@ -667,9 +679,12 @@ def _archived_spare_row(row: dict[str, Any]) -> dict[str, Any]:
         "dispatchAgeDays": None,
         "dispatchAgeColor": None,
         "emailInactivityDays": email_days,
-        "emailLabel": "No email" if email_days in (None, "") else f"{int(email_days)}d at archive",
+        "emailLabel": _last_email_label(
+            None if email_days in (None, "") else int(email_days),
+            email_count,
+        ),
         "emailColor": None,
-        "emailCount": int(row.get("Emails received") or 0) + int(row.get("Emails sent") or 0),
+        "emailCount": email_count,
         "requestedBom": row.get("Requested BOM") or "—",
         "deliveredBom": row.get("Delivered BOM") or "—",
         "part": row.get("Part") or row.get("Description") or "—",

@@ -7,6 +7,7 @@ import {
   resolveSpareConflict,
   saveSpareRequest,
 } from "../api";
+import { isEditingArea } from "../hooks/useGlobalCommands";
 import type { SpareRequestDetail as Detail, SpareRequestItem } from "../types";
 
 interface Props {
@@ -51,7 +52,6 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
 
   useEffect(() => {
     if (!request) return;
-    setTab("items");
     setTicketId(request.ticketId);
     setSpareSr(request.spareSr || "");
     setNote("");
@@ -66,6 +66,31 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
       condition: item.return_condition === "New" ? "New" : "Faulty",
     }])));
   }, [request?.revision]);
+
+  useEffect(() => {
+    const tabs = ["items", "emails", "history"] as const;
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        event.defaultPrevented
+        || event.isComposing
+        || event.repeat
+        || event.altKey
+        || event.ctrlKey
+        || event.metaKey
+        || isEditingArea(event.target)
+        || document.querySelector(".modal-backdrop")
+      ) return;
+      const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      if (!delta) return;
+      setTab((current) => {
+        const index = tabs.indexOf(current);
+        return tabs[Math.max(0, Math.min(tabs.length - 1, index + delta))];
+      });
+      event.preventDefault();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const selected = useMemo(() => Object.entries(drafts).filter(([, value]) => value.selected).map(([key]) => key), [drafts]);
 

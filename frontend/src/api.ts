@@ -222,13 +222,6 @@ export function saveTicket(
   changed: boolean;
   changedFields: string[];
   ticket: TicketDetail;
-  pendingsRecreated?: {
-    created: boolean;
-    rows: number;
-    source: string;
-    restoredBackup: boolean;
-    notice: string;
-  };
 }> {
   return request(`/api/tickets/${ticketId}/local`, {
     method: "PATCH",

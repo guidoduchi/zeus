@@ -10,10 +10,12 @@ flowchart TD
     Registry --> API
     API --> Service["ApplicationService"]
     Service --> Jobs["Jobs + scheduler"]
-    Service --> Edit["Pendings edit transaction"]
+    Service --> Edit["Database edit transaction"]
     Service --> Core["Reconcile / publish / mail / MOP"]
     Service --> Spare["Spare request / XLSX / mail"]
     Core --> Store["Transactional Markdown store"]
+    Store --> Export["Explicit workbook export"]
+    Export --> Books["Pendings.xlsx + Closed.xlsx"]
     Spare --> Store
     Store --> Views["SR / Spare Request views"]
     Closed["Validated Closed.xlsx"] --> Views
@@ -31,8 +33,8 @@ publication, mail, and MOP generation.
 | `zeus2/main.py` | default web command, singleton launch, browser/tray lifecycle, legacy command delegation |
 | `zeus2/application/service.py` | use cases, scheduler, operation serialization, data events |
 | `zeus2/application/jobs.py` | one mutation lane, progress snapshots, cancellation, SSE events |
-| `zeus2/application/edits.py` | conflict-safe Pendings-first browser edits and missing-file entrypoint |
-| `zeus2/excel_export.py` | verified publication, restore, and database-driven Pendings recreation |
+| `zeus2/application/edits.py` | revision-safe, validated database-first browser edits |
+| `zeus2/excel_export.py` | explicit verified Pendings/Closed generation and legacy recovery |
 | `zeus2/application/serialization.py` | stable dashboard/detail API shapes and sorting |
 | `zeus2/application/settings.py` | typed configuration payload and validation |
 | `zeus2/reference_data.py` | mandatory profile, global structured managers, legacy-manager migration, and BOM catalog |
@@ -50,9 +52,11 @@ publication, mail, and MOP generation.
 ## Read and query paths
 
 A dashboard GET reads only committed Markdown and state. A browser load never
-calls startup or source reconciliation. Source reads enter through a startup,
-scheduled query, or manual job. The job manager serializes these with publish,
-restore, email, MOP, and browser-edit mutations.
+calls startup or source reconciliation. Advanced Search reads enter through a
+startup, scheduled check, or manual job; these reads discover/refresh tickets
+and mark missing IDs for deferred closure. They never import Pendings. The job
+manager serializes them with explicit export, legacy recovery, email, MOP, and
+browser-edit mutations.
 
 The dashboard endpoint accepts a validated workspace key. Each workspace owns
 its schema and sort vocabulary. Service Request rows resolve to ticket detail;
@@ -98,17 +102,17 @@ Python module directly; they do not install or execute frontend tooling.
 ## Verification layers
 
 - core regression tests preserve the 2.0.3 data and recovery contracts;
-- Spare Request tests cover unit expansion, independent multi-serial fault
-  evidence, immutable identities, partial/out-of-order mail, template sheet
-  preservation, return output, archive gating, and retention;
+- Spare Request tests cover quantity-only unit/Fault Tag expansion, combined
+  multi-serial evidence cells, immutable identities, partial/out-of-order mail,
+  template sheet preservation, return output, archive gating, and retention;
 - profile/reference/storage tests cover setup validation, relationship
   integrity, capacity rejection, clone verification, rollback, and cleanup retry;
-- application tests cover Pendings-only bootstrap, web edits, conflicts,
-  deletion/recreation journals, serialized jobs, local HTTP security,
-  no-query GETs, and safe stale records;
-- Vitest covers field preference persistence, wheel event ownership, ticket
-  interaction, page-level command suppression, safe email rendering, and
-  minimal edit payloads;
+- application tests cover database-first startup and saves, explicit paired
+  export/finalization, legacy recovery journals, serialized jobs, local HTTP
+  security, no-query GETs, and safe stale records;
+- Vitest covers field/filter preference persistence, OR/AND filter semantics,
+  wheel ownership, protected draft restoration, bounded tab navigation,
+  command suppression, safe email rendering, and minimal edit payloads;
 - Playwright drives Chrome and Microsoft Edge against a real Python server to
   verify list scrolling, no page scrolling, ticket panels, persisted fields and
   sort direction, global commands, and visible manual queries;

@@ -90,7 +90,7 @@ from zeus2.tickets import (
     empty_local,
     new_ticket,
 )
-from zeus2.utils import normalize_ticket_id, sha256_file
+from zeus2.utils import atomic_write_json, normalize_ticket_id, sha256_file
 
 
 def upstream_row(
@@ -1014,6 +1014,37 @@ class AgingTests(ZeusCase):
 
 
 class PublicationTests(ZeusCase):
+    def test_explicit_export_replaces_corrupt_pendings_from_database(self) -> None:
+        self.seed([pending_row("12345678", **{"Notes": "database value"})])
+        workbook = load_workbook(self.books / "Pendings.xlsx")
+        workbook.active["N2"] = "=1+1"
+        workbook.save(self.books / "Pendings.xlsx")
+        workbook.close()
+
+        publish_operational_workbooks(self.store, self.books)
+
+        exported = read_pendings(self.books / "Pendings.xlsx")
+        self.assertEqual(
+            exported.records["12345678"]["local"]["fields"]["Notes"],
+            "database value",
+        )
+
+    def test_missing_closed_with_finalized_ids_cannot_be_recreated_lossily(self) -> None:
+        self.seed(
+            [pending_row("12345678"), pending_row("12345679")],
+            advanced_rows=[upstream_row("12345679")],
+            closed_rows=[pending_row("11111111")],
+        )
+        publish_operational_workbooks(self.store, self.books)
+        (self.books / "Closed.xlsx").unlink()
+
+        with self.assertRaisesRegex(
+            WorkbookPublicationError,
+            "cannot be reconstructed",
+        ):
+            publish_operational_workbooks(self.store, self.books, create_missing=True)
+        self.assertFalse((self.books / "Closed.xlsx").exists())
+
     def test_publication_appends_closure_generates_report_and_deletes_after_verify(self) -> None:
         self.seed(
             [
@@ -1110,7 +1141,7 @@ class PublicationTests(ZeusCase):
         self.assertEqual((self.books / "Closed.xlsx").read_bytes(), closed_before)
         self.assertFalse((self.store.current / "publication_journal.json").exists())
 
-    def test_restore_imports_only_local_fields_and_rewrites_current_pendings(self) -> None:
+    def test_legacy_restore_imports_local_fields_without_rewriting_pendings(self) -> None:
         self.seed([pending_row("12345678", **{"Notes": "current"})])
         publish_operational_workbooks(self.store, self.books)
         backup = self.root / "old.xlsx"
@@ -1118,6 +1149,7 @@ class PublicationTests(ZeusCase):
             backup,
             [pending_row("12345678", summary="old protected", **{"Notes": "restored", "Done?": "P"})],
         )
+        pending_hash = sha256_file(self.books / "Pendings.xlsx")
         result = restore_pendings_backup(self.store, backup, self.books)
         ticket = self.store.read_ticket("12345678")
         self.assertEqual(ticket["local"]["fields"]["Notes"], "restored")
@@ -1128,28 +1160,44 @@ class PublicationTests(ZeusCase):
         workbook = load_workbook(self.books / "Pendings.xlsx", read_only=True)
         headers = [cell.value for cell in workbook.worksheets[0][1]]
         notes_column = headers.index("Notes") + 1
-        self.assertEqual(workbook.worksheets[0].cell(2, notes_column).value, "restored")
+        self.assertEqual(workbook.worksheets[0].cell(2, notes_column).value, "current")
         workbook.close()
-        self.assertIn("rewritten_path", result)
+        self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), pending_hash)
+        self.assertEqual(result["database_restored"], 1)
+        self.assertTrue(result["workbooks_unchanged"])
 
-    def test_restore_recovery_finalizes_rewritten_pendings(self) -> None:
+    def test_startup_can_finalize_a_legacy_interrupted_restore_journal(self) -> None:
         self.seed([pending_row("12345678", **{"Notes": "current"})])
         publish_operational_workbooks(self.store, self.books)
         backup = self.root / "old.xlsx"
         write_managed(backup, [pending_row("12345678", **{"Notes": "restored"})])
-        real_finalize = __import__("zeus2.excel_export", fromlist=["_finalize_pendings_restore"])._finalize_pendings_restore
-        with patch(
-            "zeus2.excel_export._finalize_pendings_restore",
-            side_effect=RuntimeError("simulated crash after Pendings replacement"),
-        ):
-            with self.assertRaises(RuntimeError):
-                restore_pendings_backup(self.store, backup, self.books)
+        write_managed(
+            self.books / "Pendings.xlsx",
+            [pending_row("12345678", **{"Notes": "restored"})],
+        )
+        restored_local = read_pendings(backup).records["12345678"]["local"]
+        journal = {
+            "schema_version": 1,
+            "backup": str(backup),
+            "old_hash": None,
+            "new_hash": sha256_file(self.books / "Pendings.xlsx"),
+            "local_by_id": {"12345678": restored_local},
+            "pendings_snapshot": {
+                "filename": "Pendings.xlsx",
+                "sha256": sha256_file(self.books / "Pendings.xlsx"),
+                "captured_at": "2026-08-08T12:00:00-05:00",
+                "header_order": list(PENDING_COLUMNS),
+                "ticket_ids": ["12345678"],
+                "protected_values": {},
+            },
+        }
+        with self.store.transaction("legacy-restore-journal", {}) as staging:
+            atomic_write_json(staging / "pendings_restore_journal.json", journal)
         self.assertEqual(
             self.store.read_ticket("12345678")["local"]["fields"]["Notes"],
             "current",
         )
-        with patch("zeus2.excel_export._finalize_pendings_restore", real_finalize):
-            result = recover_pendings_restore(self.store, self.books)
+        result = recover_pendings_restore(self.store, self.books)
         self.assertEqual(result["recovered"], "finalized")
         self.assertEqual(
             self.store.read_ticket("12345678")["local"]["fields"]["Notes"],
@@ -1172,7 +1220,7 @@ class PublicationTests(ZeusCase):
 
 
 class StartupAndReadOnlyTests(ZeusCase):
-    def test_startup_imports_pendings_then_advanced_without_publishing(self) -> None:
+    def test_startup_ignores_pendings_and_discovers_advanced_without_publishing(self) -> None:
         write_managed(
             self.books / "Pendings.xlsx",
             [pending_row("12345678", **{"Notes": "from Excel"})],
@@ -1184,13 +1232,13 @@ class StartupAndReadOnlyTests(ZeusCase):
         closed_hash = sha256_file(self.books / "Closed.xlsx")
         result = run_startup(self.store)
         ticket = self.store.read_ticket("12345678")
-        self.assertEqual(ticket["local"]["fields"]["Notes"], "from Excel")
+        self.assertIsNone(ticket["local"]["fields"]["Notes"])
         self.assertEqual(ticket["upstream"]["fields"]["Problem Summary"], "Online")
         self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), pending_hash)
         self.assertEqual(sha256_file(self.books / "Closed.xlsx"), closed_hash)
         self.assertTrue(result.advanced_search_valid)
 
-    def test_invalid_pendings_warns_but_valid_advanced_still_updates(self) -> None:
+    def test_invalid_pendings_is_ignored_while_valid_advanced_updates(self) -> None:
         self.seed([pending_row("12345678")])
         workbook = load_workbook(self.books / "Pendings.xlsx")
         workbook.active["N2"] = "=1+1"
@@ -1199,7 +1247,7 @@ class StartupAndReadOnlyTests(ZeusCase):
         newer = self.downloads / "Advanced Search(Service Request)20260802010101.xlsx"
         write_advanced(newer, [upstream_row("12345678", summary="Updated online")])
         result = run_startup(self.store)
-        self.assertTrue(any("PENDINGS WARNING" in warning for warning in result.warnings))
+        self.assertFalse(any("PENDINGS WARNING" in warning for warning in result.warnings))
         self.assertTrue(result.advanced_search_valid)
         self.assertEqual(
             self.store.read_ticket("12345678")["upstream"]["fields"]["Problem Summary"],

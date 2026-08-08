@@ -22,7 +22,6 @@ from .excel_import import (
     read_pendings,
     validate_closed_against_index,
 )
-from .reconcile import import_pendings
 from .store import ZeusStore
 from .tickets import (
     CLOSED_SCHEMA_DRIFT_COLUMNS,
@@ -964,9 +963,15 @@ def publish_operational_workbooks(
 
     pending_book: ManagedWorkbook | None = None
     closed_book: ManagedWorkbook | None = None
+    pending_original_hash = sha256_file(pending_path) if pending_path.exists() else None
     if pending_path.exists():
-        pending_book = read_pendings(pending_path)
-        import_pendings(store, pending_path)
+        # Pendings is replaceable output in 3.1.3. Preserve its established
+        # order when it remains valid, but never let stale/corrupt output become
+        # an input or block an explicit database export.
+        try:
+            pending_book = read_pendings(pending_path)
+        except (WorkbookValidationError, OSError):
+            pending_book = None
     elif not create_missing:
         raise WorkbookPublicationError(
             "Pendings.xlsx is missing. Explicitly choose 'Create a fresh Pendings.xlsx' to continue."
@@ -974,6 +979,12 @@ def publish_operational_workbooks(
     if closed_path.exists():
         closed_book = read_closed(closed_path)
         validate_closed_against_index(closed_book, store.closed_index())
+    elif store.closed_index().get("ticket_ids"):
+        raise WorkbookPublicationError(
+            "Closed.xlsx is missing but Zeus has finalized ticket IDs that cannot "
+            "be reconstructed from the current database. Restore a paired Closed "
+            "backup before exporting."
+        )
     elif not create_missing:
         raise WorkbookPublicationError(
             "Closed.xlsx is missing. Explicitly confirm creation to continue."
@@ -981,7 +992,16 @@ def publish_operational_workbooks(
 
     active = list(store.iter_tickets(status="active"))
     closure_pending = list(store.iter_tickets(status="closure_pending"))
-    pending_headers = pending_book.header_order if pending_book else list(PENDING_COLUMNS)
+    publication_state = store.state().get("publication_state") or {}
+    pending_snapshot = publication_state.get("pendings_snapshot") or {}
+    saved_header_order = pending_snapshot.get("header_order")
+    if not (
+        isinstance(saved_header_order, list)
+        and len(saved_header_order) == len(PENDING_COLUMNS)
+        and set(saved_header_order) == set(PENDING_COLUMNS)
+    ):
+        saved_header_order = list(PENDING_COLUMNS)
+    pending_headers = pending_book.header_order if pending_book else saved_header_order
     closed_headers = closed_book.header_order if closed_book else list(PENDING_COLUMNS)
     token = uuid.uuid4().hex
     pending_temp = workbook_directory / f".zeus-pendings-{token}.xlsx"
@@ -1009,9 +1029,12 @@ def publish_operational_workbooks(
         if set(generated_closed.records) != closed_ids:
             raise WorkbookPublicationError("Generated Closed.xlsx failed ID verification")
 
-        if pending_book and sha256_file(pending_path) != pending_book.sha256:
+        if pending_original_hash is not None and (
+            not pending_path.exists()
+            or sha256_file(pending_path) != pending_original_hash
+        ):
             raise WorkbookPublicationError(
-                "Pendings.xlsx changed while publication was being prepared. Retry so the latest saved edits are imported."
+                "Pendings.xlsx changed while export was being prepared. Retry after the file is no longer being modified."
             )
         if closed_book and sha256_file(closed_path) != closed_book.sha256:
             raise WorkbookPublicationError(
@@ -1090,7 +1113,12 @@ def restore_pendings_backup(
     backup_path: Path,
     workbook_directory: Path,
 ) -> dict[str, Any]:
-    """Restore local fields/styles only, then rewrite current Pendings."""
+    """Import local fields from a legacy backup into the database only.
+
+    The workbook-directory argument remains for command compatibility. Zeus
+    3.1.3 never generates or replaces operational workbooks during restore;
+    the next explicit export reflects the restored database values.
+    """
 
     backup = read_pendings(backup_path)
     summary = preview_pendings_restore(store, backup_path)
@@ -1099,67 +1127,13 @@ def restore_pendings_backup(
         ticket_id: deepcopy(backup.records[ticket_id]["local"])
         for ticket_id in applicable
     }
-    # Build and verify the exact post-restore workbook before either authority
-    # is changed.  Closure-pending Markdown records remain present here.
-    workbook_directory = workbook_directory.expanduser().resolve()
-    workbook_directory.mkdir(parents=True, exist_ok=True)
-    recover_pendings_restore(store, workbook_directory)
-    current_path = workbook_directory / "Pendings.xlsx"
-    token = uuid.uuid4().hex
-    temporary = workbook_directory / f".zeus-restore-{token}.xlsx"
-    tickets = list(store.iter_tickets())
-    for ticket in tickets:
-        if ticket["ticket_id"] in local_by_id:
-            ticket["local"] = deepcopy(local_by_id[ticket["ticket_id"]])
-    workbook = Workbook()
-    _write_ticket_sheet(workbook, tickets, header_order=backup.header_order)
-    _write_report_sheet(
-        workbook,
-        [ticket for ticket in tickets if ticket["lifecycle"]["status"] == "active"],
-        [ticket for ticket in tickets if ticket["lifecycle"]["status"] == "closure_pending"],
-        store.config,
-    )
-    workbook.save(temporary)
-    workbook.close()
-    read_pendings(temporary)
-    new_hash = sha256_file(temporary)
-    published_at = iso_now()
-    snapshot = {
-        "filename": "Pendings.xlsx",
-        "sha256": new_hash,
-        "captured_at": published_at,
-        "header_order": backup.header_order,
-        "ticket_ids": sorted((ticket["ticket_id"] for ticket in tickets), reverse=True),
-        "protected_values": {
-            ticket["ticket_id"]: deepcopy(ticket.get("upstream", {}).get("fields", {}))
-            for ticket in tickets
-        },
-    }
-    journal = {
-        "schema_version": 1,
-        "backup": str(backup_path),
-        "old_hash": sha256_file(current_path) if current_path.exists() else None,
-        "new_hash": new_hash,
-        "local_by_id": local_by_id,
-        "pendings_snapshot": snapshot,
-    }
-    _create_paired_backups(
-        workbook_directory,
-        current_path,
-        workbook_directory / "Closed.xlsx",
-        retention=int(store.config.get("excel", {}).get("backup_retention_count", 10)),
-    )
-    with store.transaction("pendings-backup-restore-prepare", summary) as staging:
-        atomic_write_json(staging / "pendings_restore_journal.json", journal)
-    try:
-        os.replace(temporary, current_path)
-    except Exception:
-        with store.transaction("pendings-backup-restore-abort", {}, backup=False) as staging:
-            (staging / "pendings_restore_journal.json").unlink(missing_ok=True)
-        temporary.unlink(missing_ok=True)
-        raise
-    _finalize_pendings_restore(store, journal)
-    summary["rewritten_path"] = str(current_path)
+    with store.transaction("legacy-pendings-backup-database-restore", summary) as staging:
+        for ticket_id, local in local_by_id.items():
+            ticket = store.read_ticket(ticket_id, staging)
+            ticket["local"] = deepcopy(local)
+            store.write_ticket_bundle(staging, ticket)
+    summary["database_restored"] = len(local_by_id)
+    summary["workbooks_unchanged"] = True
     return summary
 
 

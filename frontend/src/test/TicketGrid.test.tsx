@@ -9,8 +9,7 @@ const columns: ColumnDefinition[] = [
   { key: "ticketId", label: "SR", width: 94, default: true },
   { key: "plannedDate", label: "Planned", width: 116, default: true },
   { key: "ticketAgeDays", label: "Age", width: 62, default: true },
-  { key: "emailLabel", label: "Email", width: 142, default: true },
-  { key: "emailCount", label: "Emails", width: 68, default: true },
+  { key: "emailLabel", label: "Last Email", width: 154, default: true },
   { key: "severity", label: "Severity", width: 92, default: true },
   { key: "summary", label: "Summary", width: 360, default: true, flex: true },
 ];
@@ -28,7 +27,7 @@ function ticket(ticketId: string): TicketSummary {
     ticketAgeDays: 10,
     ticketAgeColor: null,
     emailInactivityDays: null,
-    emailLabel: "No email found",
+    emailLabel: "No email [7]",
     emailCount: 7,
     emailColor: "grey",
     lastEmailDirection: null,
@@ -97,7 +96,7 @@ describe("TicketGrid", () => {
     renderGrid();
     expect(screen.getAllByText("Unplanned")[0]).toHaveClass("tone-yellow");
     expect(screen.getAllByText("10")[0]).toHaveClass("tone-none");
-    expect(screen.getAllByText("No email found")[0]).toHaveClass("tone-grey");
-    expect(screen.getAllByText("7")[0]).toHaveClass("tone-none");
+    expect(screen.getAllByText("No email [7]")[0]).toHaveClass("tone-grey");
+    expect(screen.queryByRole("columnheader", { name: "Emails" })).not.toBeInTheDocument();
   });
 });

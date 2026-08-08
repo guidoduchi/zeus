@@ -119,7 +119,7 @@ class SpareRequestDomainTests(unittest.TestCase):
                 with self.assertRaisesRegex(SpareRequestError, "whole number"):
                     normalize_request_lines(lines_input(amount))
 
-    def test_many_faulty_serials_remain_independent_from_one_requested_bom(self) -> None:
+    def test_one_physical_unit_keeps_all_component_serials_in_one_fault_tag(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template = root / "request.xlsx"
@@ -178,13 +178,13 @@ class SpareRequestDomainTests(unittest.TestCase):
                 self.assertEqual(application["F31"].value, "Juan Piguave")
                 self.assertEqual(
                     [faulty[f"F{row}"].value for row in (12, 14, 16)],
-                    ["CPU-SN-001", "MEMORY,SN,002", "MEZZ-SN-003"],
+                    ["CPU-SN-001\nMEMORY,SN,002\nMEZZ-SN-003", None, None],
                 )
                 self.assertEqual(
                     [faulty[f"B{row}"].value for row in (12, 14, 16)],
-                    ["SERVER-001", "SERVER-001", "SERVER-001"],
+                    ["SERVER-001", None, None],
                 )
-                self.assertTrue(faulty["D12"].alignment.wrap_text)
+                self.assertTrue(faulty["F12"].alignment.wrap_text)
             finally:
                 workbook.close()
 
@@ -223,6 +223,10 @@ class SpareRequestDomainTests(unittest.TestCase):
             try:
                 self.assertEqual(workbook.sheetnames, [REQUEST_SHEET, FAULTY_TAG_SHEET])
                 self.assertEqual(workbook[FAULTY_TAG_SHEET]["B24"].value, "02312RCC")
+                self.assertEqual(
+                    [workbook[FAULTY_TAG_SHEET][f"F{row}"].value for row in range(12, 26, 2)],
+                    ["FAULTY-1"] * 7,
+                )
             finally:
                 workbook.close()
 

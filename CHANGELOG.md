@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.1.3 - 2026-08-08
+
+- Makes the transactional Markdown database authoritative for current Zeus
+  work. Browser saves no longer read or rewrite Pendings.xlsx; they validate the
+  ticket revision, commit atomically, and record the audit event.
+- Makes Pendings.xlsx and Closed.xlsx explicit generated outputs. Advanced
+  Search checks only discover/refresh source records and mark missing IDs for
+  deferred closure; a verified paired export finalizes those deletions.
+- Protects unsaved Work Fields and Spare Parts drafts across row/tab changes and
+  remounts, warns on row navigation, and intercepts reload while drafts exist.
+- Adds persisted category filters with OR-within/AND-across semantics, filtered
+  ↑/↓ navigation, bounded ←/→ detail-tab navigation, and edit-control shortcut
+  suppression.
+- Renames the user-facing Done field to MW and combines email age plus cumulative
+  count in Last Email, removing the separate count column.
+- Makes BOM quantity the sole physical-unit, future-RMA, and Fault Tag row
+  multiplier. Each unit's one Faulty SN cell contains the complete diagnostic
+  component-serial list.
+
 ## 3.1.2 - 2026-08-08
 
 - Adds mandatory first-run local contact setup with optional profile picture

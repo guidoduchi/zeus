@@ -33,8 +33,8 @@ export class ErrorBoundary extends Component<Props, State> {
         <p className="recovery-label">ZEUS UI RECOVERY</p>
         <h1>The interface hit an unexpected display error.</h1>
         <p>
-          Reloading only rereads Zeus's current Markdown state. It does not repeat
-          the last Pendings save or source query.
+          Reloading rereads Zeus's local database. Protected editor drafts are
+          recovered in the browser, and no export or source check is repeated.
         </p>
         <pre>{this.state.error.message || this.state.error.name}</pre>
         <button type="button" className="primary-button" onClick={this.reload}>

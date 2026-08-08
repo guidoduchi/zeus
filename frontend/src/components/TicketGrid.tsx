@@ -25,8 +25,8 @@ export function TicketGrid({
       columns={columns}
       selectedRowId={selectedId}
       ariaLabel="Zeus service requests"
-      emptyTitle="No matching Markdown ticket records."
-      emptyHint="Configure or query Pendings.xlsx to build the dashboard."
+      emptyTitle="No matching Zeus ticket records."
+      emptyHint="Check the configured Advanced Search source to discover new service requests."
       countLabel="service request(s)"
       onSelect={(ticket) => onSelect(ticket.ticketId)}
       onCloseDetail={onCloseDetail}

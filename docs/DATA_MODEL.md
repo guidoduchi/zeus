@@ -4,10 +4,10 @@
 
 | Record area | Authoritative writer |
 |---|---|
-| `upstream.fields` | Advanced Search reconciliation, or the protected snapshot carried by Pendings when rebuilding from Pendings alone |
-| `local.fields` | validated Pendings import/restore/web-edit transaction for generic work fields and derived flat compatibility values |
-| `local.spare_parts` | normalized `Spare Parts` worksheet or the same Pendings-first browser transaction |
-| `local.presentation.cell_styles` | validated Pendings import/restore |
+| `upstream.fields` | Advanced Search reconciliation |
+| `local.fields` | validated database edit transactions; flat compatibility values are derived |
+| `local.spare_parts` | validated database edit transactions |
+| `local.presentation.cell_styles` | retained legacy presentation metadata and export defaults |
 | `lifecycle` | Advanced Search reconciliation and verified publication |
 | `email` | optional Outlook staging and synchronization |
 | `mop` | MOP output generation |
@@ -26,29 +26,29 @@ Lifecycle is `active` or `closure_pending`. Finalized tickets no longer remain
 in the Markdown database; their non-email fields are appended to `Closed.xlsx`
 and the ID remains in `closed_index.json`.
 
-## Pendings-first bootstrap
+## Database-first discovery and closure
 
-Pendings includes protected columns as an integrity snapshot plus the local
-work columns it owns. When no Markdown database exists, a valid Pendings file
-can seed both areas and produce the complete dashboard. Advanced Search later
-refreshes protected fields and lifecycle without overwriting local fields.
+Advanced Search is the discovery source for current Service Requests. A new
+valid workbook adds unknown IDs and refreshes protected fields on known IDs
+without overwriting local fields. Existing database IDs absent from that source
+become `closure_pending`, remain in Markdown, and can be reactivated by a later
+source before export.
 
-Closed is not required to import Pendings. When present it is validated and
-indexed. Advanced Search is not required to show Pendings-derived tickets.
-Outlook is never required to build or query the database.
+Pendings and Closed are not startup inputs. They may be absent, externally
+changed, or locked without affecting normal database reads and edits. Outlook
+is never required to build or query the database.
 
 ## Spare-parts hierarchy
 
 `local.spare_parts` is a list of damaged devices. Each device stores `device`,
 `model`, and a list of parts; each part stores `slot`, `part`, `bom`,
-`faulty_sn`, and `new_sn`. The normalized `Spare Parts` worksheet carries one
-row per part with explicit Device # and Part # ordering. Every SR has at least
-one row: a blank sentinel means that the ticket deliberately has no spare-parts
-record, while a missing SR row is rejected as unsafe.
+`faulty_sn`, and `new_sn`. An explicit export emits a normalized `Spare Parts`
+worksheet with one row per part and explicit Device # and Part # ordering. Every
+exported SR has at least one row: a blank sentinel means that the ticket
+deliberately has no spare-parts record.
 
-Legacy Pendings files without this worksheet remain valid. Their single Model,
-Device, Slot, Part, BOM, Old SN, and New SN values migrate to one device/part
-record. The next authorized browser edit, recreation, or publication writes the
+Legacy records with single Model, Device, Slot, Part, BOM, Old SN, and New SN
+values migrate to one device/part record. The next explicit export writes the
 normalized worksheet. The flat primary-sheet columns remain generated export
 summaries, not a second editable hierarchy.
 
@@ -65,9 +65,11 @@ The request ID is a unique Ecuador `YYMMDDHHmmss` allocated at initial XLSX
 export. One request carries one eight-digit TT, at most one `SR` plus seven-digit
 Spare SR, a profile snapshot, original BOM groups, and quantity-expanded unit
 items. Each group stores exactly one requested BOM, its multiplier, and zero or
-more newline-delimited faulty serials. Those serials are group-level evidence,
-not positional unit assignments: one whole-server BOM can retain the serials of
-several damaged internal parts. Each unit item owns at most one immutable `C`
+more newline-delimited faulty serials. Quantity alone creates unit records and
+Fault Tag rows. Those serials are group-level evidence, not positional unit
+assignments: one whole-server BOM can retain the serials of several damaged
+internal parts, and every unit's single Faulty SN cell contains the whole list.
+Each unit item owns at most one immutable `C`
 plus ten-digit RMA. It stores requested and delivered BOM separately, plus New
 SN, attendance, dispatch, return export, warehouse candidate, conflicts, and
 audit history. Partial confirmation assigns available RMAs and leaves remaining
@@ -101,38 +103,32 @@ workbooks. Completed/cancelled items leave active Markdown permanently and are
 appended to `Spare Requests`; associated retained mail is appended to `Spare
 Request Emails`.
 
-## Missing-Pendings materialization
+## Operational workbook export
 
-When a manual or scheduled Query, or a browser Save, finds that
-`Pendings.xlsx` is genuinely absent, Zeus may materialize a replacement from
-every current Markdown record. It preserves the last known valid header order
-when available, writes active and closure-pending rows, builds the report sheet,
-verifies all ticket IDs, and establishes a new protected-field snapshot before
-ordinary import continues.
+An explicit export builds a temporary Pendings workbook from active database
+records and a temporary Closed workbook with all `closure_pending` rows
+appended. Zeus validates the generated IDs and both file hashes, creates paired
+backups when existing outputs are present, and atomically replaces the pair.
+Only after that verified replacement succeeds does the publication transaction
+remove finalized ticket records and update `closed_index.json`.
 
-This recovery is not publication and is not backup restore. It never reads a
-Pendings backup, creates or modifies `Closed.xlsx`, or finalizes a ticket. An
-existing workbook—even invalid or externally changed—remains protected by the
-normal validation and conflict rules. Preparation and replacement are
-journaled so startup can finalize a verified replacement after interruption.
+An interrupted paired export is journaled and recovered. Normal startup may
+finish journals created by older releases, but it does not otherwise import,
+materialize, or rewrite operational workbooks.
 
 ## Browser edit transaction
 
-A web edit is a Pendings transaction, not a direct Markdown mutation. Its
-preconditions are the ticket revision and the SHA-256 of the last imported
-Pendings file. A mismatch produces a conflict before any value is written.
-
-The candidate workbook is written and validated off to the side. Zeus then
-creates a recoverable original copy, replaces Pendings atomically, imports that
-file through the existing reconciliation path, and writes the audit event. If
-the Markdown import fails, the workbook backup is atomically restored.
+A web edit is a staged Markdown-database mutation. Its precondition is the
+ticket revision. The candidate local fields or normalized Spare Parts hierarchy
+are validated, written to a staging tree, checked against the revision again,
+and atomically committed with an audit event. Pendings is not read or written.
 
 `Spare` remains a workbook and Markdown compatibility value but is absent from
 the site. Normalization enforces `Y` when any normalized part has a non-empty
-BOM and `N` otherwise. A browser hierarchy edit rewrites the normalized table,
-flat compatibility cells, and `Spare` in one workbook transaction. Planned
-dates cross the browser boundary as `YYYY-MM-DD` and are stored in Excel as date
-cells rather than free-form display text.
+BOM and `N` otherwise. A browser hierarchy edit stores the normalized record
+and recalculates `Spare` in one database transaction. Flat compatibility cells
+are generated on export. Planned dates cross the browser boundary as
+`YYYY-MM-DD` and are exported as date cells rather than free-form display text.
 
 ## State markers
 
@@ -140,7 +136,7 @@ cells rather than free-form display text.
 
 - newest processed Advanced Search filename, timestamp, SHA-256, row count,
   and processing time;
-- Pendings import SHA-256, result, and protected-field snapshot;
+- successful publication hashes, protected-field snapshot, and closed index;
 - successful email fetch and synchronization times;
 - full-scan, staged-message, publication, and recovery status.
 
@@ -164,9 +160,9 @@ writable data root, validates it, swaps it atomically, and appends a local audit
 event. Keeping staging below the data root preserves Windows ACL inheritance
 and avoids cross-volume replacement failures.
 
-Workbook publication, Pendings restore/recreation, and web edits add their own
-backup or journal boundary. Startup recovers a verified operation or discards
-its uncommitted preparation before ordinary import begins.
+Workbook publication and legacy restore/recreation add their own backup or
+journal boundary. Startup recovers a verified interrupted operation before
+ordinary Advanced Search reconciliation begins.
 
 ## Email privacy
 

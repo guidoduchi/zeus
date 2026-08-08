@@ -263,7 +263,11 @@ def _populate_request_sheet(worksheet: Any, request: dict[str, Any]) -> None:
 
 
 def _faulty_tag_rows(request: dict[str, Any]) -> list[dict[str, Any]]:
-    """Expand fault evidence independently from requested spare quantity."""
+    """Create exactly one Fault Tag row for each requested physical unit.
+
+    Diagnostic component serials describe why that unit is being replaced;
+    they do not create additional replacement units or future RMAs.
+    """
 
     rows: list[dict[str, Any]] = []
     for line in request.get("request_lines") or []:
@@ -274,9 +278,9 @@ def _faulty_tag_rows(request: dict[str, Any]) -> list[dict[str, Any]]:
                 for value in re.split(r"\r?\n", str(line.get("faulty_sn")))
                 if value.strip()
             ]
-        row_count = max(1, int(line.get("amount") or 1), len(serials))
-        for index in range(row_count):
-            rows.append({**line, "faulty_sn": serials[index] if index < len(serials) else None})
+        combined_serials = "\n".join(serials) or None
+        for _ in range(max(1, int(line.get("amount") or 1))):
+            rows.append({**line, "faulty_sn": combined_serials})
     return rows
 
 
@@ -317,7 +321,11 @@ def _populate_faulty_tag_sheet(worksheet: Any, request: dict[str, Any]) -> None:
         description_alignment = copy(description_cell.alignment)
         description_alignment.wrap_text = True
         description_cell.alignment = description_alignment
-        worksheet.cell(row, 6).value = item.get("faulty_sn")
+        serial_cell = worksheet.cell(row, 6)
+        serial_cell.value = item.get("faulty_sn")
+        serial_alignment = copy(serial_cell.alignment)
+        serial_alignment.wrap_text = True
+        serial_cell.alignment = serial_alignment
         worksheet.cell(row, 7).value = profile.get("site_code")
         fault_date = _excel_date(item.get("report_date"))
         worksheet.cell(row, 8).value = fault_date

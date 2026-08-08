@@ -161,7 +161,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Data query interval",
         "Data sources",
         "integer",
-        "Minutes between Pendings-first source queries while Zeus is open; 0 disables scheduled queries.",
+        "Minutes between Advanced Search checks while Zeus is open; 0 disables scheduled checks.",
         minimum=0,
     ),
     SettingSpec(

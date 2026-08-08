@@ -1,4 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  clearTicketDraft,
+  readTicketDraft,
+  writeTicketDraft,
+} from "../drafts";
+import { isEditingArea } from "../hooks/useGlobalCommands";
 import type { EmailMessage, SpareDevice, SparePart, TicketDetail as TicketDetailType } from "../types";
 
 type Tab = "overview" | "work" | "spares" | "emails" | "mops" | "history";
@@ -28,6 +34,8 @@ const WORK_FIELDS = [
   "Notes",
 ];
 
+const TAB_ORDER: Tab[] = ["overview", "work", "spares", "emails", "mops", "history"];
+
 function draftValue(field: string, value: unknown): string {
   if (value === null || value === undefined) return "";
   if (field === "Planned Date") {
@@ -55,32 +63,107 @@ function FieldList({ fields }: { fields: Record<string, unknown> }) {
   );
 }
 
-function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket: TicketDetailType }) {
-  const [draft, setDraft] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
-  useEffect(() => {
-    setDraft(Object.fromEntries(
-      WORK_FIELDS.map((field) => [field, draftValue(field, ticket.localFields[field])]),
-    ));
-  }, [ticket]);
+function workFieldValues(ticket: TicketDetailType): Record<string, string> {
+  return Object.fromEntries(
+    WORK_FIELDS.map((field) => [field, draftValue(field, ticket.localFields[field])]),
+  );
+}
 
-  const changes = useMemo(() => Object.fromEntries(
+function changedWorkFields(
+  ticket: TicketDetailType,
+  draft: Record<string, string>,
+): Record<string, unknown> {
+  return Object.fromEntries(
     WORK_FIELDS
       .filter((field) => draftValue(field, ticket.localFields[field]) !== String(draft[field] ?? ""))
       .map((field) => [field, draft[field] === "" ? null : draft[field]]),
-  ), [draft, ticket.localFields]);
+  );
+}
+
+function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket: TicketDetailType }) {
+  const [draft, setDraft] = useState<Record<string, string>>(() => workFieldValues(ticket));
+  const [draftRevision, setDraftRevision] = useState(ticket.revision);
+  const [baseValue, setBaseValue] = useState<Record<string, string>>(() => workFieldValues(ticket));
+  const [stale, setStale] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const current = workFieldValues(ticket);
+    const stored = readTicketDraft<Record<string, string>>(ticket.ticketId, "work");
+    if (!stored || !stored.value || typeof stored.value !== "object") {
+      setDraft(current);
+      setDraftRevision(ticket.revision);
+      setBaseValue(current);
+      setStale(false);
+      return;
+    }
+    const restored = { ...current, ...stored.value };
+    const serverWorkChanged = stored.revision !== ticket.revision && !sameValue(stored.baseValue, current);
+    const nextRevision = serverWorkChanged ? stored.revision : ticket.revision;
+    const nextBase = serverWorkChanged ? stored.baseValue : current;
+    setDraft(restored);
+    setDraftRevision(nextRevision);
+    setBaseValue(nextBase);
+    setStale(serverWorkChanged);
+    if (!serverWorkChanged && stored.revision !== ticket.revision) {
+      writeTicketDraft(ticket.ticketId, "work", {
+        revision: ticket.revision,
+        baseValue: current,
+        value: restored,
+      });
+    }
+  }, [ticket.ticketId, ticket.revision]);
+
+  const changes = useMemo(() => changedWorkFields(ticket, draft), [draft, ticket]);
   const changedCount = Object.keys(changes).length;
 
   function setField(field: string, value: string) {
-    setDraft((current) => ({ ...current, [field]: value }));
+    setDraft((current) => {
+      const next = { ...current, [field]: value };
+      if (Object.keys(changedWorkFields(ticket, next)).length) {
+        writeTicketDraft(ticket.ticketId, "work", {
+          revision: draftRevision,
+          baseValue,
+          value: next,
+        });
+      } else {
+        clearTicketDraft(ticket.ticketId, "work");
+      }
+      return next;
+    });
+  }
+
+  function discardDraft() {
+    const current = workFieldValues(ticket);
+    clearTicketDraft(ticket.ticketId, "work");
+    setDraft(current);
+    setDraftRevision(ticket.revision);
+    setBaseValue(current);
+    setStale(false);
+  }
+
+  function keepDraftOverCurrent() {
+    const current = workFieldValues(ticket);
+    setDraftRevision(ticket.revision);
+    setBaseValue(current);
+    setStale(false);
+    writeTicketDraft(ticket.ticketId, "work", {
+      revision: ticket.revision,
+      baseValue: current,
+      value: draft,
+    });
   }
 
   async function save() {
-    if (!changedCount) return;
+    if (!changedCount || stale) return;
     setSaving(true);
     try {
-      await onSave(ticket.ticketId, ticket.revision, changes);
+      await onSave(ticket.ticketId, draftRevision, changes);
+      clearTicketDraft(ticket.ticketId, "work");
     } catch {
       // App owns the conflict/error toast and reloads the authoritative value.
     } finally {
@@ -93,15 +176,17 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
       <div className="edit-tab-scroll">
         <div className="tab-content work-tab">
           <div className="source-contract">
-            <strong>{ticket.readOnly ? "Finalized SR archive." : "Pendings remains authoritative."}</strong>
-            <span>{ticket.readOnly ? "These values are preserved from Closed.xlsx and cannot be changed from the site." : "Save writes the validated workbook first, then imports the same values into Markdown."}</span>
+            <strong>{ticket.readOnly ? "Finalized SR archive." : "Zeus is authoritative."}</strong>
+            <span>{ticket.readOnly ? "These values are preserved from Closed.xlsx and cannot be changed from the site." : "Save writes these validated work fields directly to the local database. Workbooks change only when you export them."}</span>
           </div>
+          {stale && <div className="inline-warning">The database work fields changed after this draft began. Your draft is still safe. Choose whether to keep it over the current values or discard it.</div>}
           <div className="work-form">
             {WORK_FIELDS.map((field) => {
+              const label = field === "Done?" ? "MW" : field;
               if (field === "Notes") {
                 return (
                   <label className="form-field full" key={field}>
-                    <span>{field}</span>
+                    <span>{label}</span>
                     <textarea rows={7} value={draft[field] || ""} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)} />
                   </label>
                 );
@@ -109,7 +194,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
               if (field === "Planned Date") {
                 return (
                   <label className="form-field" key={field}>
-                    <span>{field}</span>
+                    <span>{label}</span>
                     <input type="date" value={draft[field] || ""} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)} />
                   </label>
                 );
@@ -117,7 +202,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
               if (field === "Done?") {
                 return (
                   <label className="form-field" key={field}>
-                    <span>{field}</span>
+                    <span>{label}</span>
                     <select value={draft[field] || "N"} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)}>
                       <option value="N">N — Not completed</option>
                       <option value="Y">Y — Completed</option>
@@ -129,7 +214,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
               }
               return (
                 <label className="form-field" key={field}>
-                  <span>{field}</span>
+                  <span>{label}</span>
                   <input value={draft[field] || ""} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)} placeholder="—" />
                 </label>
               );
@@ -138,11 +223,15 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
         </div>
       </div>
       <div className="inline-actions edit-actions">
-        <span>{ticket.readOnly ? "Closed SR · read-only archive" : changedCount ? `${changedCount} unsaved field(s)` : "No unsaved changes"}</span>
+        <span>{ticket.readOnly ? "Closed SR · read-only archive" : changedCount ? `${changedCount} unsaved field(s) · draft protected` : "No unsaved changes"}</span>
         {!ticket.readOnly && (
-          <button type="button" className="primary-button" disabled={!changedCount || saving} onClick={save}>
-            {saving ? "Saving…" : "Save through Pendings"}
-          </button>
+          <div className="inline-actions">
+            {changedCount > 0 && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}
+            {stale && <button type="button" className="secondary-button" disabled={saving} onClick={keepDraftOverCurrent}>Keep my draft</button>}
+            <button type="button" className="primary-button" disabled={!changedCount || saving || stale} onClick={save}>
+              {saving ? "Saving…" : "Save to Zeus"}
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -196,32 +285,97 @@ function cleanSpareParts(value: DraftDevice[] | SpareDevice[]): SpareDevice[] {
 }
 
 function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ticket" | "onSave" | "onExportSpareRequest"> & { ticket: TicketDetailType }) {
-  const [devices, setDevices] = useState<DraftDevice[]>([]);
+  const [devices, setDevices] = useState<DraftDevice[]>(() => spareDraft(ticket.spareParts));
+  const [draftRevision, setDraftRevision] = useState(ticket.revision);
+  const [baseValue, setBaseValue] = useState<SpareDevice[]>(() => cleanSpareParts(ticket.spareParts));
+  const [stale, setStale] = useState(false);
   const [saving, setSaving] = useState(false);
-  useEffect(() => setDevices(spareDraft(ticket.spareParts)), [ticket]);
+  useEffect(() => {
+    const current = cleanSpareParts(ticket.spareParts);
+    const stored = readTicketDraft<DraftDevice[], SpareDevice[]>(ticket.ticketId, "spares");
+    if (!stored || !Array.isArray(stored.value) || !Array.isArray(stored.baseValue)) {
+      setDevices(spareDraft(ticket.spareParts));
+      setDraftRevision(ticket.revision);
+      setBaseValue(current);
+      setStale(false);
+      return;
+    }
+    const serverSparesChanged = stored.revision !== ticket.revision && !sameValue(stored.baseValue, current);
+    const nextRevision = serverSparesChanged ? stored.revision : ticket.revision;
+    const nextBase = serverSparesChanged ? stored.baseValue : current;
+    setDevices(stored.value);
+    setDraftRevision(nextRevision);
+    setBaseValue(nextBase);
+    setStale(serverSparesChanged);
+    if (!serverSparesChanged && stored.revision !== ticket.revision) {
+      writeTicketDraft(ticket.ticketId, "spares", {
+        revision: ticket.revision,
+        baseValue: current,
+        value: stored.value,
+      });
+    }
+  }, [ticket.ticketId, ticket.revision]);
 
   const cleaned = useMemo(() => cleanSpareParts(devices), [devices]);
   const changed = JSON.stringify(cleaned) !== JSON.stringify(cleanSpareParts(ticket.spareParts));
   const partCount = cleaned.reduce((total, device) => total + device.parts.length, 0);
 
+  function updateDevices(update: (current: DraftDevice[]) => DraftDevice[]) {
+    setDevices((current) => {
+      const next = update(current);
+      if (!sameValue(cleanSpareParts(next), cleanSpareParts(ticket.spareParts))) {
+        writeTicketDraft(ticket.ticketId, "spares", {
+          revision: draftRevision,
+          baseValue,
+          value: next,
+        });
+      } else {
+        clearTicketDraft(ticket.ticketId, "spares");
+      }
+      return next;
+    });
+  }
+
   function updateDevice(index: number, field: "device" | "model", value: string) {
-    setDevices((current) => current.map((device, position) => (
+    updateDevices((current) => current.map((device, position) => (
       position === index ? { ...device, [field]: value } : device
     )));
   }
 
   function updatePart(deviceIndex: number, partIndex: number, field: keyof SparePart, value: string) {
-    setDevices((current) => current.map((device, position) => position !== deviceIndex ? device : ({
+    updateDevices((current) => current.map((device, position) => position !== deviceIndex ? device : ({
       ...device,
       parts: device.parts.map((part, candidate) => candidate === partIndex ? { ...part, [field]: value } : part),
     })));
   }
 
+  function discardDraft() {
+    const current = cleanSpareParts(ticket.spareParts);
+    clearTicketDraft(ticket.ticketId, "spares");
+    setDevices(spareDraft(ticket.spareParts));
+    setDraftRevision(ticket.revision);
+    setBaseValue(current);
+    setStale(false);
+  }
+
+  function keepDraftOverCurrent() {
+    const current = cleanSpareParts(ticket.spareParts);
+    setDraftRevision(ticket.revision);
+    setBaseValue(current);
+    setStale(false);
+    writeTicketDraft(ticket.ticketId, "spares", {
+      revision: ticket.revision,
+      baseValue: current,
+      value: devices,
+    });
+  }
+
   async function save() {
-    if (!changed) return;
+    if (!changed || stale) return;
     setSaving(true);
     try {
-      await onSave(ticket.ticketId, ticket.revision, { "Spare Parts": cleaned });
+      await onSave(ticket.ticketId, draftRevision, { "Spare Parts": cleaned });
+      clearTicketDraft(ticket.ticketId, "spares");
     } catch {
       // App owns conflict/error feedback and authoritative reloads.
     } finally {
@@ -234,9 +388,10 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
       <div className="edit-tab-scroll">
         <div className="tab-content spare-parts-tab">
           <div className="source-contract">
-            <strong>{ticket.readOnly ? `SR ${ticket.ticketId} is finalized.` : "The Spare Parts worksheet remains authoritative."}</strong>
-            <span>{ticket.readOnly ? "Its devices and parts remain assigned to this SR through the validated Closed.xlsx archive." : "Each damaged device can contain multiple parts. Compatibility columns and the export-only Spare tag are generated automatically."}</span>
+            <strong>{ticket.readOnly ? `SR ${ticket.ticketId} is finalized.` : "Zeus stores the authoritative Spare Parts record."}</strong>
+            <span>{ticket.readOnly ? "Its devices and parts remain assigned to this SR through the validated Closed.xlsx archive." : "Each damaged device can contain multiple parts. Compatibility columns and the export-only Spare tag are generated automatically on export."}</span>
           </div>
+          {stale && <div className="inline-warning">The database Spare Parts record changed after this draft began. Your draft is still safe. Choose whether to keep it over the current values or discard it.</div>}
           {!devices.length && (
             <div className="empty-spares">
               <strong>This ticket has no spare-parts record.</strong>
@@ -248,7 +403,7 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
               <article className="spare-device" key={`device-${deviceIndex}`}>
                 <header>
                   <strong>Damaged device {deviceIndex + 1}</strong>
-                  {!ticket.readOnly && <button type="button" className="text-button danger-text" onClick={() => setDevices((current) => current.filter((_, index) => index !== deviceIndex))}>Remove device</button>}
+                  {!ticket.readOnly && <button type="button" className="text-button danger-text" onClick={() => updateDevices((current) => current.filter((_, index) => index !== deviceIndex))}>Remove device</button>}
                 </header>
                 <div className="device-fields">
                   <label className="form-field">
@@ -265,7 +420,7 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
                     <section className="spare-part" key={`part-${partIndex}`}>
                       <header>
                         <strong>Part {partIndex + 1}</strong>
-                        {!ticket.readOnly && <button type="button" className="text-button danger-text" onClick={() => setDevices((current) => current.map((candidate, index) => index !== deviceIndex ? candidate : ({ ...candidate, parts: candidate.parts.filter((_, position) => position !== partIndex) })))}>Remove part</button>}
+                        {!ticket.readOnly && <button type="button" className="text-button danger-text" onClick={() => updateDevices((current) => current.map((candidate, index) => index !== deviceIndex ? candidate : ({ ...candidate, parts: candidate.parts.filter((_, position) => position !== partIndex) })))}>Remove part</button>}
                       </header>
                       <div className="part-fields">
                         {([
@@ -284,16 +439,16 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
                     </section>
                   ))}
                 </div>
-                {!ticket.readOnly && <button type="button" className="secondary-button add-part" onClick={() => setDevices((current) => current.map((candidate, index) => index === deviceIndex ? ({ ...candidate, parts: [...candidate.parts, emptyPart()] }) : candidate))}>+ Add damaged part</button>}
+                {!ticket.readOnly && <button type="button" className="secondary-button add-part" onClick={() => updateDevices((current) => current.map((candidate, index) => index === deviceIndex ? ({ ...candidate, parts: [...candidate.parts, emptyPart()] }) : candidate))}>+ Add damaged part</button>}
               </article>
             ))}
           </div>
-          {!ticket.readOnly && <button type="button" className="secondary-button add-device" onClick={() => setDevices((current) => [...current, { device: "", model: "", parts: [emptyPart()] }])}>+ Add damaged device</button>}
+          {!ticket.readOnly && <button type="button" className="secondary-button add-device" onClick={() => updateDevices((current) => [...current, { device: "", model: "", parts: [emptyPart()] }])}>+ Add damaged device</button>}
         </div>
       </div>
       <div className="inline-actions edit-actions">
-        <span>{ticket.readOnly ? `${cleaned.length} device(s), ${partCount} part(s) · closed SR archive` : changed ? `${cleaned.length} device(s), ${partCount} part(s) · unsaved` : `${cleaned.length} device(s), ${partCount} part(s)`}</span>
-        {!ticket.readOnly && <div className="inline-actions">{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!partCount || changed} title={changed ? "Save Spare Parts before exporting" : "Create an independent request from this TT"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Spare Request</button>}<button type="button" className="primary-button" disabled={!changed || saving} onClick={save}>{saving ? "Saving…" : "Save through Pendings"}</button></div>}
+        <span>{ticket.readOnly ? `${cleaned.length} device(s), ${partCount} part(s) · closed SR archive` : changed ? `${cleaned.length} device(s), ${partCount} part(s) · unsaved draft protected` : `${cleaned.length} device(s), ${partCount} part(s)`}</span>
+        {!ticket.readOnly && <div className="inline-actions">{changed && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}{stale && <button type="button" className="secondary-button" disabled={saving} onClick={keepDraftOverCurrent}>Keep my draft</button>}{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!partCount || changed} title={changed ? "Save Spare Parts before exporting" : "Create an independent request from this TT"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Spare Request</button>}<button type="button" className="primary-button" disabled={!changed || saving || stale} onClick={save}>{saving ? "Saving…" : "Save to Zeus"}</button></div>}
       </div>
     </div>
   );
@@ -377,7 +532,30 @@ function MopsTab({ ticket, templates, onGenerateMop }: { ticket: TicketDetailTyp
 
 export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onGenerateMop, onExportSpareRequest }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
-  useEffect(() => setTab(initialTab), [initialTab, ticket?.ticketId]);
+  useEffect(() => setTab(initialTab), [initialTab]);
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        event.defaultPrevented
+        || event.isComposing
+        || event.repeat
+        || event.altKey
+        || event.ctrlKey
+        || event.metaKey
+        || isEditingArea(event.target)
+        || document.querySelector(".modal-backdrop")
+      ) return;
+      const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      if (!delta) return;
+      setTab((current) => {
+        const index = TAB_ORDER.indexOf(current);
+        return TAB_ORDER[Math.max(0, Math.min(TAB_ORDER.length - 1, index + delta))];
+      });
+      event.preventDefault();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   if (loading && !ticket) return <aside className="detail-panel"><div className="detail-loading">Reading ticket…</div></aside>;
   if (!ticket) return null;
   const tabs: Array<[Tab, string, number | null]> = [
@@ -409,7 +587,7 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
           <div className="tab-content">
             <div className="fact-grid">
               <div><span>Lifecycle</span><strong>{ticket.lifecycle}</strong></div>
-              <div><span>Done?</span><strong>{ticket.done}</strong></div>
+              <div><span>MW</span><strong>{ticket.done}</strong></div>
               <div><span>Planned</span><strong>{ticket.plannedDate}</strong></div>
               <div><span>Ticket age</span><strong>{ticket.ticketAgeDays ?? "—"} days</strong></div>
               <div><span>Resolve by</span><strong>{ticket.resolveBy}</strong></div>

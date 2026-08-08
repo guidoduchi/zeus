@@ -29,31 +29,35 @@ Consequences:
 2. Wheel input over the dashboard moves the dashboard; the ticket panel owns
    its own scroll position.
 3. Columns may be toggled and reordered, but not resized.
-4. The default field set preserves the original dashboard and adds Severity
-   plus the cumulative number of emails found per ticket.
+4. The default field set preserves the original dashboard, labels `Done?` as
+   MW, and combines email age plus cumulative count in Last Email.
 5. Opening a ticket reveals full detail without requiring every detail column
    in the list.
-6. Search, sort, theme, visible columns, and column order remain local to the
-   browser profile.
+6. Search, category filters, sort, theme, visible columns, and column order
+   remain local to the browser profile. Filter values are OR within a category
+   and categories are AND across one another.
 7. Every source operation is visible while it is queued or running.
 8. Reloading the web page is a read operation, never a source operation.
+   Unsaved drafts are persisted and standard reload attempts are intercepted
+   until the user saves or discards them.
 9. Planned Date uses a browser calendar; users do not need to infer a text
    format.
-10. `S`, `M`, `R`, and Ctrl+F operate at page scope while focus is outside an
-    editable control. Text entry must never become an application command.
+10. `S`, `M`, `R`, Ctrl+F, and navigation arrows operate at page scope while
+    focus is outside an editable control. Text entry must never become an
+    application command.
 11. Sort field and ascending/descending direction are separate browser-local
     preferences.
 12. Work and Spare Parts editors own a fixed action row above the global command
     strip; scrolling their content never moves or overlaps either command rail.
 13. Top-level work is organized as extensible workspaces. Service Requests and
     Spare Requests share the same dense interaction grammar without sharing
-    incompatible sort, search, or column preferences.
+    incompatible sort, search, filter, or column preferences.
 14. Spare Requests has Active Requests, reusable Eligible SR Parts, and
     Completed subviews. Eligible rows remain a projection; exporting creates an
     independent persistent request immediately.
-15. TT, RMA, email inactivity, then cumulative Email count are the first active
-    request fields. Lifecycle attendance and dispatch aging use separate visual
-    signals.
+15. TT, RMA, and Last Email are first-class active-request fields. Last Email
+    renders age and count together (for example `17 days [13]`); lifecycle
+    attendance and dispatch aging use separate visual signals.
 16. The damaged-device Spare Parts editor remains inside SR detail. Once its
     request XLSX is exported, later request work is available only in the Spare
     Requests workspace.
@@ -68,32 +72,44 @@ Consequences:
 20. Spare export chooses customer, site, requester, and BOM through autocomplete.
     Customer initials are derived, and missing export paths redirect the user
     to Configuration before any workbook write begins.
-21. One request group contains one BOM and a quantity multiplier. Newline-only
-    faulty serials are fault evidence for that group and are not assigned by
-    position to the requested units.
+21. One request group contains one BOM and a quantity multiplier. Quantity
+    alone creates the physical unit records, future RMAs, and Fault Tag rows.
+22. Newline-only faulty component serials are group evidence, not extra units.
+    Every physical unit's single Faulty SN cell contains the entire serial list.
+23. ↑/↓ follows the currently visible server-sorted and filtered row order,
+    keeps the active detail tab, preserves drafts, and informs the user when a
+    draft was left protected. ←/→ changes detail tabs without wrapping.
+24. Service filters cover Planning, MW, and Severity. Spare Request filters
+    cover Status, dispatch risk, Site, Cloud, conflict state, and RMA state.
 
 ## Authority invariants
 
-1. Pendings is the first source of truth for local work data.
-2. Pendings alone must rebuild the dashboard and Markdown database on a clean
-   computer.
-3. Web editing writes and validates Pendings before updating Markdown.
-4. External Excel and browser edits never resolve by last-write-wins; a stale
-   side receives an explicit conflict.
-5. Advanced Search owns refreshed online fields and lifecycle when available.
+1. The transactional Markdown database is the source of truth for current
+   tickets, local work fields, normalized Spare Parts, and active requests.
+2. Pendings.xlsx and Closed.xlsx are read-only operational outputs. Startup,
+   scheduled/manual Advanced Search checks, and browser saves never import or
+   recreate them.
+3. Web editing validates the ticket revision and writes the database directly
+   through a staged atomic transaction. A stale browser receives an explicit
+   conflict and cannot overwrite newer data.
+4. Advanced Search discovers new tickets, refreshes protected online fields,
+   and marks missing current IDs `closure_pending`; it never owns local work
+   fields.
+5. A later Advanced Search file can reactivate a pending closure before export.
+   A successful explicit export writes Pendings and Closed from one snapshot,
+   verifies both, and only then deletes finalized current records.
 6. Outlook is optional. Without an available selected store, no email operation
    runs and the reason stays visible.
-7. Closed is append-only finalized output and is not a prerequisite for startup.
+7. Closed is append-only finalized output and is not a prerequisite for startup
+   or ordinary database editing.
 8. Spare is export-only and system-derived: any normalized part with a BOM
    means `Y`; no BOM means `N`. Neither the browser nor stale flat workbook
    content may override that rule.
-9. A truly absent Pendings file may be materialized from the current Markdown
-   database only when Query or Save explicitly needs it. This exception never
-   applies to an existing changed or corrupt workbook, never restores a
-   Pendings backup, and never creates or mutates Closed.
-10. Multiple damaged devices and parts are represented by the normalized
-    `Spare Parts` worksheet and `local.spare_parts`; flat compatibility cells
-    must never become a competing nested-data authority.
+9. Existing, missing, changed, corrupt, or locked Pendings output cannot block a
+   browser save. Explicit export is the only ordinary path that replaces it.
+10. Multiple damaged devices and parts are authoritative in
+    `local.spare_parts`; the normalized `Spare Parts` worksheet and flat cells
+    are generated compatibility output and never competing authority.
 11. Spare Request and return workbooks are generated outputs only. Their configured
     destination is excluded from every startup, Query, import, reconciliation,
     and recovery scan.
@@ -115,7 +131,8 @@ Consequences:
     Sites and BOM records have no customer-organization ownership.
 18. Faulty serial evidence and requested BOM quantity are separate values. A
     whole-device request may retain several internal-component serials without
-    generating several requested BOMs.
+    generating extra unit records, RMAs, or Fault Tag rows; the complete list
+    stays together in each unit's Faulty SN cell.
 
 ## Runtime invariants
 

@@ -1,4 +1,4 @@
-# Zeus 3.1.2 release scope
+# Zeus 3.1.3 release scope
 
 Included:
 
@@ -12,8 +12,8 @@ Included:
 - autocomplete Spare Request inputs, automatically derived customer initials,
   one unified customer-contact name, and an explicit configuration prompt when
   export destinations or templates are absent;
-- newline-only multiple faulty serials per BOM group, kept independent from its
-  quantity multiplier throughout Markdown state and request/fault-tag XLSX rows;
+- quantity-only physical-unit, future-RMA, and Fault Tag expansion, with every
+  unit retaining all newline-delimited component serials together in one cell;
 
 - a Service Requests / Spare Requests workspace switcher with independent
   search, sort, direction, and field preferences;
@@ -33,25 +33,31 @@ Included:
 - strict `127.0.0.1` binding, local Host/Origin/CSRF controls, and no CORS;
 - browser launch, Windows notification-area lifecycle, clean restart/exit, and
   verified multi-instance `zeus_stop.bat` shutdown;
-- Pendings-only database bootstrap without Closed, Advanced Search, or Outlook;
-- safe Pendings-first browser edits with optimistic ticket and workbook
-  conflict detection, candidate validation, backups, rollback, and audit;
+- a database-first authority boundary: validated browser edits commit directly
+  to transactional Markdown with optimistic revision conflicts and audit;
+- read-only operational Pendings/Closed outputs generated only by explicit
+  paired export, with validation, backups, atomic replacement, and deferred
+  closure deletion only after success;
 - independent ticket-list and detail scrolling; no whole-page scrolling;
 - fixed-width columns with locally persisted visibility and order controls;
-- severity in the default dense dashboard plus every original CLI fact;
-- locally persisted dark/light theme, sort field, and ascending/descending
-  direction;
-- page-level `S`, `M`, `R`, and Ctrl+F commands outside editable controls;
+- severity in the default dense dashboard, MW as the UI label for `Done?`, and
+  Last Email combining age plus count without a separate count column;
+- locally persisted dark/light theme, filters, sort field, and
+  ascending/descending direction;
+- page-level `S`, `M`, `R`, Ctrl+F, and navigation arrows outside editable
+  controls; ↑/↓ follows filtered order and ←/→ changes detail tabs without wrap;
+- browser-persisted Work/Spare drafts, row-move notices, stale-draft recovery,
+  and reload protection until a draft is saved or discarded;
 - fixed Work/Spare action rails that remain above the global command strip;
-- a normalized, repeatable damaged-device and spare-parts editor backed by a
-  one-row-per-part Pendings worksheet and legacy scalar migration;
-- a default dashboard Emails column showing cumulative messages found;
-- visible serialized startup, scheduled, and manual source-query work;
-- page refreshes that never trigger a source query;
-- Pendings-only queries that succeed with an informational skip when no
-  Advanced Search workbook is available;
-- database-driven recreation of a deleted Pendings workbook during Query or
-  Save, without backup restoration, Closed creation, or closure finalization;
+- a normalized, repeatable database-owned damaged-device and spare-parts editor
+  emitted as a one-row-per-part worksheet on export, with legacy scalar migration;
+- service filters for Planning/MW/Severity and Spare Request filters for Status,
+  dispatch risk, Site, Cloud, conflicts, and RMA state, using OR-within/AND-across;
+- visible serialized startup, scheduled, and manual Advanced Search checks;
+- page refreshes that never trigger a source query and cannot silently discard
+  protected drafts;
+- Advanced Search checks that discover/refresh tickets and defer missing-record
+  deletion until the next successful explicit export;
 - optional Outlook behavior that is disabled clearly and nonfatally when no
   valid store exists;
 - the full Advanced Search, closure, Outlook, publishing, recovery, MOP, aging,
@@ -64,7 +70,9 @@ Deliberately excluded:
 
 - a network/LAN/cloud server mode;
 - an interactive terminal dashboard;
-- direct Markdown work-field editing;
+- manual/raw Markdown file editing outside Zeus transactions;
+- importing user edits from Pendings.xlsx or generating operational workbooks
+  during startup, query, or save;
 - draggable column resizing;
 - arbitrary/custom managed Excel columns or formulas;
 - sending email or attaching generated workbooks automatically;

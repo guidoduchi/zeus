@@ -230,7 +230,34 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .toolbar-button { cursor: pointer; }
 .toolbar-button:hover:not(:disabled) { border-color: var(--cyan); }
 .toolbar-button:disabled { opacity: .45; cursor: not-allowed; }
-.columns-anchor { position: relative; }
+.toolbar-button.active-filter { border-color: var(--cyan); color: var(--cyan); }
+.columns-anchor, .filter-anchor { position: relative; }
+
+.filter-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(610px, calc(100vw - 24px));
+  max-height: min(620px, calc(100dvh - 150px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding: 10px;
+  border: 1px solid var(--line-bright);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  z-index: 31;
+}
+.filter-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.filter-panel > header > div { display: flex; align-items: center; gap: 6px; }
+.filter-groups { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 9px; overflow: auto; padding: 9px 0; }
+.filter-groups fieldset { min-width: 0; margin: 0; padding: 6px; border: 1px solid var(--line); }
+.filter-groups legend { padding: 0 5px; color: var(--cyan); font-size: 11px; font-weight: 700; }
+.filter-groups label { min-height: 28px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 3px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.filter-groups label:last-child { border-bottom: 0; }
+.filter-groups label:hover { background: var(--surface-soft); }
+.filter-groups label span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter-groups label small { color: var(--muted); }
+.filter-panel > footer { padding-top: 7px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
 
 .column-popover {
   position: absolute;

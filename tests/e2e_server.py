@@ -33,7 +33,7 @@ from zeus2.spare_requests import (
 )
 from zeus2.startup import run_startup
 from zeus2.store import ZeusStore
-from zeus2.tickets import LOCAL_COLUMNS, PENDING_COLUMNS
+from zeus2.tickets import LOCAL_COLUMNS, UPSTREAM_COLUMNS, normalize_local
 
 
 def pending_row(ticket_id: str, **values: object) -> dict[str, object]:
@@ -58,15 +58,18 @@ def pending_row(ticket_id: str, **values: object) -> dict[str, object]:
     return row
 
 
-def write_managed(path: Path, rows: list[dict[str, object]]) -> None:
-    """Write the minimal valid workbook consumed by the browser fixture."""
+def write_advanced(path: Path, rows: list[dict[str, object]]) -> None:
+    """Write the discovery source used by the database-first browser fixture."""
 
     workbook = Workbook()
     worksheet = workbook.active
-    worksheet.title = "Pendings"
-    worksheet.append(list(PENDING_COLUMNS))
+    worksheet.title = "Service Request"
+    worksheet.append(list(UPSTREAM_COLUMNS))
     for row in rows:
-        worksheet.append([row.get(column) for column in PENDING_COLUMNS])
+        worksheet.append([row.get(column) for column in UPSTREAM_COLUMNS])
+        worksheet.cell(worksheet.max_row, 1).hyperlink = (
+            f"https://example.invalid/sr/{row['SRNo']}"
+        )
     workbook.save(path)
     workbook.close()
 
@@ -135,8 +138,21 @@ def prepare_fixture(root: Path) -> Path:
         )
         for index in range(1, 35)
     ]
-    write_managed(workbooks / "Pendings.xlsx", rows)
+    write_advanced(
+        downloads / "Advanced Search(Service Request)20260808010101.xlsx",
+        rows,
+    )
     run_startup(store)
+    with store.transaction("e2e-database-work-fields", {}) as staging:
+        for row in rows:
+            ticket_id = str(row["SRNo"])
+            ticket = store.read_ticket(ticket_id, staging)
+            # Omit spare_parts so normalization performs the one-time legacy
+            # scalar-to-hierarchy migration inside the authoritative database.
+            ticket["local"] = normalize_local(
+                {"fields": {column: row.get(column) for column in LOCAL_COLUMNS}}
+            )
+            store.write_ticket_bundle(staging, ticket)
     legacy = store.read_ticket("39400001")
     quoted_lines = "\n".join(
         f"Quoted historical line {index:03d}: prior diagnostic context"

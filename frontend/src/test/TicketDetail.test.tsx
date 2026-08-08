@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TicketDetail } from "../components/TicketDetail";
@@ -101,14 +101,14 @@ describe("TicketDetail", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 
-  it("saves only changed Pendings-owned fields", async () => {
+  it("saves only changed database-owned fields", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(<TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={onSave} onGenerateMop={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: /work fields/i }));
     const notes = screen.getByLabelText("Notes");
     await user.type(notes, "Web note");
-    await user.click(screen.getByRole("button", { name: /save through pendings/i }));
+    await user.click(screen.getByRole("button", { name: /save to zeus/i }));
     expect(onSave).toHaveBeenCalledWith("12345678", "revision", { Notes: "Web note" });
   });
 
@@ -124,7 +124,7 @@ describe("TicketDetail", () => {
     expect(screen.queryByLabelText("Spare")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("BOM")).not.toBeInTheDocument();
     fireEvent.change(planned, { target: { value: "2026-08-21" } });
-    await user.click(screen.getByRole("button", { name: /save through pendings/i }));
+    await user.click(screen.getByRole("button", { name: /save to zeus/i }));
 
     expect(onSave).toHaveBeenCalledWith("12345678", "revision", {
       "Planned Date": "2026-08-21",
@@ -153,7 +153,7 @@ describe("TicketDetail", () => {
     await user.type(screen.getByLabelText("Device 2 name"), "server-b");
     await user.type(screen.getByLabelText("Device 2 part 1 Part"), "Memory");
     await user.type(screen.getByLabelText("Device 2 part 1 New SN"), "NEW-3");
-    await user.click(screen.getByRole("button", { name: /save through pendings/i }));
+    await user.click(screen.getByRole("button", { name: /save to zeus/i }));
 
     expect(onSave).toHaveBeenCalledWith("12345678", "revision", {
       "Spare Parts": [
@@ -183,6 +183,60 @@ describe("TicketDetail", () => {
     expect(styles).toMatch(/\.bounded-edit-tab\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto[^}]*overflow:\s*hidden/s);
     expect(styles).toMatch(/\.detail-scroll\.bounded-edit-scroll\s*\{[^}]*overflow:\s*hidden/s);
     expect(styles).not.toMatch(/\.sticky-actions/);
+  });
+
+  it("protects a Work Fields draft while moving between sorted rows", async () => {
+    const user = userEvent.setup();
+    const second = {
+      ...detail,
+      ticketId: "87654321",
+      revision: "revision-2",
+      summary: "Second row",
+      localFields: { ...detail.localFields, Notes: "Second note" },
+    };
+    const props = {
+      loading: false,
+      templates: [],
+      onClose: vi.fn(),
+      onSave: vi.fn(),
+      onGenerateMop: vi.fn(),
+    };
+    const { rerender } = render(<TicketDetail ticket={detail} {...props} />);
+    await user.click(screen.getByRole("button", { name: /work fields/i }));
+    await user.type(screen.getByLabelText("Notes"), "Protected note");
+
+    rerender(<TicketDetail ticket={second} {...props} />);
+    await waitFor(() => expect(screen.getByLabelText("Notes")).toHaveValue("Second note"));
+    expect(screen.getByRole("button", { name: /work fields/i })).toHaveClass("active");
+
+    rerender(<TicketDetail ticket={detail} {...props} />);
+    await waitFor(() => expect(screen.getByLabelText("Notes")).toHaveValue("Protected note"));
+    expect(screen.getByText(/unsaved field\(s\) · draft protected/i)).toBeVisible();
+  });
+
+  it("restores protected drafts after a remount and bounds detail-tab arrows", async () => {
+    const user = userEvent.setup();
+    const props = {
+      ticket: detail,
+      loading: false,
+      templates: [],
+      onClose: vi.fn(),
+      onSave: vi.fn(),
+      onGenerateMop: vi.fn(),
+    };
+    const first = render(<TicketDetail {...props} />);
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(screen.getByRole("button", { name: /work fields/i })).toHaveClass("active");
+    await user.type(screen.getByLabelText("Notes"), "Reload-safe note");
+    fireEvent.keyDown(screen.getByLabelText("Notes"), { key: "ArrowRight" });
+    expect(screen.getByRole("button", { name: /work fields/i })).toHaveClass("active");
+    first.unmount();
+
+    render(<TicketDetail {...props} initialTab="work" />);
+    expect(screen.getByLabelText("Notes")).toHaveValue("Reload-safe note");
+    await user.click(screen.getByRole("button", { name: /history/i }));
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(screen.getByRole("button", { name: /history/i })).toHaveClass("active");
   });
 
   it("shows finalized spare parts under their SR without edit controls", () => {
@@ -218,7 +272,7 @@ describe("TicketDetail", () => {
     expect(screen.getByText("Closed · read-only")).toBeVisible();
     expect(screen.getByText(/remain assigned to this SR/i)).toBeVisible();
     expect(screen.getByLabelText("Device 1 part 1 BOM (part number)")).toBeDisabled();
-    expect(screen.queryByRole("button", { name: /Save through Pendings/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Save to Zeus/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Add damaged part/ })).not.toBeInTheDocument();
   });
 });

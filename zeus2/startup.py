@@ -7,11 +7,9 @@ from typing import Any
 
 from .diagnostics import record_exception
 from .excel_export import (
-    WorkbookPublicationError,
     recover_pendings_recreation,
     recover_pendings_restore,
     recover_publication,
-    recreate_pendings_from_database,
 )
 from .excel_import import WorkbookValidationError
 from .mail import (
@@ -22,9 +20,6 @@ from .mail import (
 )
 from .reconcile import (
     ReconciliationError,
-    import_pendings,
-    initialize_closed_index,
-    record_pendings_error,
     sync_newest_advanced_search,
 )
 from .store import ZeusStore
@@ -125,7 +120,7 @@ def reconcile_advanced_and_new_mail(
     if directory is None:
         result.notices.append(
             "Advanced Search was skipped because its directory is not configured. "
-            "Pendings was imported normally."
+            "The local Zeus database was left unchanged."
         )
         return result
     if directory.is_dir():
@@ -139,7 +134,7 @@ def reconcile_advanced_and_new_mail(
         if not available:
             result.notices.append(
                 "Advanced Search was skipped because no matching workbook is "
-                "currently available. Pendings was imported normally."
+                "currently available. The local Zeus database was left unchanged."
             )
             return result
     try:
@@ -169,18 +164,21 @@ def run_startup(
     cancel_event: Event | None = None,
     progress: Any = None,
 ) -> StartupResult:
-    """Run the locked startup sequence without publishing either workbook."""
+    """Recover interrupted exports, then reconcile external read-only sources.
+
+    ``recreate_missing_pendings`` is retained only for call compatibility with
+    Zeus 3.1.2. Pendings.xlsx and Closed.xlsx are output artifacts now and are
+    never imported or created by startup/query operations.
+    """
 
     store.ensure_layout()
     result = StartupResult()
-    workbook_directory, pending_path, closed_path = _workbook_paths(store)
+    workbook_directory, _, _ = _workbook_paths(store)
 
-    if workbook_directory is None:
-        result.warnings.append(
-            "PENDINGS WARNING — workbook directory is not configured; local fields were not imported."
-        )
-    else:
+    if workbook_directory is not None:
         try:
+            # Finish journals created by an older release before adopting the
+            # database-first contract. No ordinary workbook import follows.
             restored = recover_pendings_restore(store, workbook_directory)
             if restored:
                 result.operations["pendings_restore_recovery"] = restored
@@ -194,41 +192,6 @@ def run_startup(
                     result.notices.append(str(recreated["notice"]))
         except Exception as exc:
             result.warnings.append(f"PUBLICATION RECOVERY WARNING — {exc}")
-
-        try:
-            assert pending_path is not None
-            if recreate_missing_pendings and not pending_path.is_file():
-                recreated = recreate_pendings_from_database(
-                    store,
-                    workbook_directory,
-                )
-                result.operations["pendings_recreation"] = recreated
-                if recreated.get("notice"):
-                    result.notices.append(str(recreated["notice"]))
-            result.operations["pendings_import"] = import_pendings(store, pending_path)
-        except (
-            WorkbookPublicationError,
-            WorkbookValidationError,
-            ReconciliationError,
-            OSError,
-        ) as exc:
-            message = str(exc)
-            result.warnings.append(
-                "PENDINGS WARNING — the Markdown database was preserved and no local "
-                f"fields were imported: {message}"
-            )
-            try:
-                record_pendings_error(store, message)
-            except Exception:
-                pass
-
-        if closed_path is not None and closed_path.exists():
-            try:
-                result.operations["closed_index"] = initialize_closed_index(
-                    store, closed_path
-                )
-            except (WorkbookValidationError, OSError) as exc:
-                result.warnings.append(f"CLOSED WARNING — {exc}")
 
     advanced_result = reconcile_advanced_and_new_mail(
         store, fetch_new=False, cancel_event=cancel_event, progress=progress

@@ -64,7 +64,7 @@ from ..startup import StartupResult, reconcile_advanced_and_new_mail, run_startu
 from ..store import StoreError, ZeusStore
 from ..tickets import empty_email
 from ..utils import iso_now, normalize_ticket_id
-from .edits import edit_ticket_through_pendings
+from .edits import edit_ticket_in_database
 from .errors import (
     BusyError,
     ConflictError,
@@ -93,13 +93,13 @@ class ApplicationService:
 
     JOB_LABELS = {
         "startup": "Starting Zeus",
-        "query": "Querying data sources",
+        "query": "Checking Advanced Search",
         "advanced": "Checking Advanced Search",
         "publish": "Publishing Pendings and Closed",
         "email-fetch": "Fetching Outlook email",
         "email-sync": "Synchronizing staged email",
         "email-rebuild": "Rebuilding Outlook email history",
-        "restore": "Restoring a Pendings backup",
+        "restore": "Restoring database work fields from a legacy backup",
         "doctor": "Running diagnostics",
         "mop": "Generating a MOP",
     }
@@ -202,7 +202,7 @@ class ApplicationService:
                 self._reset_schedule()
 
     def _submit_scheduled_query(self) -> dict[str, Any]:
-        """Use the manual Pendings-first query path for the timer as well."""
+        """Use the same Advanced Search-only query path for the timer."""
 
         # Merely loading a browser page never reaches this path.
         if self._migration_pending:
@@ -1290,7 +1290,7 @@ class ApplicationService:
         if not self._operation_lock.acquire(blocking=False):
             raise BusyError("Another Zeus operation is changing data. Try again when it finishes.")
         try:
-            result = edit_ticket_through_pendings(
+            result = edit_ticket_in_database(
                 self.store,
                 normalized_ticket_id,
                 changes,
@@ -1298,23 +1298,8 @@ class ApplicationService:
             )
         finally:
             self._operation_lock.release()
-        recreated = result.get("pendingsRecreated")
-        if isinstance(recreated, dict) and recreated.get("created"):
-            notice = str(recreated.get("notice") or "").strip()
-            self.latest_startup.warnings = [
-                warning
-                for warning in self.latest_startup.warnings
-                if "Pendings.xlsx was not found" not in warning
-            ]
-            if notice and notice not in self.latest_startup.notices:
-                self.latest_startup.notices.append(notice)
-        recreated_workbook = bool(
-            isinstance(recreated, dict) and recreated.get("created")
-        )
-        if result.get("changed") or recreated_workbook:
-            self._touch_data(
-                "ticket-edit" if result.get("changed") else "pendings-recreation"
-            )
+        if result.get("changed"):
+            self._touch_data("ticket-edit")
         response = {
             "changed": bool(result.get("changed")),
             "changedFields": result.get("changedFields", []),
@@ -1324,8 +1309,6 @@ class ApplicationService:
             # successful edit can never leave React with a partial object.
             "ticket": self.ticket(normalized_ticket_id),
         }
-        if isinstance(recreated, dict) and recreated.get("created"):
-            response["pendingsRecreated"] = recreated
         return response
 
     def get_settings(self) -> dict[str, Any]:
@@ -1417,25 +1400,35 @@ class ApplicationService:
 
     def _run_startup(self, context: JobContext, *, startup: bool) -> dict[str, Any]:
         def operation() -> dict[str, Any]:
-            context.report("pendings", "Reading Pendings.xlsx")
-            result = run_startup(
-                self.store,
-                recreate_missing_pendings=not startup,
-                cancel_event=context.cancel_event,
-                progress=context.progress_callback,
-            )
-            try:
-                context.report("retention", "Applying 180-day Spare Request retention")
-                retention = self.enforce_spare_retention()
-                removed = int(retention.get("activeEmailBodies") or 0) + int(
-                    retention.get("archive", {}).get("removed") or 0
+            context.report("advanced-search", "Checking the newest Advanced Search workbook")
+            if startup:
+                result = run_startup(
+                    self.store,
+                    cancel_event=context.cancel_event,
+                    progress=context.progress_callback,
                 )
-                if removed:
-                    result.notices.append(
-                        f"Spare Request retention purged {removed} record(s) older than 180 days."
+                try:
+                    context.report("retention", "Applying 180-day Spare Request retention")
+                    retention = self.enforce_spare_retention()
+                    removed = int(retention.get("activeEmailBodies") or 0) + int(
+                        retention.get("archive", {}).get("removed") or 0
                     )
-            except Exception as exc:
-                result.warnings.append(f"Spare Request retention could not run: {exc}")
+                    if removed:
+                        result.notices.append(
+                            f"Spare Request retention purged {removed} record(s) older than 180 days."
+                        )
+                except Exception as exc:
+                    result.warnings.append(f"Spare Request retention could not run: {exc}")
+            else:
+                # A manual or scheduled query has one job in 3.1.3: discover
+                # and reconcile the newest Advanced Search workbook. Email,
+                # retention, and workbook output have their own operations.
+                result = reconcile_advanced_and_new_mail(
+                    self.store,
+                    fetch_new=False,
+                    cancel_event=context.cancel_event,
+                    progress=context.progress_callback,
+                )
             context.report("dashboard", "Updating the dashboard")
             self.latest_startup = result
             self._touch_data("startup" if startup else "manual-query")
@@ -1448,6 +1441,7 @@ class ApplicationService:
             context.report("advanced-search", "Checking the newest Advanced Search workbook")
             result = reconcile_advanced_and_new_mail(
                 self.store,
+                fetch_new=False,
                 cancel_event=context.cancel_event,
                 progress=context.progress_callback,
             )
@@ -1463,22 +1457,11 @@ class ApplicationService:
             directory = self.store.configured_directory("workbook_directory")
             if directory is None:
                 raise FeatureUnavailableError("Configure the workbook folder before publishing")
-            create_missing = bool(payload.get("createMissing", False))
-            missing = [
-                name
-                for name in ("Pendings.xlsx", "Closed.xlsx")
-                if not (directory / name).is_file()
-            ]
-            if missing and not create_missing:
-                raise ValidationError(
-                    "One or both managed workbooks are missing. Confirm creation explicitly.",
-                    details={"missing": missing, "requiresConfirmation": True},
-                )
-            context.report("validate", "Validating managed workbooks")
+            context.report("export", "Generating Pendings.xlsx and Closed.xlsx from Zeus")
             result = publish_operational_workbooks(
                 self.store,
                 directory,
-                create_missing=create_missing,
+                create_missing=True,
             )
             self._touch_data("publish")
             return result
@@ -1528,7 +1511,7 @@ class ApplicationService:
             directory = self.store.configured_directory("workbook_directory")
             if directory is None:
                 raise FeatureUnavailableError("Configure the workbook folder before restoring")
-            context.report("preview", f"Validating {selected.name}")
+            context.report("preview", f"Validating legacy backup {selected.name}")
             preview = preview_pendings_restore(self.store, selected)
             if not bool(payload.get("confirmed")):
                 raise ValidationError(
@@ -1536,7 +1519,7 @@ class ApplicationService:
                     details={"preview": preview, "requiresConfirmation": True},
                 )
             result = restore_pendings_backup(self.store, selected, directory)
-            self._touch_data("pendings-restore")
+            self._touch_data("legacy-backup-database-restore")
             return result
 
         return self._exclusive_job(context, operation)

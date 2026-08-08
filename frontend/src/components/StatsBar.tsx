@@ -1,7 +1,7 @@
 import type { DashboardPayload } from "../types";
 
 export function StatsBar({ dashboard }: { dashboard: DashboardPayload | null }) {
-  if (!dashboard) return <div className="stats-bar muted">Reading Markdown records…</div>;
+  if (!dashboard) return <div className="stats-bar muted">Reading Zeus database records…</div>;
   if (dashboard.workspace === "spare-requests") {
     const stats = dashboard.stats;
     return (

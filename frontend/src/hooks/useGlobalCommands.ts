@@ -9,7 +9,7 @@ interface GlobalCommandHandlers {
   onQuery: () => void;
 }
 
-function isEditingArea(target: EventTarget | null): boolean {
+export function isEditingArea(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   return Boolean(target.closest(
     'input, textarea, select, [role="textbox"], [contenteditable]:not([contenteditable="false"])',

@@ -46,7 +46,8 @@ test("Service Requests and Spare Requests switch as independent management views
   await serviceRequests.click();
   await expect(serviceRequests).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByPlaceholder("Search SR, summary, handler, site…")).toBeVisible();
-  await expect(page.getByRole("columnheader", { name: "Emails" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Last Email" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Emails" })).toHaveCount(0);
 });
 
 test("eligible SR parts seed exports and completed items stay read-only", async ({ page }) => {
@@ -75,7 +76,7 @@ test("eligible SR parts seed exports and completed items stay read-only", async 
 
 test("field choices persist and a manual source query is visible", async ({ page }) => {
   await page.goto("/");
-  const query = page.getByRole("button", { name: /Query data/ });
+  const query = page.getByRole("button", { name: /Check Advanced Search/ });
   await expect(query).toBeEnabled();
 
   await page.getByRole("button", { name: /Fields/ }).click();
@@ -92,7 +93,7 @@ test("field choices persist and a manual source query is visible", async ({ page
 
   await query.click();
   await page.getByRole("button", { name: "Operations" }).click();
-  await expect(page.getByLabel("Active operation").getByText("Querying data sources", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Active operation").getByText("Checking Advanced Search", { exact: true })).toBeVisible();
 });
 
 test("window commands and sort direction work outside editable fields", async ({ page }) => {
@@ -123,16 +124,16 @@ test("window commands and sort direction work outside editable fields", async ({
   await page.getByRole("button", { name: "Close Zeus operations" }).click();
 
   await page.keyboard.press("r");
-  await expect(page.getByLabel("Active operation").getByText("Querying data sources", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Active operation").getByText("Checking Advanced Search", { exact: true })).toBeVisible();
 });
 
-test("saving through Pendings keeps the workstation mounted", async ({ page }, testInfo) => {
+test("saving to Zeus keeps the workstation mounted", async ({ page }, testInfo) => {
   const browserLabel = testInfo.project.name;
   const note = `Saved from the real browser regression (${browserLabel})`;
   const bomValue = `BOM-${browserLabel.toUpperCase()}`;
   const plannedDate = browserLabel === "edge" ? "2026-08-22" : "2026-08-21";
   await page.goto("/");
-  await expect(page.getByRole("button", { name: /Query data/ })).toBeEnabled();
+  await expect(page.getByRole("button", { name: /Check Advanced Search/ })).toBeEnabled();
 
   await page.locator("[data-ticket-id]").first().click();
   await page.getByRole("button", { name: "Work fields" }).click();
@@ -141,9 +142,9 @@ test("saving through Pendings keeps the workstation mounted", async ({ page }, t
   await expect(page.getByLabel("Spare")).toHaveCount(0);
   await planned.fill(plannedDate);
   await page.getByLabel("Notes").fill(note);
-  await page.getByRole("button", { name: /Save through Pendings/ }).click();
+  await page.getByRole("button", { name: /Save to Zeus/ }).click();
 
-  await expect(page.getByText(/saved through Pendings\.xlsx/i)).toBeVisible();
+  await expect(page.getByText(/saved to the Zeus database/i)).toBeVisible();
   await expect(page.locator(".app-shell")).toBeVisible();
   await expect(page.getByRole("button", { name: "History" })).toBeVisible();
   await expect(page.getByLabel("Notes")).toHaveValue(note);
@@ -153,9 +154,36 @@ test("saving through Pendings keeps the workstation mounted", async ({ page }, t
   await detail.getByRole("button", { name: /^Spare Parts/ }).click();
   const bom = page.getByLabel("Device 1 part 1 BOM (part number)");
   await bom.fill(bomValue);
-  await page.getByRole("button", { name: /Save through Pendings/ }).click();
-  await expect(page.getByText(/saved through Pendings\.xlsx/i)).toBeVisible();
+  await page.getByRole("button", { name: /Save to Zeus/ }).click();
+  await expect(page.getByText(/saved to the Zeus database/i)).toBeVisible();
   await expect(bom).toHaveValue(bomValue);
+});
+
+test("unsaved Work Fields survive row arrows and keyboard reload is blocked", async ({ page }) => {
+  await page.goto("/");
+  const rows = page.locator("[data-ticket-id]");
+  const firstId = await rows.nth(0).getAttribute("data-ticket-id");
+  const secondId = await rows.nth(1).getAttribute("data-ticket-id");
+  if (!firstId || !secondId) throw new Error("Expected two service-request rows");
+  expect(firstId).not.toBe(secondId);
+
+  await rows.nth(0).click();
+  const detail = page.getByRole("complementary", { name: /SR \d{8} detail/ });
+  await detail.getByRole("button", { name: "Work fields" }).click();
+  await detail.getByLabel("Notes").fill("Protected navigation draft");
+  await page.locator(".stats-bar").click();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByText(new RegExp(`Unsaved SR ${firstId} draft kept safely`))).toBeVisible();
+  await expect(page.getByRole("complementary", { name: `SR ${secondId} detail` })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Work fields" })).toHaveClass(/active/);
+
+  await page.keyboard.press("ArrowUp");
+  await expect(page.getByRole("complementary", { name: `SR ${firstId} detail` })).toBeVisible();
+  await expect(page.getByLabel("Notes")).toHaveValue("Protected navigation draft");
+  await page.locator(".stats-bar").click();
+  await page.keyboard.press("Control+R");
+  await expect(page.getByText(/Reload blocked: save or discard the protected draft first/i)).toBeVisible();
+  await expect(page.getByLabel("Notes")).toHaveValue("Protected navigation draft");
 });
 
 test("work and spare editors remain bounded above the global command strip", async ({ page }) => {

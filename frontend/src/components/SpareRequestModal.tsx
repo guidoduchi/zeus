@@ -272,7 +272,7 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
   }
 
   const missing = references?.exportSetup.requestMissing.map((item) => item.label).join(" and ");
-  return <Modal title="Export Spare Request" subtitle="Choose the customer, site, requester, and one BOM per group. Faulty serials are independent evidence and use one line each." onClose={onClose} wide actions={<>
+  return <Modal title="Export Spare Request" subtitle="Choose the customer, site, requester, and one BOM per group. Quantity creates physical units; all listed faulty serials stay together as evidence for each unit." onClose={onClose} wide actions={<>
     <span className="modal-action-note">{source === "ticket" ? "TT inherited from active SR" : "Manual TT · warning allowed"}</span>
     <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
     <button type="button" className="primary-button" disabled={!canExport || saving} onClick={() => void submit()}>{saving ? "Exporting…" : "Export XLSX & create request"}</button>
@@ -313,7 +313,7 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
             <label className="form-field"><span>Quantity multiplier *</span><input type="number" min="1" max="1000" value={line.amount} onChange={(event) => updateLine(index, "amount", event.target.value)} /></label>
             <label className="form-field wide"><span>Description / part *</span><input value={line.description} onChange={(event) => updateLine(index, "description", event.target.value)} /></label>
             {(["model", "device", "slot"] as const).map((key) => <label className="form-field" key={key}><span>{key[0].toUpperCase() + key.slice(1)}</span><input value={line[key]} onChange={(event) => updateLine(index, key, event.target.value)} /></label>)}
-            <label className="form-field full faulty-serials-field"><span>Faulty serial numbers · one per line</span><textarea value={line.faultySn} onChange={(event) => updateLine(index, "faultySn", event.target.value)} placeholder={"CPU-SN-001\nMEMORY-SN-002\nMEZZ-SN-003"} /><small>These serials describe damaged internal components independently from the requested BOM and quantity.</small></label>
+            <label className="form-field full faulty-serials-field"><span>Faulty component serial numbers · one per line</span><textarea value={line.faultySn} onChange={(event) => updateLine(index, "faultySn", event.target.value)} placeholder={"CPU-SN-001\nMEMORY-SN-002\nMEZZ-SN-003"} /><small>Quantity alone controls the number of physical unit records. Every unit's single Faulty SN cell contains this complete serial list.</small></label>
             <label className="form-field"><span>Original TT report date</span><input type="date" value={line.reportDate} onChange={(event) => updateLine(index, "reportDate", event.target.value)} /></label>
           </div>
         </article>)}</div>

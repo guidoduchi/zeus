@@ -15,6 +15,7 @@ import {
 } from "./api";
 import { BomCatalogModal } from "./components/BomCatalogModal";
 import { ColumnChooser } from "./components/ColumnChooser";
+import { FilterBar } from "./components/FilterBar";
 import { GlobalDataModal } from "./components/GlobalDataModal";
 import { JobBanner } from "./components/JobBanner";
 import { NoticeStrip } from "./components/NoticeStrip";
@@ -29,8 +30,13 @@ import { StatsBar } from "./components/StatsBar";
 import { TicketDetail } from "./components/TicketDetail";
 import { TicketGrid } from "./components/TicketGrid";
 import { TopBar } from "./components/TopBar";
+import {
+  countUnsavedDrafts,
+  DRAFTS_CHANGED_EVENT,
+} from "./drafts";
 import { useColumnPreferences } from "./hooks/useColumnPreferences";
-import { useGlobalCommands } from "./hooks/useGlobalCommands";
+import { isEditingArea, useGlobalCommands } from "./hooks/useGlobalCommands";
+import { useRowFilters, type RowFilterBlueprint } from "./hooks/useRowFilters";
 import type {
   BootstrapPayload,
   DashboardPayload,
@@ -39,6 +45,7 @@ import type {
   SpareRequestDetail as SpareRequestDetailType,
   SpareRequestItemSummary,
   SpareRequestView,
+  TicketSummary,
   TicketDetail as TicketDetailType,
   UserProfile,
   WorkspaceKey,
@@ -96,6 +103,84 @@ const WORKSPACES: Record<WorkspaceKey, WorkspaceConfiguration> = {
     columnsStorageKey: "zeus3.spare-requests.columns",
   },
 };
+
+const SERVICE_FILTERS: Array<RowFilterBlueprint<TicketSummary>> = [
+  {
+    key: "planning",
+    label: "Planning",
+    values: (row) => row.plannedState === "unplanned" ? "unplanned" : "planned",
+    order: ["planned", "unplanned"],
+    optionLabel: (value) => value === "planned" ? "Planned" : "Unplanned",
+  },
+  {
+    key: "mw",
+    label: "MW",
+    values: (row) => row.done || "N",
+    order: ["N", "P", "Y", "?"],
+    optionLabel: (value) => ({
+      N: "N — Not completed",
+      P: "P — Attempted, pending",
+      Y: "Y — Completed",
+      "?": "? — Outside visibility",
+    }[value] || value),
+  },
+  { key: "severity", label: "Severity", values: (row) => row.severity || "—" },
+];
+
+const SPARE_REQUEST_FILTERS: Array<RowFilterBlueprint<SpareRequestItemSummary>> = [
+  { key: "status", label: "Status", values: (row) => row.statusLabel || row.status },
+  {
+    key: "dispatch-risk",
+    label: "Dispatch risk",
+    values: (row) => {
+      if (row.dispatchAgeDays === null) return "not-started";
+      if (row.dispatchAgeColor === "red") return "overdue";
+      if (row.dispatchAgeColor === "yellow") return "warning";
+      return "normal";
+    },
+    order: ["not-started", "normal", "warning", "overdue"],
+    optionLabel: (value) => ({
+      "not-started": "Not dispatched",
+      normal: "Normal",
+      warning: "Warning",
+      overdue: "Overdue",
+    }[value] || value),
+  },
+  { key: "site", label: "Site", values: (row) => row.site || "—" },
+  { key: "cloud", label: "Cloud", values: (row) => row.cloud || "—" },
+  {
+    key: "rma-state",
+    label: "Conflict / RMA",
+    values: (row) => [
+      row.rma && row.rma !== "—" ? "rma-assigned" : "rma-pending",
+      ...(row.conflictCount > 0 ? ["conflict"] : []),
+    ],
+    order: ["conflict", "rma-pending", "rma-assigned"],
+    optionLabel: (value) => ({
+      conflict: "Has conflict",
+      "rma-pending": "RMA pending",
+      "rma-assigned": "RMA assigned",
+    }[value] || value),
+  },
+];
+
+const ELIGIBLE_PART_FILTERS: Array<RowFilterBlueprint<SparePartSummary>> = [
+  {
+    key: "planning",
+    label: "Planning",
+    values: (row) => row.plannedState === "unplanned" ? "unplanned" : "planned",
+    order: ["planned", "unplanned"],
+    optionLabel: (value) => value === "planned" ? "Planned" : "Unplanned",
+  },
+  {
+    key: "mw",
+    label: "MW",
+    values: (row) => row.done || "N",
+    order: ["N", "P", "Y", "?"],
+  },
+  { key: "site", label: "Site", values: (row) => row.site || "—" },
+  { key: "cloud", label: "Cloud", values: (row) => row.cloud || "—" },
+];
 
 interface WorkspacePreference {
   search: string;
@@ -161,6 +246,7 @@ export default function App() {
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [templates, setTemplates] = useState<Array<{ name: string; path: string }>>([]);
   const [toast, setToast] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(null);
+  const [draftCount, setDraftCount] = useState(countUnsavedDrafts);
   const searchRef = useRef<HTMLInputElement>(null);
   const dashboardRequest = useRef(0);
   const preference = workspacePreferences[workspace];
@@ -172,6 +258,21 @@ export default function App() {
   const { orderedColumns, visibleColumns, visibleKeys, toggle, move, reset } = useColumnPreferences(
     dashboard?.columns || [],
     columnsStorageKey,
+  );
+  const serviceFilters = useRowFilters(
+    dashboard?.workspace === "service-requests" ? dashboard.tickets : [],
+    SERVICE_FILTERS,
+    "zeus3.filters.service-requests",
+  );
+  const spareRequestFilters = useRowFilters(
+    dashboard?.workspace === "spare-requests" ? dashboard.spareRequests : [],
+    SPARE_REQUEST_FILTERS,
+    "zeus3.filters.spare-requests.requests",
+  );
+  const eligiblePartFilters = useRowFilters(
+    dashboard?.workspace === "spare-requests" ? dashboard.eligibleParts : [],
+    ELIGIBLE_PART_FILTERS,
+    "zeus3.filters.spare-requests.eligible",
   );
 
   const updateWorkspacePreference = useCallback((updates: Partial<WorkspacePreference>) => {
@@ -266,6 +367,39 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    const refreshDraftCount = () => setDraftCount(countUnsavedDrafts());
+    window.addEventListener(DRAFTS_CHANGED_EVENT, refreshDraftCount);
+    window.addEventListener("storage", refreshDraftCount);
+    return () => {
+      window.removeEventListener(DRAFTS_CHANGED_EVENT, refreshDraftCount);
+      window.removeEventListener("storage", refreshDraftCount);
+    };
+  }, []);
+
+  useEffect(() => {
+    function protectDrafts(event: BeforeUnloadEvent) {
+      if (!countUnsavedDrafts()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    function blockKeyboardReload(event: KeyboardEvent) {
+      const reload = event.key === "F5" || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r");
+      if (!reload || !countUnsavedDrafts()) return;
+      event.preventDefault();
+      setToast({
+        tone: "info",
+        message: "Reload blocked: save or discard the protected draft first.",
+      });
+    }
+    window.addEventListener("beforeunload", protectDrafts);
+    window.addEventListener("keydown", blockKeyboardReload, { capture: true });
+    return () => {
+      window.removeEventListener("beforeunload", protectDrafts);
+      window.removeEventListener("keydown", blockKeyboardReload, { capture: true });
+    };
+  }, []);
+
+  useEffect(() => {
     if (!bootstrap || bootstrap.onboarding.required) return;
     const source = new EventSource(`/api/events?after=${bootstrap.eventSequence}`);
     function receive(raw: Event) {
@@ -350,12 +484,9 @@ export default function App() {
     }
 
     setTicket(result.ticket);
-    const recreated = result.pendingsRecreated;
     setToast({
       tone: "success",
-      message: recreated?.created
-        ? `Pendings.xlsx was missing, so Zeus recreated it from ${recreated.rows} Markdown ticket record(s), then saved SR ${ticketId} through the new workbook. No backup was restored.`
-        : `SR ${ticketId} saved through Pendings.xlsx; the dashboard was updated from that workbook edit.`,
+      message: `SR ${ticketId} saved to the Zeus database. Pendings.xlsx will reflect it at the next explicit export.`,
     });
     try {
       await loadDashboard();
@@ -363,7 +494,7 @@ export default function App() {
       const message = error instanceof Error ? error.message : String(error);
       setToast({
         tone: "error",
-        message: `SR ${ticketId} was saved successfully, but the dashboard reread failed: ${message}. Reloading the page is safe.`,
+        message: `SR ${ticketId} was saved successfully, but the dashboard reread failed: ${message}.`,
       });
     }
   }
@@ -407,17 +538,32 @@ export default function App() {
     setColumnsOpen(false);
   }, [workspace]);
 
+  const informProtectedTicketMove = useCallback((nextTicketId: string | null) => {
+    if (
+      selectedTicketId
+      && nextTicketId !== selectedTicketId
+      && countUnsavedDrafts(selectedTicketId)
+    ) {
+      setToast({
+        tone: "info",
+        message: `Unsaved SR ${selectedTicketId} draft kept safely while you moved rows.`,
+      });
+    }
+  }, [selectedTicketId]);
+
   const selectServiceRequest = useCallback((ticketId: string) => {
+    informProtectedTicketMove(ticketId);
     setSelectedRequestId(null);
     setSelectedTicketId(ticketId);
     setSelectedRowId(ticketId);
-  }, []);
+  }, [informProtectedTicketMove]);
 
   const selectSparePart = useCallback((row: SparePartSummary) => {
+    informProtectedTicketMove(row.ticketId);
     setSelectedRequestId(null);
     setSelectedTicketId(row.ticketId);
     setSelectedRowId(row.rowId);
-  }, []);
+  }, [informProtectedTicketMove]);
 
   const selectSpareRequest = useCallback((row: SpareRequestItemSummary) => {
     setSelectedTicketId(null);
@@ -492,14 +638,79 @@ export default function App() {
     }
   }
 
+  const keyboardDisabled = operationsOpen || settingsOpen || spareExportOpen || globalDataOpen || bomCatalogOpen || Boolean(bootstrap?.onboarding.required);
+
   useGlobalCommands({
-    disabled: operationsOpen || settingsOpen || spareExportOpen || globalDataOpen || bomCatalogOpen || Boolean(bootstrap?.onboarding.required),
+    disabled: keyboardDisabled,
     queryDisabled: Boolean(activeJob),
     onSearch: () => searchRef.current?.focus(),
     onSort: cycleSort,
     onOperations: () => setOperationsOpen(true),
     onQuery: queryData,
   });
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        keyboardDisabled
+        || event.defaultPrevented
+        || event.isComposing
+        || event.repeat
+        || event.altKey
+        || event.ctrlKey
+        || event.metaKey
+        || isEditingArea(event.target)
+        || (event.target instanceof Element && Boolean(event.target.closest('[role="grid"]')))
+      ) return;
+      const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+      if (!delta || !dashboard) return;
+
+      function nextIndex(rows: Array<{ rowId: string }>): number {
+        if (!rows.length) return -1;
+        const current = selectedRowId ? rows.findIndex((row) => row.rowId === selectedRowId) : -1;
+        if (current < 0) return 0;
+        return Math.max(0, Math.min(rows.length - 1, current + delta));
+      }
+
+      let nextRowId: string | null = null;
+      if (dashboard.workspace === "service-requests") {
+        const index = nextIndex(serviceFilters.filteredRows.map((row) => ({ rowId: row.ticketId })));
+        const next = serviceFilters.filteredRows[index];
+        if (next) {
+          nextRowId = next.ticketId;
+          selectServiceRequest(next.ticketId);
+        }
+      } else if (dashboard.view === "eligible") {
+        const index = nextIndex(eligiblePartFilters.filteredRows);
+        const next = eligiblePartFilters.filteredRows[index];
+        if (next) {
+          nextRowId = next.rowId;
+          selectSparePart(next);
+        }
+      } else {
+        const index = nextIndex(spareRequestFilters.filteredRows);
+        const next = spareRequestFilters.filteredRows[index];
+        if (next) {
+          nextRowId = next.rowId;
+          selectSpareRequest(next);
+        }
+      }
+      if (!nextRowId) return;
+      event.preventDefault();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    dashboard,
+    eligiblePartFilters.filteredRows,
+    keyboardDisabled,
+    selectServiceRequest,
+    selectSparePart,
+    selectSpareRequest,
+    selectedRowId,
+    serviceFilters.filteredRows,
+    spareRequestFilters.filteredRows,
+  ]);
 
   const warnings = bootstrap?.startup.warnings || [];
   const notices = bootstrap?.startup.notices || [];
@@ -539,7 +750,7 @@ export default function App() {
   return (
     <main className={`app-shell ${selectedTicketId || selectedRequestId ? "with-detail" : ""}`} data-workspace={workspace}>
       <TopBar
-        version={bootstrap.version || "3.1.2"}
+        version={bootstrap.version || "3.1.3"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
@@ -581,8 +792,33 @@ export default function App() {
             <option value="desc">↓ Descending</option>
           </select>
         </div>
-        <button type="button" className="toolbar-button" onClick={queryData} disabled={Boolean(activeJob)}>↻ Query data</button>
+        <button type="button" className="toolbar-button" onClick={queryData} disabled={Boolean(activeJob)}>↻ Check Advanced Search</button>
         {workspace === "spare-requests" && <><button type="button" className="toolbar-button" onClick={() => openSpareExport()}>+ Manual request</button><button type="button" className="toolbar-button" onClick={() => setBomCatalogOpen(true)}>BOM catalog</button>{spareView === "completed" && <button type="button" className="toolbar-button danger-text" disabled={!selectedCompletedItem} onClick={purgeSelectedCompleted}>Purge selected</button>}</>}
+        {dashboard.workspace === "service-requests" ? (
+          <FilterBar
+            definitions={serviceFilters.definitions}
+            selections={serviceFilters.selections}
+            activeCount={serviceFilters.activeCount}
+            onToggle={serviceFilters.toggle}
+            onClear={serviceFilters.clear}
+          />
+        ) : dashboard.view === "eligible" ? (
+          <FilterBar
+            definitions={eligiblePartFilters.definitions}
+            selections={eligiblePartFilters.selections}
+            activeCount={eligiblePartFilters.activeCount}
+            onToggle={eligiblePartFilters.toggle}
+            onClear={eligiblePartFilters.clear}
+          />
+        ) : (
+          <FilterBar
+            definitions={spareRequestFilters.definitions}
+            selections={spareRequestFilters.selections}
+            activeCount={spareRequestFilters.activeCount}
+            onToggle={spareRequestFilters.toggle}
+            onClear={spareRequestFilters.clear}
+          />
+        )}
         <div className="columns-anchor">
           <button type="button" className="toolbar-button" onClick={() => setColumnsOpen((value) => !value)}>⚙ Fields</button>
           {columnsOpen && (
@@ -600,13 +836,13 @@ export default function App() {
       <section className="workspace">
         {dashboard?.workspace === "spare-requests" ? (
           dashboard.view === "eligible" ? <SparePartsGrid
-            rows={dashboard.eligibleParts}
+            rows={eligiblePartFilters.filteredRows}
             columns={visibleColumns}
             selectedRowId={selectedRowId}
             onSelect={(row) => { selectSparePart(row); openSpareExport(row.ticketId, row); }}
             onCloseDetail={closeDetail}
           /> : <SpareRequestsGrid
-            rows={dashboard.spareRequests}
+            rows={spareRequestFilters.filteredRows}
             columns={visibleColumns}
             selectedRowId={selectedRowId}
             onSelect={selectSpareRequest}
@@ -614,7 +850,7 @@ export default function App() {
           />
         ) : (
           <TicketGrid
-            tickets={dashboard?.workspace === "service-requests" ? dashboard.tickets : []}
+            tickets={serviceFilters.filteredRows}
             columns={visibleColumns}
             selectedId={selectedTicketId}
             onSelect={selectServiceRequest}
@@ -643,13 +879,14 @@ export default function App() {
       </section>
       <footer className="command-strip">
         <span>↑↓ Select</span>
+        <span>←→ Detail tab</span>
         <span>Wheel Scroll List</span>
         <span>Click/Enter Open</span>
         <span>Ctrl+F Search</span>
         <span>S Sort</span>
         <span>M Operations</span>
-        <span>R Query</span>
-        <span className="footer-state">{activeJob ? activeJob.message : `${workspaceConfig.label} · Local · ${bootstrap?.polling.intervalMinutes ?? 15} min query`}</span>
+        <span>R Check source</span>
+        <span className="footer-state">{activeJob ? activeJob.message : `${draftCount ? `${draftCount} protected draft(s) · ` : ""}${workspaceConfig.label} · Local database · ${bootstrap?.polling.intervalMinutes ?? 15} min Advanced Search check`}</span>
       </footer>
       {operationsOpen && (
         <OperationsModal
