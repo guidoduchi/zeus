@@ -1,0 +1,4 @@
+subject,timestamp,direction,message_id,conversation_id
+RE: Service Request 12345678,2026-08-01 09:15:00,inbound,example-message-1,example-thread-1
+RE: Service Request 12345678,2026-08-01 11:40:00,outbound,example-message-2,example-thread-1
+

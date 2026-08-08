@@ -1,0 +1,224 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import { TicketDetail } from "../components/TicketDetail";
+import type { TicketDetail as TicketDetailType } from "../types";
+import styles from "../styles.css?raw";
+
+const detail: TicketDetailType = {
+  ticketId: "12345678",
+  revision: "revision",
+  lifecycle: "active",
+  done: "N",
+  plannedDate: "Unplanned",
+  plannedDays: null,
+  plannedState: "unplanned",
+  plannedColor: "yellow",
+  ticketAgeDays: 10,
+  ticketAgeColor: null,
+  emailInactivityDays: 2,
+  emailLabel: "2 days",
+  emailCount: 1,
+  emailColor: null,
+  lastEmailDirection: "received",
+  received: 1,
+  sent: 0,
+  summary: "A compact detail",
+  severity: "Minor",
+  product: "Product",
+  handler: "Handler",
+  status: "Working",
+  resolveBy: "2026-08-20",
+  resolveDays: 13,
+  site: "GYE",
+  cloud: "Cloud",
+  model: "Model",
+  device: "Device",
+  risk: "none",
+  upstreamFields: { "Problem Summary": "A compact detail", "Customer Severity": "Minor" },
+  localFields: { "Planned Date": null, Site: "GYE", Cloud: null, Model: null, Device: null, Slot: null, Part: null, BOM: null, "Old SN": null, "New SN": null, RelatedSR: null, Notes: "", Spare: null, "Done?": "N" },
+  spareParts: [],
+  email: {
+    totalReceived: 1,
+    totalSent: 0,
+    lastActivityAt: "2026-08-05",
+    lastFetchedAt: "2026-08-06",
+    lastSynchronizedAt: "2026-08-06",
+    messages: [{
+      messageKey: "message-1",
+      timestamp: "2026-08-05",
+      direction: "received",
+      subject: "<script>alert('subject')</script>",
+      sender: "sender@example.invalid",
+      body: "<img src=x onerror=alert(1)> full history",
+      latestReplyBody: "<b>new reply</b>",
+      quotedHistoryHidden: true,
+      quotedHistoryLines: 10,
+    }],
+  },
+  mop: { latest: null, versions: 0 },
+  lifecycleDetails: { status: "active" },
+  updatedAt: "2026-08-06",
+  history: [],
+  mops: [],
+  readOnly: false,
+  source: "current",
+};
+
+describe("TicketDetail", () => {
+  it("opens directly in the Spare Parts editor from that management view", () => {
+    render(
+      <TicketDetail
+        ticket={detail}
+        loading={false}
+        initialTab="spares"
+        templates={[]}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        onGenerateMop={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /add damaged device/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /^Spare Parts/ })).toHaveClass("active");
+  });
+
+  it("renders email content as escaped plain text and toggles full history", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} />,
+    );
+    await user.click(screen.getByRole("button", { name: /emails/i }));
+    expect(container.querySelector(".detail-scroll")).toHaveClass("email-detail-scroll");
+    expect(styles).toMatch(/\.detail-scroll\.email-detail-scroll\s*\{[^}]*overflow:\s*hidden/s);
+    expect(styles).toMatch(/\.email-layout\s*\{[^}]*height:\s*100%[^}]*overflow:\s*hidden/s);
+    expect(styles).toMatch(/\.email-reader\s*\{[^}]*overflow:\s*hidden/s);
+    expect(screen.getByText("<b>new reply</b>")).toBeInTheDocument();
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /full thread/i }));
+    expect(screen.getByText(/<img src=x onerror=alert\(1\)> full history/)).toBeInTheDocument();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("saves only changed Pendings-owned fields", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={onSave} onGenerateMop={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /work fields/i }));
+    const notes = screen.getByLabelText("Notes");
+    await user.type(notes, "Web note");
+    await user.click(screen.getByRole("button", { name: /save through pendings/i }));
+    expect(onSave).toHaveBeenCalledWith("12345678", "revision", { Notes: "Web note" });
+  });
+
+  it("uses a calendar date without exposing the export-only Spare field", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={onSave} onGenerateMop={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /work fields/i }));
+
+    const planned = screen.getByLabelText("Planned Date");
+    expect(planned).toHaveAttribute("type", "date");
+    expect(planned).toHaveValue("");
+    expect(screen.queryByLabelText("Spare")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("BOM")).not.toBeInTheDocument();
+    fireEvent.change(planned, { target: { value: "2026-08-21" } });
+    await user.click(screen.getByRole("button", { name: /save through pendings/i }));
+
+    expect(onSave).toHaveBeenCalledWith("12345678", "revision", {
+      "Planned Date": "2026-08-21",
+    });
+    expect(onSave.mock.calls[0][2]).not.toHaveProperty("Spare");
+  });
+
+  it("edits multiple devices and multiple damaged parts as one hierarchy", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={onSave} onGenerateMop={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /spare parts/i }));
+
+    expect(screen.queryByLabelText("Spare")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /add damaged device/i }));
+    await user.type(screen.getByLabelText("Device 1 name"), "server-a");
+    await user.type(screen.getByLabelText("Device 1 model"), "2288H V5");
+    await user.type(screen.getByLabelText("Device 1 part 1 Slot"), "Slot 1");
+    await user.type(screen.getByLabelText("Device 1 part 1 Part"), "Disk");
+    await user.type(screen.getByLabelText("Device 1 part 1 BOM (part number)"), "BOM-1");
+    await user.type(screen.getByLabelText("Device 1 part 1 Faulty SN"), "OLD-1");
+    await user.click(screen.getByRole("button", { name: /add damaged part/i }));
+    await user.type(screen.getByLabelText("Device 1 part 2 Slot"), "Slot 2");
+    await user.type(screen.getByLabelText("Device 1 part 2 BOM (part number)"), "BOM-2");
+    await user.click(screen.getByRole("button", { name: /add damaged device/i }));
+    await user.type(screen.getByLabelText("Device 2 name"), "server-b");
+    await user.type(screen.getByLabelText("Device 2 part 1 Part"), "Memory");
+    await user.type(screen.getByLabelText("Device 2 part 1 New SN"), "NEW-3");
+    await user.click(screen.getByRole("button", { name: /save through pendings/i }));
+
+    expect(onSave).toHaveBeenCalledWith("12345678", "revision", {
+      "Spare Parts": [
+        {
+          device: "server-a",
+          model: "2288H V5",
+          parts: [
+            { slot: "Slot 1", part: "Disk", bom: "BOM-1", faulty_sn: "OLD-1", new_sn: null },
+            { slot: "Slot 2", part: null, bom: "BOM-2", faulty_sn: null, new_sn: null },
+          ],
+        },
+        {
+          device: "server-b",
+          model: null,
+          parts: [{ slot: null, part: "Memory", bom: null, faulty_sn: null, new_sn: "NEW-3" }],
+        },
+      ],
+    });
+  });
+
+  it("keeps edit actions in a fixed row outside the scrolling fields", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /work fields/i }));
+    expect(container.querySelector(".detail-scroll")).toHaveClass("bounded-edit-scroll");
+    expect(container.querySelector(".edit-actions")?.parentElement).toHaveClass("bounded-edit-tab");
+    expect(styles).toMatch(/\.bounded-edit-tab\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto[^}]*overflow:\s*hidden/s);
+    expect(styles).toMatch(/\.detail-scroll\.bounded-edit-scroll\s*\{[^}]*overflow:\s*hidden/s);
+    expect(styles).not.toMatch(/\.sticky-actions/);
+  });
+
+  it("shows finalized spare parts under their SR without edit controls", () => {
+    const archived: TicketDetailType = {
+      ...detail,
+      lifecycle: "closed",
+      readOnly: true,
+      source: "closed",
+      spareParts: [{
+        device: "server-closed",
+        model: "2288H V5",
+        parts: [{
+          slot: "Slot 3",
+          part: "Disk",
+          bom: "BOM-CLOSED",
+          faulty_sn: "FAULTY-CLOSED",
+          new_sn: null,
+        }],
+      }],
+    };
+    render(
+      <TicketDetail
+        ticket={archived}
+        loading={false}
+        initialTab="spares"
+        templates={[]}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        onGenerateMop={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Closed · read-only")).toBeVisible();
+    expect(screen.getByText(/remain assigned to this SR/i)).toBeVisible();
+    expect(screen.getByLabelText("Device 1 part 1 BOM (part number)")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Save through Pendings/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Add damaged part/ })).not.toBeInTheDocument();
+  });
+});
