@@ -13,10 +13,24 @@ from ..config import (
 )
 from ..excel_import import find_latest_advanced_search
 from ..store import ZeusStore
+from ..storage_migration import storage_status
 from .errors import ValidationError
 
 
 def _path_status(store: ZeusStore, key: str, value: Any) -> dict[str, Any]:
+    if key == "data_directory":
+        status = storage_status(store)
+        return {
+            "configured": True,
+            "exists": store.root.is_dir(),
+            "path": str(store.root),
+            "message": (
+                "Low space — move the data folder"
+                if status["lowSpace"]
+                else f"{status['freeBytes'] // (1024 * 1024)} MiB available"
+            ),
+            **status,
+        }
     if not value:
         return {"configured": False, "exists": False, "message": "Not configured"}
     path = store.configured_directory(key)
@@ -75,7 +89,7 @@ def settings_payload(store: ZeusStore) -> dict[str, Any]:
     config = store.config
     items: list[dict[str, Any]] = []
     for spec in SETTING_SPECS:
-        value = get_dotted(config, spec.key)
+        value = str(store.root) if spec.key == "paths.data_directory" else get_dotted(config, spec.key)
         item = {
             "key": spec.key,
             "label": spec.label,

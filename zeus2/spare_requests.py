@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any, Iterable, TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from .utils import atomic_write_json, iso_now, json_dumps, load_json, parse_datetime
+from .reference_data import ReferenceDataError, derive_client_initials
+from .utils import iso_now, json_dumps, parse_datetime
 
 if TYPE_CHECKING:
     from .store import ZeusStore
@@ -23,10 +24,6 @@ SPARE_SR_PATTERN = re.compile(r"\bSR\s*[:#-]?\s*(\d{7})(?!\d)", re.IGNORECASE)
 RMA_PATTERN = re.compile(r"\b(C\d{10})\b", re.IGNORECASE)
 REQUEST_ID_PATTERN = re.compile(r"(?<!\d)(\d{12})(?!\d)")
 INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-
-REQUEST_PROFILE_FILENAME = "spare_request_profiles.json"
-BOM_CATALOG_FILENAME = "spare_request_boms.json"
-
 
 class SpareRequestError(ValueError):
     pass
@@ -104,19 +101,68 @@ def _profile_contact(value: Any, label: str) -> dict[str, str | None]:
 
 def normalize_profile(value: Any) -> dict[str, Any]:
     candidate = value if isinstance(value, dict) else {}
-    initials = re.sub(r"[^A-Za-z0-9]", "", str(candidate.get("clientInitials") or "")).upper()
+    contact = _profile_contact(candidate.get("contact"), "Customer contact")
+    supplied_initials = candidate.get("clientInitials", candidate.get("client_initials"))
+    try:
+        guessed_initials = derive_client_initials(contact["name"])
+    except ReferenceDataError as exc:
+        raise SpareRequestError(str(exc)) from exc
+    initials = re.sub(r"[^A-Za-z0-9]", "", str(supplied_initials or guessed_initials)).upper()
     if not 1 <= len(initials) <= 8:
         raise SpareRequestError("Client initials must contain 1 to 8 letters or digits")
+    organization = _required_text(
+        candidate.get("customerOrganization")
+        or candidate.get("customer_organization")
+        or candidate.get("customerOrg")
+        or candidate.get("customerName")
+        or candidate.get("customer_name"),
+        "Customer organization",
+        maximum=300,
+    )
     return {
         "client_initials": initials,
-        "customer_name": _required_text(candidate.get("customerName"), "Customer name"),
+        # ``customer_name`` remains as a compatibility alias for existing
+        # Markdown/Closed.xlsx readers; it now consistently means the org.
+        "customer_name": organization,
+        "customer_organization": organization,
         "site_code": _required_text(candidate.get("siteCode"), "Site code", maximum=40).upper(),
         "site_name": _optional_text(candidate.get("siteName"), maximum=160),
         "site_address": _required_text(candidate.get("siteAddress"), "Site address", maximum=1000),
         "cloud": _required_text(candidate.get("cloud"), "Cloud", maximum=120),
         "requester": _profile_contact(candidate.get("requester"), "Requester"),
-        "contact": _profile_contact(candidate.get("contact"), "Customer contact"),
+        "contact": contact,
     }
+
+
+def _faulty_serials(raw: dict[str, Any], index: int) -> list[str]:
+    supplied = raw.get("faultySns", raw.get("faulty_sns"))
+    if supplied is None:
+        supplied = raw.get("faultySn", raw.get("faulty_sn"))
+    if supplied is None:
+        return []
+    if isinstance(supplied, list):
+        candidates = supplied
+    else:
+        # Faulty serials are deliberately newline-delimited. Commas and
+        # semicolons can be legitimate characters and are never separators.
+        candidates = re.split(r"\r?\n", str(supplied))
+    serials: list[str] = []
+    seen: set[str] = set()
+    for raw_serial in candidates:
+        serial = str(raw_serial).strip()
+        if not serial:
+            continue
+        if len(serial) > 120:
+            raise SpareRequestError(
+                f"Request line {index} faulty serials cannot exceed 120 characters each"
+            )
+        key = serial.casefold()
+        if key not in seen:
+            seen.add(key)
+            serials.append(serial)
+    if len(serials) > 1000:
+        raise SpareRequestError(f"Request line {index} cannot contain more than 1000 faulty serials")
+    return serials
 
 
 def normalize_request_lines(value: Any) -> list[dict[str, Any]]:
@@ -149,6 +195,7 @@ def normalize_request_lines(value: Any) -> list[dict[str, Any]]:
             f"Request line {index} description",
             maximum=1000,
         )
+        faulty_sns = _faulty_serials(raw, index)
         lines.append(
             {
                 "bom": bom,
@@ -158,7 +205,8 @@ def normalize_request_lines(value: Any) -> list[dict[str, Any]]:
                 "model": _optional_text(raw.get("model"), maximum=300),
                 "device": _optional_text(raw.get("device"), maximum=300),
                 "slot": _optional_text(raw.get("slot"), maximum=300),
-                "faulty_sn": _optional_text(raw.get("faultySn") or raw.get("faulty_sn"), maximum=300),
+                "faulty_sns": faulty_sns,
+                "faulty_sn": "\n".join(faulty_sns) or None,
                 "report_date": _optional_text(raw.get("reportDate") or raw.get("report_date"), maximum=100),
                 "source_device_number": raw.get("deviceNumber"),
                 "source_part_number": raw.get("partNumber"),
@@ -239,6 +287,10 @@ def _new_item(request_id: str, ordinal: int, line: dict[str, Any]) -> dict[str, 
         "model": line.get("model"),
         "device": line.get("device"),
         "slot": line.get("slot"),
+        # Fault evidence is independent of requested quantity. Keeping the
+        # complete group on each unit prevents loss when units archive at
+        # different times, without pretending a serial maps to one RMA.
+        "faulty_sns": deepcopy(line.get("faulty_sns") or []),
         "faulty_sn": line.get("faulty_sn"),
         "report_date": line.get("report_date"),
         "source_device_number": line.get("source_device_number"),
@@ -530,73 +582,6 @@ def validate_request_record(request: dict[str, Any], directory_name: str | None 
     email = request.get("email", {})
     if not isinstance(email.get("messages", []), list):
         raise SpareRequestError(f"Spare Request {request_id} has invalid email messages")
-
-
-def profiles_path(config_home: Path) -> Path:
-    return config_home / REQUEST_PROFILE_FILENAME
-
-
-def bom_catalog_path(config_home: Path) -> Path:
-    return config_home / BOM_CATALOG_FILENAME
-
-
-def load_reference_data(config_home: Path) -> dict[str, Any]:
-    profiles = load_json(
-        profiles_path(config_home),
-        {"schema_version": 1, "customers": [], "sites": [], "requesters": []},
-    )
-    boms = load_json(
-        bom_catalog_path(config_home),
-        {"schema_version": 1, "boms": []},
-    )
-    if not isinstance(profiles, dict) or not isinstance(boms, dict):
-        raise SpareRequestError("Spare-request reference data is invalid")
-    return {
-        "schemaVersion": 1,
-        "customers": deepcopy(profiles.get("customers") or []),
-        "sites": deepcopy(profiles.get("sites") or []),
-        "requesters": deepcopy(profiles.get("requesters") or []),
-        "boms": deepcopy(boms.get("boms") or []),
-    }
-
-
-def _validate_reference_list(values: Any, label: str) -> list[dict[str, Any]]:
-    if not isinstance(values, list):
-        raise SpareRequestError(f"{label} must be a list")
-    result: list[dict[str, Any]] = []
-    identifiers: set[str] = set()
-    for index, value in enumerate(values, start=1):
-        if not isinstance(value, dict):
-            raise SpareRequestError(f"{label} row {index} must be an object")
-        identifier = _required_text(value.get("id"), f"{label} row {index} ID", maximum=100)
-        if identifier in identifiers:
-            raise SpareRequestError(f"{label} contains duplicate ID {identifier}")
-        identifiers.add(identifier)
-        result.append(deepcopy(value))
-    return result
-
-
-def save_reference_data(config_home: Path, value: Any) -> dict[str, Any]:
-    candidate = value if isinstance(value, dict) else {}
-    customers = _validate_reference_list(candidate.get("customers", []), "Customers")
-    sites = _validate_reference_list(candidate.get("sites", []), "Sites")
-    requesters = _validate_reference_list(candidate.get("requesters", []), "Requesters")
-    boms = _validate_reference_list(candidate.get("boms", []), "BOM catalog")
-    config_home.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(
-        profiles_path(config_home),
-        {
-            "schema_version": 1,
-            "customers": customers,
-            "sites": sites,
-            "requesters": requesters,
-        },
-    )
-    atomic_write_json(
-        bom_catalog_path(config_home),
-        {"schema_version": 1, "boms": boms},
-    )
-    return load_reference_data(config_home)
 
 
 def request_history(request: dict[str, Any], action: str, summary: dict[str, Any]) -> None:

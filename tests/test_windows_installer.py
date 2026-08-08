@@ -119,12 +119,12 @@ class WindowsLauncherRegressionTests(unittest.TestCase):
         self.assertNotIn("taskkill", script.lower())
         self.assertNotIn("python.exe /f", script.lower())
 
-    def test_release_version_is_3_1_1_everywhere(self) -> None:
+    def test_release_version_is_3_1_2_everywhere(self) -> None:
         project = tomllib.loads(PROJECT_FILE.read_text(encoding="utf-8"))
-        self.assertEqual(project["project"]["version"], "3.1.1")
+        self.assertEqual(project["project"]["version"], "3.1.2")
         self.assertEqual(project["project"]["scripts"]["zeus"], "zeus2.main:main")
-        self.assertIn('__version__ = "3.1.1"', VERSION_FILE.read_text(encoding="utf-8"))
-        self.assertIn("Zeus 3.1.1", SETUP_SCRIPT.read_text(encoding="utf-8"))
+        self.assertIn('__version__ = "3.1.2"', VERSION_FILE.read_text(encoding="utf-8"))
+        self.assertIn("Zeus 3.1.2", SETUP_SCRIPT.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

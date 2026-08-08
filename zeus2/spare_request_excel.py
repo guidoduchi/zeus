@@ -213,7 +213,11 @@ def _populate_request_sheet(worksheet: Any, request: dict[str, Any]) -> None:
     profile = request.get("profile", {})
     requester = profile.get("requester", {})
     contact = profile.get("contact", {})
-    _set_merged_value(worksheet, "G2", profile.get("customer_name"))
+    _set_merged_value(
+        worksheet,
+        "G2",
+        profile.get("customer_organization") or profile.get("customer_name"),
+    )
     _set_merged_value(worksheet, "J2", requester.get("name"))
     _set_merged_value(worksheet, "G4", _request_applied_date(request))
     worksheet["G4"].number_format = "yyyy-mm-dd"
@@ -244,19 +248,52 @@ def _populate_request_sheet(worksheet: Any, request: dict[str, Any]) -> None:
         worksheet.cell(row, 2).value = line.get("bom")
         worksheet.cell(row, 3).value = int(line.get("amount") or 1)
         worksheet.cell(row, 4).value = request_description(line)
-        worksheet.cell(row, 6).value = line.get("faulty_sn")
+        serials = list(line.get("faulty_sns") or [])
+        if not serials and line.get("faulty_sn"):
+            serials = [
+                value.strip()
+                for value in re.split(r"\r?\n", str(line.get("faulty_sn")))
+                if value.strip()
+            ]
+        serial_cell = worksheet.cell(row, 6)
+        serial_cell.value = "\n".join(serials) or None
+        alignment = copy(serial_cell.alignment)
+        alignment.wrap_text = True
+        serial_cell.alignment = alignment
+
+
+def _faulty_tag_rows(request: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expand fault evidence independently from requested spare quantity."""
+
+    rows: list[dict[str, Any]] = []
+    for line in request.get("request_lines") or []:
+        serials = list(line.get("faulty_sns") or [])
+        if not serials and line.get("faulty_sn"):
+            serials = [
+                value.strip()
+                for value in re.split(r"\r?\n", str(line.get("faulty_sn")))
+                if value.strip()
+            ]
+        row_count = max(1, int(line.get("amount") or 1), len(serials))
+        for index in range(row_count):
+            rows.append({**line, "faulty_sn": serials[index] if index < len(serials) else None})
+    return rows
 
 
 def _populate_faulty_tag_sheet(worksheet: Any, request: dict[str, Any]) -> None:
     profile = request.get("profile", {})
     requester = profile.get("requester", {})
-    _set_merged_value(worksheet, "G2", profile.get("customer_name"))
+    _set_merged_value(
+        worksheet,
+        "G2",
+        profile.get("customer_organization") or profile.get("customer_name"),
+    )
     _set_merged_value(worksheet, "K2", request.get("spare_sr"))
     _set_merged_value(worksheet, "G4", requester.get("name"))
     _set_merged_value(worksheet, "K4", requester.get("phone"))
     _set_merged_value(worksheet, "G6", requester.get("email"))
     _set_merged_value(worksheet, "K6", request.get("tt"))
-    items = list(request.get("items") or [])
+    rows = _faulty_tag_rows(request)
     # The supplied first item row contains broken #REF! formulas. Match the
     # valid row-14 formatting, then write every item as a direct value.
     _copy_two_row_block(worksheet, 14, 12)
@@ -264,26 +301,22 @@ def _populate_faulty_tag_sheet(worksheet: Any, request: dict[str, Any]) -> None:
         worksheet,
         first_row=12,
         existing_blocks=5,
-        required_blocks=len(items),
+        required_blocks=len(rows),
         insert_at=22,
         style_source_row=20,
     )
-    for index in range(max(5, len(items))):
+    for index in range(max(5, len(rows))):
         row = 12 + index * 2
         for column in (2, 4, 6, 7, 8, 9, 10, 12, 13):
             worksheet.cell(row, column).value = None
-    for index, item in enumerate(items):
+    for index, item in enumerate(rows):
         row = 12 + index * 2
-        worksheet.cell(row, 2).value = item.get("requested_bom")
-        worksheet.cell(row, 4).value = request_description(
-            {
-                "description": item.get("requested_description"),
-                "part": item.get("part"),
-                "model": item.get("model"),
-                "device": item.get("device"),
-                "slot": item.get("slot"),
-            }
-        )
+        worksheet.cell(row, 2).value = item.get("bom")
+        description_cell = worksheet.cell(row, 4)
+        description_cell.value = request_description(item)
+        description_alignment = copy(description_cell.alignment)
+        description_alignment.wrap_text = True
+        description_cell.alignment = description_alignment
         worksheet.cell(row, 6).value = item.get("faulty_sn")
         worksheet.cell(row, 7).value = profile.get("site_code")
         fault_date = _excel_date(item.get("report_date"))

@@ -35,6 +35,7 @@ from zeus2.excel_export import (
 )
 from zeus2.excel_import import WorkbookValidationError, read_pendings
 from zeus2.main import _restart_command
+from zeus2.reference_data import save_user_profile, user_profile_path
 from zeus2.startup import run_startup
 from zeus2.store import ZeusStore
 from zeus2.tickets import PENDING_COLUMNS
@@ -928,6 +929,15 @@ class ApplicationServiceContractTests(WebFixture):
 class WebServerTests(WebFixture):
     def setUp(self) -> None:
         super().setUp()
+        save_user_profile(
+            self.store.root,
+            {
+                "name": "Zeus Test User",
+                "email": "zeus.user@example.com",
+                "phone": "+593 99 000 0000",
+                "username": "zeus-user",
+            },
+        )
         self.seed_pendings_only()
         run_startup(self.store)
         self.service = ApplicationService(self.store)
@@ -968,6 +978,45 @@ class WebServerTests(WebFixture):
         self.assertEqual(dashboard["stats"]["active"], 1)  # type: ignore[index]
         self.assertEqual(index["instanceId"], "test-instance")
         self.assertEqual(audit_before, audit_after)
+
+    def test_first_run_requires_profile_then_unlocks_the_workbench(self) -> None:
+        user_profile_path(self.store.root).unlink()
+        status, bootstrap, _ = self.read_json("/api/bootstrap")
+        self.assertEqual(status, 200)
+        self.assertTrue(bootstrap["onboarding"]["required"])
+
+        status, blocked, _ = self.read_json("/api/dashboard?sort=report&search=")
+        self.assertEqual(status, 428)
+        self.assertEqual(blocked["error"]["code"], "setup_required")
+
+        request = urllib.request.Request(
+            self.url + "/api/profile",
+            data=json.dumps(
+                {
+                    "profile": {
+                        "name": "First Run User",
+                        "email": "first.run@example.com",
+                        "phone": "+593 98 765 4321",
+                        "username": "first-run",
+                        "photoDataUrl": None,
+                    }
+                }
+            ).encode("utf-8"),
+            method="PATCH",
+            headers={
+                "Content-Type": "application/json",
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            saved = json.loads(response.read())
+        self.assertTrue(saved["complete"])
+        self.assertEqual(saved["profile"]["name"], "First Run User")
+        self.assertNotIn("password", saved["profile"])
+
+        status, dashboard, _ = self.read_json("/api/dashboard?sort=report&search=")
+        self.assertEqual(status, 200)
+        self.assertEqual(dashboard["stats"]["active"], 1)
 
     def test_spare_requests_workspace_is_available_without_mutating_sources(self) -> None:
         audit_before = self.store.audit_file.read_text(encoding="utf-8")

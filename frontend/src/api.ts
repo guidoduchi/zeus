@@ -2,6 +2,8 @@ import type {
   ApiErrorShape,
   BootstrapPayload,
   DashboardPayload,
+  BomCatalogPayload,
+  GlobalReferenceData,
   Job,
   SpareReferenceData,
   SpareRequestDetail,
@@ -9,6 +11,8 @@ import type {
   SpareRequestView,
   SettingsPayload,
   TicketDetail,
+  UserProfile,
+  UserProfilePayload,
   WorkspaceKey,
 } from "./types";
 
@@ -49,6 +53,52 @@ export async function getBootstrap(): Promise<BootstrapPayload> {
   const payload = await request<BootstrapPayload>("/api/bootstrap");
   csrfToken = payload.csrfToken;
   return payload;
+}
+
+export function getUserProfile(): Promise<UserProfilePayload> {
+  return request<UserProfilePayload>("/api/profile");
+}
+
+export function saveUserProfile(profile: UserProfile): Promise<UserProfilePayload> {
+  return request<UserProfilePayload>("/api/profile", {
+    method: "PATCH",
+    body: JSON.stringify({ profile }),
+  });
+}
+
+export function getGlobalReferenceData(): Promise<GlobalReferenceData> {
+  return request<GlobalReferenceData>("/api/global-data");
+}
+
+export function saveGlobalReferenceData(value: GlobalReferenceData): Promise<GlobalReferenceData> {
+  return request<GlobalReferenceData>("/api/global-data", {
+    method: "PATCH",
+    body: JSON.stringify({ value }),
+  });
+}
+
+export function importCustomerFromTicket(ticketId: string): Promise<{
+  data: GlobalReferenceData;
+  organizationId: string;
+  customerId: string;
+  createdOrganization: boolean;
+  createdCustomer: boolean;
+}> {
+  return request("/api/global-data/import-customer", {
+    method: "POST",
+    body: JSON.stringify({ ticketId }),
+  });
+}
+
+export function getBomCatalog(): Promise<BomCatalogPayload> {
+  return request<BomCatalogPayload>("/api/spare-requests/bom-catalog");
+}
+
+export function saveBomCatalog(value: BomCatalogPayload): Promise<BomCatalogPayload> {
+  return request<BomCatalogPayload>("/api/spare-requests/bom-catalog", {
+    method: "PATCH",
+    body: JSON.stringify({ value }),
+  });
 }
 
 export function getDashboard(
@@ -196,6 +246,23 @@ export function saveSettings(updates: Record<string, unknown>): Promise<Settings
     method: "PATCH",
     body: JSON.stringify({ updates }),
   });
+}
+
+export function migrateDataDirectory(destination: string): Promise<{
+  restartRequired: boolean;
+  oldPath: string;
+  newPath: string;
+  bytesCopied: number;
+  freeBytesAfterCopy: number;
+}> {
+  return request("/api/storage/migrate", {
+    method: "POST",
+    body: JSON.stringify({ destination }),
+  });
+}
+
+export function restartZeus(): Promise<{ restarting: boolean }> {
+  return request("/api/system/restart", { method: "POST", body: "{}" });
 }
 
 export function startJob(kind: string, payload: Record<string, unknown> = {}): Promise<{ job: Job }> {

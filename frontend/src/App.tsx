@@ -9,15 +9,18 @@ import {
   getTemplates,
   getTicket,
   purgeSpareArchive,
+  saveUserProfile,
   saveTicket,
   startJob,
 } from "./api";
+import { BomCatalogModal } from "./components/BomCatalogModal";
 import { ColumnChooser } from "./components/ColumnChooser";
+import { GlobalDataModal } from "./components/GlobalDataModal";
 import { JobBanner } from "./components/JobBanner";
 import { NoticeStrip } from "./components/NoticeStrip";
 import { OperationsModal } from "./components/OperationsModal";
+import { ProfileSetup } from "./components/ProfileSetup";
 import { SettingsModal } from "./components/SettingsModal";
-import { SpareManagersModal } from "./components/SpareManagersModal";
 import { SparePartsGrid } from "./components/SparePartsGrid";
 import { SpareRequestDetail } from "./components/SpareRequestDetail";
 import { SpareRequestModal } from "./components/SpareRequestModal";
@@ -37,6 +40,7 @@ import type {
   SpareRequestItemSummary,
   SpareRequestView,
   TicketDetail as TicketDetailType,
+  UserProfile,
   WorkspaceKey,
 } from "./types";
 
@@ -150,7 +154,8 @@ export default function App() {
   const [operationsOpen, setOperationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [spareExportOpen, setSpareExportOpen] = useState(false);
-  const [spareManagersOpen, setSpareManagersOpen] = useState(false);
+  const [globalDataOpen, setGlobalDataOpen] = useState(false);
+  const [bomCatalogOpen, setBomCatalogOpen] = useState(false);
   const [spareExportTicketId, setSpareExportTicketId] = useState<string | undefined>();
   const [spareExportPart, setSpareExportPart] = useState<SparePartSummary | null>(null);
   const [columnsOpen, setColumnsOpen] = useState(false);
@@ -231,12 +236,18 @@ export default function App() {
   }, [reportError]);
 
   useEffect(() => {
-    Promise.all([loadBootstrap(), loadDashboard(), getTemplates()])
-      .then(([, , templateResult]) => setTemplates(templateResult.templates))
-      .catch(reportError);
+    loadBootstrap().catch(reportError);
   }, []); // initial connection only
 
   useEffect(() => {
+    if (!bootstrap || bootstrap.onboarding.required) return;
+    getTemplates()
+      .then((result) => setTemplates(result.templates))
+      .catch(reportError);
+  }, [bootstrap?.onboarding.required, bootstrap?.instanceId, reportError]);
+
+  useEffect(() => {
+    if (!bootstrap || bootstrap.onboarding.required) return;
     const timer = window.setTimeout(
       () => loadDashboard(workspace, sort, direction, search, spareView).catch(reportError),
       140,
@@ -247,7 +258,7 @@ export default function App() {
     localStorage.setItem(workspacePreferenceKey(workspace, "search"), search);
     localStorage.setItem("zeus3.spare-requests.view", spareView);
     return () => window.clearTimeout(timer);
-  }, [direction, loadDashboard, reportError, search, sort, spareView, workspace]);
+  }, [bootstrap?.onboarding.required, bootstrap?.instanceId, direction, loadDashboard, reportError, search, sort, spareView, workspace]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -255,7 +266,7 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (!bootstrap) return;
+    if (!bootstrap || bootstrap.onboarding.required) return;
     const source = new EventSource(`/api/events?after=${bootstrap.eventSequence}`);
     function receive(raw: Event) {
       const event = raw as MessageEvent<string>;
@@ -281,7 +292,7 @@ export default function App() {
     source.addEventListener("dataset", receive);
     source.addEventListener("configuration", receive);
     return () => source.close();
-  }, [bootstrap?.instanceId, loadBootstrap, loadDashboard, loadSpareRequest, loadTicket, reportError, selectedRequestId, selectedTicketId]);
+  }, [bootstrap?.instanceId, bootstrap?.onboarding.required, loadBootstrap, loadDashboard, loadSpareRequest, loadTicket, reportError, selectedRequestId, selectedTicketId]);
 
   useEffect(() => {
     if (!selectedTicketId) {
@@ -426,10 +437,34 @@ export default function App() {
   }, [spareView]);
 
   const openSpareExport = useCallback((ticketId?: string, part: SparePartSummary | null = null) => {
+    if (bootstrap && !bootstrap.spareRequestExport.requestReady) {
+      const missing = bootstrap.spareRequestExport.requestMissing
+        .map((item) => item.label)
+        .join(" and ");
+      setToast({
+        tone: "info",
+        message: `Configure ${missing || "the Spare Request export paths"} before exporting.`,
+      });
+      setSettingsOpen(true);
+      return;
+    }
     setSpareExportTicketId(ticketId);
     setSpareExportPart(part);
     setSpareExportOpen(true);
-  }, []);
+  }, [bootstrap]);
+
+  const completeOnboarding = useCallback(async (profile: UserProfile) => {
+    await saveUserProfile(profile);
+    const next = await loadBootstrap();
+    if (!next.onboarding.required) {
+      const [templateResult] = await Promise.all([
+        getTemplates(),
+        loadDashboard(workspace, sort, direction, search, spareView),
+      ]);
+      setTemplates(templateResult.templates);
+      setToast({ tone: "success", message: "Profile saved locally. Welcome to Zeus." });
+    }
+  }, [direction, loadBootstrap, loadDashboard, search, sort, spareView, workspace]);
 
   const createSpareRequest = useCallback(async (payload: Record<string, unknown>) => {
     const result = await exportSpareRequest(payload);
@@ -458,7 +493,7 @@ export default function App() {
   }
 
   useGlobalCommands({
-    disabled: operationsOpen || settingsOpen || spareExportOpen || spareManagersOpen,
+    disabled: operationsOpen || settingsOpen || spareExportOpen || globalDataOpen || bomCatalogOpen || Boolean(bootstrap?.onboarding.required),
     queryDisabled: Boolean(activeJob),
     onSearch: () => searchRef.current?.focus(),
     onSort: cycleSort,
@@ -469,7 +504,7 @@ export default function App() {
   const warnings = bootstrap?.startup.warnings || [];
   const notices = bootstrap?.startup.notices || [];
 
-  if (!bootstrap && !dashboard) {
+  if (!bootstrap) {
     return (
       <main className="boot-screen">
         <span className="boot-bolt">ϟ</span>
@@ -479,14 +514,37 @@ export default function App() {
     );
   }
 
+  if (bootstrap.onboarding.required) {
+    return <>
+      <ProfileSetup
+        initial={bootstrap.onboarding.profile}
+        error={bootstrap.onboarding.error}
+        onSave={completeOnboarding}
+        onError={reportError}
+      />
+      {toast && <div className={`toast toast-${toast.tone}`} role="status"><span>{toast.message}</span><button type="button" onClick={() => setToast(null)}>×</button></div>}
+    </>;
+  }
+
+  if (!dashboard) {
+    return (
+      <main className="boot-screen">
+        <span className="boot-bolt">ϟ</span>
+        <h1>ZEUS 3</h1>
+        <p>Opening the local workbench…</p>
+      </main>
+    );
+  }
+
   return (
     <main className={`app-shell ${selectedTicketId || selectedRequestId ? "with-detail" : ""}`} data-workspace={workspace}>
       <TopBar
-        version={bootstrap?.version || "3.1.1"}
+        version={bootstrap.version || "3.1.2"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
         onWorkspaceChange={chooseWorkspace}
+        onData={() => setGlobalDataOpen(true)}
         onOperations={() => setOperationsOpen(true)}
         onSettings={() => setSettingsOpen(true)}
         onTheme={() => setTheme((current) => current === "dark" ? "light" : "dark")}
@@ -524,7 +582,7 @@ export default function App() {
           </select>
         </div>
         <button type="button" className="toolbar-button" onClick={queryData} disabled={Boolean(activeJob)}>↻ Query data</button>
-        {workspace === "spare-requests" && <><button type="button" className="toolbar-button" onClick={() => openSpareExport()}>+ Manual request</button><button type="button" className="toolbar-button" onClick={() => setSpareManagersOpen(true)}>Managers</button>{spareView === "completed" && <button type="button" className="toolbar-button danger-text" disabled={!selectedCompletedItem} onClick={purgeSelectedCompleted}>Purge selected</button>}</>}
+        {workspace === "spare-requests" && <><button type="button" className="toolbar-button" onClick={() => openSpareExport()}>+ Manual request</button><button type="button" className="toolbar-button" onClick={() => setBomCatalogOpen(true)}>BOM catalog</button>{spareView === "completed" && <button type="button" className="toolbar-button danger-text" disabled={!selectedCompletedItem} onClick={purgeSelectedCompleted}>Purge selected</button>}</>}
         <div className="columns-anchor">
           <button type="button" className="toolbar-button" onClick={() => setColumnsOpen((value) => !value)}>⚙ Fields</button>
           {columnsOpen && (
@@ -612,8 +670,9 @@ export default function App() {
           onError={reportError}
         />
       )}
-      {spareExportOpen && <SpareRequestModal initialTicketId={spareExportTicketId} initialPart={spareExportPart} onClose={() => setSpareExportOpen(false)} onExport={createSpareRequest} onError={reportError} />}
-      {spareManagersOpen && <SpareManagersModal onClose={() => setSpareManagersOpen(false)} onSaved={() => setToast({ tone: "success", message: "Local Spare Request managers saved." })} onError={reportError} />}
+      {spareExportOpen && <SpareRequestModal initialTicketId={spareExportTicketId} initialPart={spareExportPart} onClose={() => setSpareExportOpen(false)} onExport={createSpareRequest} onOpenSettings={() => { setSpareExportOpen(false); setSettingsOpen(true); }} onError={reportError} />}
+      {globalDataOpen && <GlobalDataModal onClose={() => setGlobalDataOpen(false)} onSaved={() => { loadBootstrap().catch(reportError); setToast({ tone: "success", message: "Global data saved locally." }); }} onError={reportError} />}
+      {bomCatalogOpen && <BomCatalogModal onClose={() => setBomCatalogOpen(false)} onSaved={() => setToast({ tone: "success", message: "BOM catalog saved locally." })} onError={reportError} />}
       {toast && <div className={`toast toast-${toast.tone}`} role="status"><span>{toast.message}</span><button type="button" onClick={() => setToast(null)}>×</button></div>}
     </main>
   );

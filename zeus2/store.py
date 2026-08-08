@@ -21,6 +21,7 @@ from .config import (
     resolve_path_setting,
     save_config,
 )
+from .reference_data import ensure_reference_layout
 from .spare_requests import (
     decode_request_record,
     normalize_request_id,
@@ -246,6 +247,7 @@ class ZeusStore:
         self.backups.mkdir(parents=True, exist_ok=True)
         self.audit_dir.mkdir(parents=True, exist_ok=True)
         ensure_config(self.config_home)
+        ensure_reference_layout(self.root, self.config_home)
         if create_current and not self.current.exists():
             self._create_empty_current(self.current)
         elif create_current:

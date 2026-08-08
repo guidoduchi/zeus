@@ -18,7 +18,13 @@ if str(PROJECT_ROOT) not in sys.path:
 from zeus2.config import save_config
 from zeus2.excel_export import publish_operational_workbooks
 from zeus2.main import main
-from zeus2.spare_request_excel import append_archived_item
+from zeus2.reference_data import save_user_profile
+from zeus2.spare_request_excel import (
+    FAULTY_TAG_SHEET,
+    REQUEST_SHEET,
+    RETURN_SHEET,
+    append_archived_item,
+)
 from zeus2.spare_requests import (
     create_request_record,
     normalize_profile,
@@ -69,14 +75,39 @@ def prepare_fixture(root: Path) -> Path:
     home = root / "home"
     workbooks = root / "workbooks"
     downloads = root / "downloads"
+    spare_exports = root / "spare-exports"
     workbooks.mkdir()
     downloads.mkdir()
+    spare_exports.mkdir()
     store = ZeusStore(home / "data", config_home=home)
     store.ensure_layout()
+    save_user_profile(
+        store.root,
+        {
+            "name": "Zeus Browser User",
+            "email": "browser.user@example.com",
+            "phone": "+593 99 000 0000",
+            "username": "browser-user",
+        },
+    )
     config = store.config
     config["paths"]["workbook_directory"] = str(workbooks)
     config["paths"]["advanced_search_directory"] = str(downloads)
     config["paths"]["outlook_store_path"] = None
+    request_template = root / "spare-request-template.xlsx"
+    request_book = Workbook()
+    request_book.active.title = REQUEST_SHEET
+    request_book.create_sheet(FAULTY_TAG_SHEET)
+    request_book.save(request_template)
+    request_book.close()
+    return_template = root / "spare-return-template.xlsx"
+    return_book = Workbook()
+    return_book.active.title = RETURN_SHEET
+    return_book.save(return_template)
+    return_book.close()
+    config["paths"]["spare_parts_export_directory"] = str(spare_exports)
+    config["paths"]["spare_request_template_path"] = str(request_template)
+    config["paths"]["spare_return_template_path"] = str(return_template)
     config["advanced_search"]["poll_interval_minutes"] = 0
     save_config(home, config)
 

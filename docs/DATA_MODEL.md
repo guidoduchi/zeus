@@ -11,6 +11,9 @@
 | `lifecycle` | Advanced Search reconciliation and verified publication |
 | `email` | optional Outlook staging and synchronization |
 | `mop` | MOP output generation |
+| `global/user_profile.json` | explicit local profile setup/edit |
+| `global/reference_data.json` | structured Global data manager |
+| `global/spare_request_boms.json` | Spare Requests BOM catalog |
 | `current/spare_requests/active` | explicit Spare Request export plus LASpare/iCare/manual lifecycle transactions |
 | Completed Spare Request rows/email | dedicated `Closed.xlsx` tabs; never copied back to active Markdown |
 
@@ -61,11 +64,29 @@ may seed multiple independent requests.
 The request ID is a unique Ecuador `YYMMDDHHmmss` allocated at initial XLSX
 export. One request carries one eight-digit TT, at most one `SR` plus seven-digit
 Spare SR, a profile snapshot, original BOM groups, and quantity-expanded unit
-items. Each unit item owns at most one immutable `C` plus ten-digit RMA. It
-stores requested and delivered BOM separately, plus optional faulty/new serials,
-attendance, dispatch, return export, warehouse candidate, conflicts, and audit
-history. Partial confirmation assigns available RMAs and leaves remaining units
-in Awaiting stock under the same request.
+items. Each group stores exactly one requested BOM, its multiplier, and zero or
+more newline-delimited faulty serials. Those serials are group-level evidence,
+not positional unit assignments: one whole-server BOM can retain the serials of
+several damaged internal parts. Each unit item owns at most one immutable `C`
+plus ten-digit RMA. It stores requested and delivered BOM separately, plus New
+SN, attendance, dispatch, return export, warehouse candidate, conflicts, and
+audit history. Partial confirmation assigns available RMAs and leaves remaining
+units in Awaiting stock under the same request.
+
+## Local profile and global reference data
+
+`global/user_profile.json` contains name, email, phone, optional username, and
+an optional compact image data URL. A valid profile is a startup precondition
+and is synthesized as the first pinned/current requester without duplicating it
+inside `reference_data.json`.
+
+`global/reference_data.json` contains customer organizations, customer
+contacts, independent sites, and additional requesters. Every contact stores a
+required organization ID. Requesters store their own contact details and a
+favorite/pinned flag. `global/spare_request_boms.json` is deliberately separate
+because it is managed from the Spare Requests workspace. Saved requests always
+retain a complete profile snapshot, so later manager edits cannot rewrite old
+exports.
 
 Outlook facts are applied in confirmation-before-dispatch order irrespective of
 message arrival. Existing contradictory TT, Spare SR, RMA, delivered BOM, or New
@@ -125,6 +146,15 @@ cells rather than free-form display text.
 
 Configuration contains user choices only. Runtime markers are never accepted
 from the configuration API.
+
+`paths.data_directory` is the one exception that generic setting edits cannot
+write. The dedicated move transaction clones and hashes the complete mutable
+root, records `data_migration.json` in the fixed application home, updates the
+pointer, and requests a soft restart. Startup revalidates the prepared clone and
+original. A verified clone becomes authoritative before original cleanup; a
+mismatch restores the previous pointer. Failed Windows cleanup is marked
+`cleanup_pending` and retried without ever rolling back to a partially deleted
+old tree.
 
 ## Transaction boundary
 

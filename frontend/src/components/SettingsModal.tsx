@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { browsePath, getSettings, openPath, saveSettings } from "../api";
+import { browsePath, getSettings, migrateDataDirectory, openPath, saveSettings } from "../api";
 import type { Setting, SettingsPayload } from "../types";
 import { Modal } from "./Modal";
 
@@ -28,7 +28,7 @@ function SettingControl({
   onBrowse: () => void;
   onOpen: () => void;
 }) {
-  const path = setting.kind === "directory" || setting.kind === "outlook_store" || setting.kind === "xlsx_template";
+  const path = setting.kind === "directory" || setting.kind === "data_directory" || setting.kind === "outlook_store" || setting.kind === "xlsx_template";
   return (
     <div className={`setting-row ${!setting.editable ? "fixed" : ""}`}>
       <div className="setting-copy">
@@ -60,7 +60,7 @@ function SettingControl({
               onChange={(event) => onChange(event.target.value)}
               placeholder={setting.nullable ? "Not configured" : undefined}
             />
-            {path && <button type="button" onClick={onBrowse}>Browse…</button>}
+            {path && <button type="button" onClick={onBrowse}>{setting.kind === "data_directory" ? "Move data…" : "Browse…"}</button>}
             {path && setting.status?.path && <button type="button" className="icon-button" onClick={onOpen} title="Open folder" aria-label={`Open ${setting.label}`}>↗</button>}
           </div>
         )}
@@ -73,6 +73,7 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
   const [payload, setPayload] = useState<SettingsPayload | null>(null);
   const [draft, setDraft] = useState<Record<string, string | boolean>>({});
   const [saving, setSaving] = useState(false);
+  const [migrating, setMigrating] = useState(false);
 
   useEffect(() => {
     getSettings().then((result) => {
@@ -116,8 +117,17 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
   async function browse(setting: Setting) {
     try {
       const result = await browsePath(setting.key);
-      if (!result.cancelled && result.path) setDraft((current) => ({ ...current, [setting.key]: result.path! }));
+      if (result.cancelled || !result.path) return;
+      if (setting.kind === "data_directory") {
+        if (!window.confirm(`Move all Zeus data to ${result.path}? Zeus will verify the clone, restart, and only then remove the original data folder.`)) return;
+        setMigrating(true);
+        await migrateDataDirectory(result.path);
+        window.setTimeout(() => window.location.reload(), 2500);
+        return;
+      }
+      setDraft((current) => ({ ...current, [setting.key]: result.path! }));
     } catch (error) {
+      setMigrating(false);
       onError(error);
     }
   }
@@ -131,7 +141,7 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
       actions={<>
         <span>{changedCount ? `${changedCount} unsaved setting(s)` : "Configuration is current"}</span>
         <button type="button" onClick={onClose}>Close</button>
-        <button type="button" className="primary-button" disabled={!changedCount || saving} onClick={save}>{saving ? "Saving…" : "Save configuration"}</button>
+        <button type="button" className="primary-button" disabled={!changedCount || saving || migrating} onClick={save}>{saving ? "Saving…" : "Save configuration"}</button>
       </>}
     >
       {!payload ? <div className="detail-loading">Reading configuration…</div> : (
@@ -151,7 +161,7 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
               ))}
             </section>
           ))}
-          <div className="restart-note">Changing the preferred port takes effect the next time Zeus starts. The current server remains safely bound to its existing local port.</div>
+          <div className="restart-note">{migrating ? "The verified data clone is complete. Zeus is restarting into its new location…" : "Changing the preferred port takes effect the next time Zeus starts. Moving the data folder always performs its own soft restart."}</div>
         </div>
       )}
     </Modal>

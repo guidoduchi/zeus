@@ -35,7 +35,9 @@ publication, mail, and MOP generation.
 | `zeus2/excel_export.py` | verified publication, restore, and database-driven Pendings recreation |
 | `zeus2/application/serialization.py` | stable dashboard/detail API shapes and sorting |
 | `zeus2/application/settings.py` | typed configuration payload and validation |
-| `zeus2/spare_requests.py` | independent request schema, validation, status, identity, and local managers |
+| `zeus2/reference_data.py` | mandatory profile, global structured managers, legacy-manager migration, and BOM catalog |
+| `zeus2/storage_migration.py` | capacity checks, verified clone/restart handoff, rollback, and original cleanup |
+| `zeus2/spare_requests.py` | independent request schema, validation, status, identity, and fault-evidence grouping |
 | `zeus2/spare_request_excel.py` | template-preserving request/return exports and Closed archive tabs |
 | `zeus2/spare_request_mail.py` | LASpare/iCare/warehouse parsing, replay, association, conflicts, and retention |
 | `zeus2/web/server.py` | loopback HTTP/static/API boundary and security headers |
@@ -62,6 +64,11 @@ Server-Sent Events are short local long-polls containing job/configuration/data
 events. The UI updates visible activity immediately and rereads committed data
 only after a dataset event.
 
+Before profile completion, the server exposes only static assets, health,
+bootstrap, profile, and lifecycle controls. Other API routes fail with an
+explicit setup-required response. Saving the first valid profile starts the
+normal startup job and scheduler without requiring an application relaunch.
+
 ## Lifecycle and shutdown
 
 Launch is guarded by an atomic local lock. If a healthy registered instance
@@ -74,6 +81,13 @@ ID, operating-system process-birth marker, private shutdown token, install root,
 and start time. Stop first requests graceful shutdown. Forced termination is
 allowed only while both PID and birth marker still match the record.
 
+A storage move leaves configuration and the instance registry in the fixed
+application home. The mutable data tree is cloned to an empty chosen folder,
+verified, and selected in configuration before the existing process requests a
+soft restart. The new process rechecks both manifests, then deletes the old
+tree. Any pre-handoff mismatch selects the original and removes the rejected
+clone; interrupted old-tree cleanup is retried as a forward-only operation.
+
 ## Packaging
 
 Vite builds hashed JavaScript/CSS into `zeus2/web/static`. Setuptools package
@@ -84,8 +98,11 @@ Python module directly; they do not install or execute frontend tooling.
 ## Verification layers
 
 - core regression tests preserve the 2.0.3 data and recovery contracts;
-- Spare Request tests cover unit expansion, immutable identities, partial/out-of-order
-  mail, template sheet preservation, return output, archive gating, and retention;
+- Spare Request tests cover unit expansion, independent multi-serial fault
+  evidence, immutable identities, partial/out-of-order mail, template sheet
+  preservation, return output, archive gating, and retention;
+- profile/reference/storage tests cover setup validation, relationship
+  integrity, capacity rejection, clone verification, rollback, and cleanup retry;
 - application tests cover Pendings-only bootstrap, web edits, conflicts,
   deletion/recreation journals, serialized jobs, local HTTP security,
   no-query GETs, and safe stale records;

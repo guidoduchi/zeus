@@ -1,6 +1,22 @@
 # Changelog
 
-## 3.1.1 - Unreleased
+## 3.1.2 - 2026-08-08
+
+- Adds mandatory first-run local contact setup with optional profile picture
+  and username. There is no account, password, authentication, or remote
+  profile; the saved contact becomes the default Spare Request requester.
+- Adds a human-oriented Global data manager for customer organizations,
+  organization-owned customer contacts, independent sites, and pinned
+  requesters. The BOM catalog remains inside Spare Requests.
+- Adds verified data-folder relocation with a 20 MiB reserve check, complete
+  SHA-256 clone verification, soft restart, rollback on mismatch, and delayed
+  deletion of the original only after the restarted process accepts the clone.
+- Reworks Spare Request export around autocomplete fields, one customer-contact
+  field, automatic initials, configuration readiness prompts, and one BOM plus
+  quantity per group. Multiple faulty serials are entered one per line and
+  remain independent from the requested BOM quantity in records and XLSX output.
+
+## 3.1.1 - 2026-08-08
 
 - Adds independent, per-unit Spare Request records with immutable TT/RMA rules,
   partial-stock handling, requested-versus-delivered BOM tracking, and conflict

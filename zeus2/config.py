@@ -18,8 +18,12 @@ OUTLOOK_STORE_SUFFIXES = {".ost", ".pst"}
 # Runtime markers (processed filenames, hashes and successful operation times)
 # live in current/state.json and are never accepted from this file.
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 6,
+    "schema_version": 7,
     "paths": {
+        # ``None`` keeps the mutable database under ``%LOCALAPPDATA%\\Zeus\\data``.
+        # A configured value is only written by the verified migration workflow;
+        # the generic settings editor must never repoint it directly.
+        "data_directory": None,
         "workbook_directory": None,
         "advanced_search_directory": None,
         "outlook_store_path": None,
@@ -83,6 +87,14 @@ class SettingSpec:
 
 
 SETTING_SPECS: tuple[SettingSpec, ...] = (
+    SettingSpec(
+        "paths.data_directory",
+        "Zeus data folder",
+        "Application storage",
+        "data_directory",
+        "Mutable Markdown database, backups, audit history, profile, and local managers. Use Move data to change it safely.",
+        editable=False,
+    ),
     SettingSpec(
         "paths.workbook_directory",
         "Workbook folder",
@@ -394,7 +406,7 @@ def _migrate_legacy_keys(saved: dict[str, Any]) -> dict[str, Any]:
     migrated.pop("updatefile_dir", None)
     migrated.pop("mail", None)
     paths.pop("update_directory", None)
-    migrated["schema_version"] = 6
+    migrated["schema_version"] = 7
     return migrated
 
 
@@ -501,7 +513,7 @@ def load_config(home: Path) -> dict[str, Any]:
     migrated = _migrate_legacy_keys(saved)
     _assert_known_structure(migrated)
     config = deep_merge(DEFAULT_CONFIG, migrated)
-    config["schema_version"] = 6
+    config["schema_version"] = 7
     _validate(config)
     return config
 
@@ -511,7 +523,7 @@ def save_config(home: Path, config: dict[str, Any]) -> Path:
     resolved_home.mkdir(parents=True, exist_ok=True)
     _assert_known_structure(config)
     prepared = deep_merge(DEFAULT_CONFIG, config)
-    prepared["schema_version"] = 6
+    prepared["schema_version"] = 7
     _validate(prepared, validate_paths=True)
     path = config_path(resolved_home)
     atomic_write_json(path, prepared)

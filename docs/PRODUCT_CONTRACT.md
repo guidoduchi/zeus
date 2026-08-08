@@ -59,6 +59,18 @@ Consequences:
     Requests workspace.
 17. Warehouse email only creates a candidate. Returned archive requires a user
     confirmation, or a manual override with a mandatory note.
+18. The first usable screen is local profile setup until name, email, and phone
+    are valid. Picture and username are optional; password and login controls do
+    not exist.
+19. Global data uses ordinary record forms, never raw JSON. Customer contacts
+    must select an organization; sites do not. The current profile is the
+    default requester and additional favorite requesters may be pinned.
+20. Spare export chooses customer, site, requester, and BOM through autocomplete.
+    Customer initials are derived, and missing export paths redirect the user
+    to Configuration before any workbook write begins.
+21. One request group contains one BOM and a quantity multiplier. Newline-only
+    faulty serials are fault evidence for that group and are not assigned by
+    position to the requested units.
 
 ## Authority invariants
 
@@ -93,6 +105,17 @@ Consequences:
 14. Completed/cancelled items are appended to dedicated Closed.xlsx tabs,
     removed from active Markdown, and cannot reopen. Active spare email and
     completed private/archive data are retained for at most 180 days.
+15. The local user profile and global reference collections live with the
+    mutable data root. Only the tiny location pointer and runtime bootstrap stay
+    in the fixed application-data home after relocation.
+16. A data-root move requires capacity for the current tree plus a 20 MiB
+    reserve. The clone is hash-verified before restart and reverified afterward;
+    the old tree is deleted only after that handoff, otherwise Zeus rolls back.
+17. A customer contact cannot exist without a referenced customer organization.
+    Sites and BOM records have no customer-organization ownership.
+18. Faulty serial evidence and requested BOM quantity are separate values. A
+    whole-device request may retain several internal-component serials without
+    generating several requested BOMs.
 
 ## Runtime invariants
 
@@ -103,3 +126,5 @@ Consequences:
    termination.
 5. The work PC requires Python but never requires Node to run the committed UI.
 6. Python 3.13 and 3.14 remain blocking compatibility targets.
+7. Background source work pauses below 20 MiB free space and the current data
+   location remains visible and movable through Configuration.

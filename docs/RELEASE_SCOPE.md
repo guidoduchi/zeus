@@ -1,6 +1,19 @@
-# Zeus 3.1.1 release scope
+# Zeus 3.1.2 release scope
 
 Included:
+
+- mandatory first-run local profile setup with name, email, and phone required;
+  optional local picture and username; no login, password, or remote account;
+- a global structured manager for customer organizations, organization-owned
+  contacts, independent sites, the current-user requester, and pinned extra
+  requesters, with BOM catalog management retained in Spare Requests;
+- selectable data storage with a full-clone-plus-20-MiB capacity gate,
+  verified restart handoff, safe rollback, and post-restart original deletion;
+- autocomplete Spare Request inputs, automatically derived customer initials,
+  one unified customer-contact name, and an explicit configuration prompt when
+  export destinations or templates are absent;
+- newline-only multiple faulty serials per BOM group, kept independent from its
+  quantity multiplier throughout Markdown state and request/fault-tag XLSX rows;
 
 - a Service Requests / Spare Requests workspace switcher with independent
   search, sort, direction, and field preferences;
@@ -14,8 +27,8 @@ Included:
   candidate parsing from HTML with plain-text fallback and out-of-order replay;
 - explicit partial return export, user-confirmed archive, mandatory cancellation
   reasons, manual-override notes, and dedicated Closed.xlsx archive/email tabs;
-- local-only profile and BOM managers that ship empty plus fixed 180-day
-  active-email and completed-archive retention;
+- local-only structured Global data and BOM managers that ship empty plus fixed
+  180-day active-email and completed-archive retention;
 - bundled React/TypeScript master-detail interface served by Python;
 - strict `127.0.0.1` binding, local Host/Origin/CSRF controls, and no CORS;
 - browser launch, Windows notification-area lifecycle, clean restart/exit, and

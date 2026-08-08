@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeus-ticket-ops"
-version = "3.1.1"
+version = "3.1.2"
 description = "Strictly local web workstation for safe Excel, Advanced Search, and optional Outlook ticket operations"
 readme = "README.md"
 requires-python = ">=3.11"

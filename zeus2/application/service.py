@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,18 @@ from ..excel_import import read_closed, validate_closed_against_index
 from ..mail import fetch_and_commit_outlook, synchronize_staged_email
 from ..mop import generate_mop
 from ..reconcile import sync_newest_advanced_search
+from ..reference_data import (
+    ReferenceDataError,
+    combined_reference_data,
+    load_bom_catalog,
+    load_global_reference_data,
+    load_user_profile,
+    save_bom_catalog,
+    save_global_reference_data,
+    save_user_profile,
+    serialize_user_profile,
+    user_profile_payload,
+)
 from ..spare_request_excel import (
     append_archived_item,
     export_initial_request,
@@ -32,7 +45,6 @@ from ..spare_requests import (
     ECUADOR_TIMEZONE,
     SpareRequestError,
     create_request_record,
-    load_reference_data,
     next_request_id,
     normalize_profile,
     normalize_request_lines,
@@ -42,7 +54,11 @@ from ..spare_requests import (
     request_filename,
     request_history,
     request_subject,
-    save_reference_data,
+)
+from ..storage_migration import (
+    StorageMigrationError,
+    prepare_data_migration,
+    storage_status,
 )
 from ..startup import StartupResult, reconcile_advanced_and_new_mail, run_startup
 from ..store import StoreError, ZeusStore
@@ -54,6 +70,7 @@ from .errors import (
     ConflictError,
     FeatureUnavailableError,
     NotFoundError,
+    SetupRequiredError,
     ValidationError,
 )
 from .jobs import EventBroker, JobContext, JobManager
@@ -103,6 +120,7 @@ class ApplicationService:
         self._schedule_wakeup = threading.Event()
         self._scheduler: threading.Thread | None = None
         self._next_query_at: float | None = None
+        self._migration_pending = False
         self.latest_startup = StartupResult()
 
     @property
@@ -120,6 +138,20 @@ class ApplicationService:
         )
 
     def start(self) -> dict[str, Any]:
+        if not self.profile_complete():
+            self.latest_startup = StartupResult(
+                notices=["Complete the required local contact profile to start Zeus operations."]
+            )
+            return {"status": "blocked", "kind": "startup", "reason": "profile_required"}
+        capacity = storage_status(self.store)
+        if capacity["lowSpace"]:
+            self.latest_startup = StartupResult(
+                warnings=[
+                    "Zeus paused background operations because its data drive has less "
+                    "than 20 MiB free. Move the data folder from Configuration."
+                ]
+            )
+            return {"status": "blocked", "kind": "startup", "reason": "low_storage"}
         if self._started:
             active = next(
                 (job for job in self.jobs.snapshots() if job["kind"] == "startup"),
@@ -173,6 +205,12 @@ class ApplicationService:
         """Use the manual Pendings-first query path for the timer as well."""
 
         # Merely loading a browser page never reaches this path.
+        if self._migration_pending:
+            return {
+                "status": "blocked",
+                "kind": "query",
+                "reason": "data_migration",
+            }
         return self.submit_job("query", {"scheduled": True})
 
     def _reset_schedule(self) -> None:
@@ -188,11 +226,30 @@ class ApplicationService:
     def bootstrap_payload(self) -> dict[str, Any]:
         outlook_path = self.store.config.get("paths", {}).get("outlook_store_path")
         state = self.store.state()
+        try:
+            profile = user_profile_payload(self.store.root)
+            profile_error = None
+        except ReferenceDataError as exc:
+            profile = {"schemaVersion": 1, "complete": False, "profile": None}
+            profile_error = str(exc)
+        startup = self.latest_startup.to_dict()
+        startup["notices"] = [
+            *list(getattr(self.store, "storage_notices", [])),
+            *startup.get("notices", []),
+        ]
+        capacity = storage_status(self.store)
         return {
             "datasetRevision": self.dataset_revision,
             "eventSequence": self.broker.sequence,
-            "startup": self.latest_startup.to_dict(),
+            "startup": startup,
             "jobs": self.jobs.snapshots(),
+            "onboarding": {
+                "required": not bool(profile.get("complete")),
+                "profile": profile.get("profile"),
+                "error": profile_error,
+            },
+            "storage": capacity,
+            "spareRequestExport": self.spare_export_setup(),
             "outlook": {
                 "enabled": bool(outlook_path),
                 "configuredPathAvailable": bool(
@@ -211,6 +268,20 @@ class ApplicationService:
                 "enabled": self._next_query_at is not None,
             },
         }
+
+    def profile_complete(self) -> bool:
+        try:
+            return load_user_profile(self.store.root) is not None
+        except ReferenceDataError:
+            return False
+
+    def require_setup(self) -> None:
+        if not self.profile_complete():
+            raise SetupRequiredError(
+                "Complete your local contact profile before using Zeus"
+            )
+        if self._migration_pending:
+            raise BusyError("Zeus is restarting to finish the data-folder migration")
 
     def _closed_archive_tickets(self) -> tuple[dict[str, Any], ...]:
         """Read finalized non-email ticket data through a stat-keyed cache."""
@@ -301,6 +372,33 @@ class ApplicationService:
             raise FeatureUnavailableError("Configure the Spare Request export folder first")
         return directory
 
+    def spare_export_setup(self) -> dict[str, Any]:
+        paths = self.store.config.get("paths", {})
+        request_missing: list[dict[str, str]] = []
+        return_missing: list[dict[str, str]] = []
+        export_root = self.store.configured_directory("spare_parts_export_directory")
+        if export_root is None or not export_root.is_dir():
+            item = {
+                "key": "paths.spare_parts_export_directory",
+                "label": "Spare Request export folder",
+            }
+            request_missing.append(item)
+            return_missing.append(item)
+        for key, label, target in (
+            ("spare_request_template_path", "Spare Request XLSX template", request_missing),
+            ("spare_return_template_path", "Faulty Return XLSX template", return_missing),
+        ):
+            raw = paths.get(key)
+            path = Path(str(raw)).expanduser().resolve() if raw else None
+            if path is None or not path.is_file() or path.suffix.lower() != ".xlsx":
+                target.append({"key": f"paths.{key}", "label": label})
+        return {
+            "requestReady": not request_missing,
+            "returnReady": not return_missing,
+            "requestMissing": request_missing,
+            "returnMissing": return_missing,
+        }
+
     def dashboard(
         self,
         *,
@@ -382,20 +480,101 @@ class ApplicationService:
             raise NotFoundError(f"Spare Request {request_id} was not found") from exc
         return serialize_spare_request_detail(request)
 
-    def spare_reference_data(self) -> dict[str, Any]:
-        return load_reference_data(self.store.config_home)
-
-    def save_spare_reference_data(self, value: dict[str, Any]) -> dict[str, Any]:
-        if not self._operation_lock.acquire(blocking=False):
-            raise BusyError("Wait for the current Zeus operation before changing managers")
+    def user_profile(self) -> dict[str, Any]:
         try:
-            result = save_reference_data(self.store.config_home, value)
-        except SpareRequestError as exc:
+            return user_profile_payload(self.store.root)
+        except ReferenceDataError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def save_user_profile(self, value: dict[str, Any]) -> dict[str, Any]:
+        if self._migration_pending:
+            raise BusyError("Zeus is restarting to finish the data-folder migration")
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Wait for the current Zeus operation before changing your profile")
+        try:
+            was_complete = self.profile_complete()
+            result = save_user_profile(self.store.root, value)
+            self.store.append_audit(
+                "user-profile-update",
+                {"created": not was_complete, "fields": ["name", "email", "phone", "username", "photo"]},
+            )
+        except (OSError, ReferenceDataError) as exc:
             raise ValidationError(str(exc)) from exc
         finally:
             self._operation_lock.release()
-        self.broker.publish("configuration", {"changed": ["spare-request-managers"]})
+        self.broker.publish("configuration", {"changed": ["user-profile"]})
+        if not was_complete:
+            result["startup"] = self.start()
         return result
+
+    def global_reference_data(self) -> dict[str, Any]:
+        try:
+            result = load_global_reference_data(self.store.root)
+            result["profile"] = serialize_user_profile(load_user_profile(self.store.root))
+            return result
+        except ReferenceDataError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def save_global_reference_data(self, value: dict[str, Any]) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Wait for the current Zeus operation before changing global data")
+        try:
+            result = save_global_reference_data(self.store.root, value)
+            self.store.append_audit(
+                "global-reference-data-update",
+                {
+                    "organizations": len(result["organizations"]),
+                    "customers": len(result["customers"]),
+                    "sites": len(result["sites"]),
+                    "requesters": len(result["requesters"]),
+                },
+            )
+        except (OSError, ReferenceDataError) as exc:
+            raise ValidationError(str(exc)) from exc
+        finally:
+            self._operation_lock.release()
+        self.broker.publish("configuration", {"changed": ["global-reference-data"]})
+        return result
+
+    def bom_catalog(self) -> dict[str, Any]:
+        try:
+            return load_bom_catalog(self.store.root)
+        except ReferenceDataError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def save_bom_catalog(self, value: dict[str, Any]) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Wait for the current Zeus operation before changing the BOM catalog")
+        try:
+            result = save_bom_catalog(self.store.root, value)
+            self.store.append_audit("bom-catalog-update", {"rows": len(result["boms"])})
+        except (OSError, ReferenceDataError) as exc:
+            raise ValidationError(str(exc)) from exc
+        finally:
+            self._operation_lock.release()
+        self.broker.publish("configuration", {"changed": ["bom-catalog"]})
+        return result
+
+    def spare_reference_data(self) -> dict[str, Any]:
+        try:
+            result = combined_reference_data(self.store.root)
+        except ReferenceDataError as exc:
+            raise ValidationError(str(exc)) from exc
+        result["exportSetup"] = self.spare_export_setup()
+        return result
+
+    def save_spare_reference_data(self, value: dict[str, Any]) -> dict[str, Any]:
+        """Compatibility boundary for 3.1.1 clients using one manager payload."""
+
+        globals_value = {
+            "organizations": value.get("organizations", []),
+            "customers": value.get("customers", []),
+            "sites": value.get("sites", []),
+            "requesters": value.get("requesters", []),
+        }
+        self.save_global_reference_data(globals_value)
+        self.save_bom_catalog({"boms": value.get("boms", [])})
+        return self.spare_reference_data()
 
     def spare_request_prefill(self, ticket_id: str) -> dict[str, Any]:
         normalized = normalize_ticket_id(ticket_id)
@@ -438,7 +617,8 @@ class ApplicationService:
             "ticketId": normalized,
             "ticketExists": True,
             "profile": {
-                "customerName": first("Customer Name", "Customer", "Account Name"),
+                "customerOrganization": first("Customer Name", "Customer", "Account Name"),
+                "customerName": first("Customer Contact", "Contact Name", "Contact"),
                 "siteCode": local.get("Site"),
                 "siteName": first("Site Name"),
                 "siteAddress": first("Site Address", "Customer Address", "Address"),
@@ -451,6 +631,73 @@ class ApplicationService:
             },
             "lines": lines,
             "warning": None if lines else "This SR has no damaged part with a BOM yet.",
+        }
+
+    def import_customer_from_ticket(self, ticket_id: str) -> dict[str, Any]:
+        prefill = self.spare_request_prefill(ticket_id)
+        profile = prefill.get("profile", {})
+        organization_name = str(profile.get("customerOrganization") or "").strip()
+        contact = profile.get("contact") if isinstance(profile.get("contact"), dict) else {}
+        contact_name = str(contact.get("name") or profile.get("customerName") or "").strip()
+        if not organization_name or not contact_name:
+            raise ValidationError(
+                "This SR does not contain both a customer organization and customer contact"
+            )
+        data = self.global_reference_data()
+        organizations = list(data.get("organizations") or [])
+        customers = list(data.get("customers") or [])
+        organization = next(
+            (
+                row
+                for row in organizations
+                if str(row.get("name") or "").strip().casefold()
+                == organization_name.casefold()
+            ),
+            None,
+        )
+        created_organization = organization is None
+        if organization is None:
+            organization = {"id": f"org-{uuid.uuid4().hex}", "name": organization_name}
+            organizations.append(organization)
+        organization_id = str(organization["id"])
+        customer = next(
+            (
+                row
+                for row in customers
+                if str(row.get("organizationId") or "") == organization_id
+                and str(row.get("name") or "").strip().casefold() == contact_name.casefold()
+            ),
+            None,
+        )
+        created_customer = customer is None
+        if customer is None:
+            customer = {
+                "id": f"customer-{uuid.uuid4().hex}",
+                "organizationId": organization_id,
+                "name": contact_name,
+                "email": contact.get("email"),
+                "phone": contact.get("phone"),
+            }
+            customers.append(customer)
+        else:
+            if contact.get("email"):
+                customer["email"] = contact.get("email")
+            if contact.get("phone"):
+                customer["phone"] = contact.get("phone")
+        saved = self.save_global_reference_data(
+            {
+                "organizations": organizations,
+                "customers": customers,
+                "sites": data.get("sites", []),
+                "requesters": data.get("requesters", []),
+            }
+        )
+        return {
+            "data": saved,
+            "organizationId": organization_id,
+            "customerId": customer["id"],
+            "createdOrganization": created_organization,
+            "createdCustomer": created_customer,
         }
 
     def export_spare_request(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1094,6 +1341,38 @@ class ApplicationService:
         self._schedule_wakeup.set()
         self.broker.publish("configuration", {"changed": result.get("changed", [])})
         return result
+
+    def migrate_data_directory(self, destination: str) -> dict[str, Any]:
+        target = str(destination or "").strip().strip('"')
+        if not target:
+            raise ValidationError("Choose an empty destination folder")
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Wait for the current Zeus operation before moving the data folder")
+        migration_prepared = False
+        try:
+            # Recheck after owning the mutation boundary so a job cannot be
+            # queued between the first observation and the verified clone.
+            running = [
+                job
+                for job in self.jobs.snapshots()
+                if job.get("status") in {"queued", "running"}
+            ]
+            if running:
+                raise BusyError(
+                    "Wait for active Zeus operations before moving the data folder"
+                )
+            self._migration_pending = True
+            result = prepare_data_migration(self.store, Path(target))
+            migration_prepared = True
+            return result
+        except BusyError:
+            raise
+        except (OSError, StorageMigrationError, ValueError) as exc:
+            raise ValidationError(str(exc)) from exc
+        finally:
+            if not migration_prepared:
+                self._migration_pending = False
+            self._operation_lock.release()
 
     def scan_outlook(self, directory: str) -> list[dict[str, Any]]:
         return outlook_candidates(self.store, directory)

@@ -119,6 +119,75 @@ class SpareRequestDomainTests(unittest.TestCase):
                 with self.assertRaisesRegex(SpareRequestError, "whole number"):
                     normalize_request_lines(lines_input(amount))
 
+    def test_many_faulty_serials_remain_independent_from_one_requested_bom(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "request.xlsx"
+            create_request_template(template)
+            raw_profile = profile_input()
+            raw_profile.pop("clientInitials")
+            raw_profile["contact"] = {
+                "name": "Juan Piguave",
+                "email": "juan@example.com",
+                "phone": "+593111111111",
+            }
+            profile = normalize_profile(raw_profile)
+            lines = normalize_request_lines(
+                [
+                    {
+                        **lines_input(amount=1)[0],
+                        "bom": "SERVER-001",
+                        "description": "Complete replacement server",
+                        "faultySn": "CPU-SN-001\nMEMORY,SN,002\nMEZZ-SN-003",
+                    }
+                ]
+            )
+            request = create_request_record(
+                request_id="260808123456",
+                tt="39416095",
+                source="manual",
+                profile=profile,
+                lines=lines,
+                export_path=None,
+                subject=request_subject("260808123456", "39416095", lines),
+                created_at="2026-08-08T12:34:56-05:00",
+            )
+
+            self.assertEqual(profile["client_initials"], "JP")
+            self.assertEqual(len(request["items"]), 1)
+            self.assertEqual(
+                request["items"][0]["faulty_sns"],
+                ["CPU-SN-001", "MEMORY,SN,002", "MEZZ-SN-003"],
+            )
+            filename = request_filename(
+                request["request_id"], request["tt"], profile, lines
+            )
+            self.assertIn("SP–JP–", filename)
+            exported = export_initial_request(template, root / "exports", request, filename)
+            workbook = load_workbook(exported, read_only=True, data_only=False)
+            try:
+                application = workbook[REQUEST_SHEET]
+                faulty = workbook[FAULTY_TAG_SHEET]
+                self.assertEqual(application["B15"].value, "SERVER-001")
+                self.assertEqual(application["C15"].value, 1)
+                self.assertEqual(
+                    application["F15"].value,
+                    "CPU-SN-001\nMEMORY,SN,002\nMEZZ-SN-003",
+                )
+                self.assertEqual(application["G2"].value, "Customer Network Team")
+                self.assertEqual(application["F31"].value, "Juan Piguave")
+                self.assertEqual(
+                    [faulty[f"F{row}"].value for row in (12, 14, 16)],
+                    ["CPU-SN-001", "MEMORY,SN,002", "MEZZ-SN-003"],
+                )
+                self.assertEqual(
+                    [faulty[f"B{row}"].value for row in (12, 14, 16)],
+                    ["SERVER-001", "SERVER-001", "SERVER-001"],
+                )
+                self.assertTrue(faulty["D12"].alignment.wrap_text)
+            finally:
+                workbook.close()
+
     def test_export_identity_subject_and_quantity_expansion(self) -> None:
         request = request_record(3)
         filename = request_filename(

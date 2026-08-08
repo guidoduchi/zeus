@@ -10,9 +10,10 @@ import webbrowser
 from pathlib import Path
 
 from .application.service import ApplicationService
-from .config import application_home, default_data_dir
+from .config import application_home, default_data_dir, ensure_config
 from .diagnostics import diagnostic_log_path, record_exception
 from .store import ZeusStore
+from .storage_migration import finalize_pending_data_migration
 from .utils import json_dumps
 from .version import __version__
 from .web.dialogs import open_folder
@@ -39,7 +40,14 @@ LEGACY_COMMANDS = {
 
 def create_store() -> ZeusStore:
     home = application_home()
-    store = ZeusStore(default_data_dir(home), config_home=home)
+    config = ensure_config(home)
+    if os.environ.get("ZEUS_DATA_DIR"):
+        root = default_data_dir(home)
+        storage_notices: list[str] = []
+    else:
+        root, storage_notices = finalize_pending_data_migration(home, config)
+    store = ZeusStore(root, config_home=home)
+    store.storage_notices = storage_notices
     store.ensure_layout()
     return store
 
@@ -157,6 +165,8 @@ def serve(args: argparse.Namespace) -> int:
     def request_restart() -> None:
         restart_requested.set()
         server.request_shutdown()
+
+    server.restart_callback = request_restart
 
     use_tray = (
         sys.platform == "win32"

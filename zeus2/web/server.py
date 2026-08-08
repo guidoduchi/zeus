@@ -47,6 +47,7 @@ class ZeusWebServer(ThreadingHTTPServer):
         instance_id: str,
         control_token: str | None = None,
         shutdown_callback: Callable[[], None] | None = None,
+        restart_callback: Callable[[], None] | None = None,
     ):
         host, _ = address
         if host != "127.0.0.1":
@@ -57,6 +58,7 @@ class ZeusWebServer(ThreadingHTTPServer):
         self.csrf_token = secrets.token_urlsafe(32)
         self.control_token = control_token or secrets.token_urlsafe(48)
         self.shutdown_callback = shutdown_callback
+        self.restart_callback = restart_callback
         self._shutdown_requested = threading.Event()
         super().__init__(address, ZeusRequestHandler)
 
@@ -82,6 +84,12 @@ class ZeusWebServer(ThreadingHTTPServer):
             self.shutdown()
 
         threading.Thread(target=stop, name="zeus-http-shutdown", daemon=True).start()
+
+    def request_restart(self) -> None:
+        if self.restart_callback is not None:
+            self.restart_callback()
+        else:
+            self.request_shutdown()
 
 
 class ZeusRequestHandler(BaseHTTPRequestHandler):
@@ -169,6 +177,19 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             )
             self._send_json(HTTPStatus.OK, payload)
             return
+        if path == "/api/profile":
+            self._send_json(HTTPStatus.OK, self.server.service.user_profile())
+            return
+        if not path.startswith("/api/"):
+            self._send_static(path)
+            return
+        self.server.service.require_setup()
+        if path == "/api/global-data":
+            self._send_json(HTTPStatus.OK, self.server.service.global_reference_data())
+            return
+        if path == "/api/spare-requests/bom-catalog":
+            self._send_json(HTTPStatus.OK, self.server.service.bom_catalog())
+            return
         if path == "/api/dashboard":
             workspace = query.get("workspace", ["service-requests"])[0]
             default_sort = "tt" if workspace == "spare-requests" else "sr" if workspace == "spare-parts" else "report"
@@ -246,6 +267,15 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             return
         self._require_browser_mutation()
         payload = self._read_json()
+        if path == "/api/system/shutdown":
+            self._send_json(HTTPStatus.ACCEPTED, {"stopping": True})
+            self.server.request_shutdown()
+            return
+        if path == "/api/system/restart":
+            self._send_json(HTTPStatus.ACCEPTED, {"restarting": True})
+            threading.Timer(0.15, self.server.request_restart).start()
+            return
+        self.server.service.require_setup()
         if path.startswith("/api/jobs/"):
             cancel_match = JOB_CANCEL_ROUTE.fullmatch(path)
             if cancel_match:
@@ -262,9 +292,20 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 {"job": self.server.service.submit_job(kind, payload)},
             )
             return
-        if path == "/api/system/shutdown":
-            self._send_json(HTTPStatus.ACCEPTED, {"stopping": True})
-            self.server.request_shutdown()
+        if path == "/api/storage/migrate":
+            result = self.server.service.migrate_data_directory(
+                str(payload.get("destination") or "")
+            )
+            self._send_json(HTTPStatus.CREATED, result)
+            threading.Timer(0.2, self.server.request_restart).start()
+            return
+        if path == "/api/global-data/import-customer":
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.import_customer_from_ticket(
+                    str(payload.get("ticketId") or "")
+                ),
+            )
             return
         if path == "/api/dialogs/path":
             self._path_dialog(payload)
@@ -345,6 +386,34 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
         self._require_browser_mutation()
         path = urlsplit(self.path).path
         payload = self._read_json()
+        if path == "/api/profile":
+            value = payload.get("profile")
+            if not isinstance(value, dict):
+                raise ValidationError("Profile data must be an object")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.save_user_profile(value),
+            )
+            return
+        self.server.service.require_setup()
+        if path == "/api/global-data":
+            value = payload.get("value")
+            if not isinstance(value, dict):
+                raise ValidationError("Global manager data must be an object")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.save_global_reference_data(value),
+            )
+            return
+        if path == "/api/spare-requests/bom-catalog":
+            value = payload.get("value")
+            if not isinstance(value, dict):
+                raise ValidationError("BOM catalog data must be an object")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.save_bom_catalog(value),
+            )
+            return
         ticket_match = TICKET_LOCAL_ROUTE.fullmatch(path)
         if ticket_match:
             changes = payload.get("changes")
@@ -461,14 +530,14 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
     def _path_dialog(self, payload: dict[str, Any]) -> None:
         key = str(payload.get("setting") or "")
         spec = SETTING_SPEC_BY_KEY.get(key)
-        if spec is None or spec.kind not in {"directory", "outlook_store", "xlsx_template"}:
+        if spec is None or spec.kind not in {"directory", "data_directory", "outlook_store", "xlsx_template"}:
             raise ValidationError("Choose a path setting that supports Browse")
         current = self.server.service.store.config
         parts = key.split(".")
         value: Any = current
         for part in parts:
             value = value.get(part) if isinstance(value, dict) else None
-        initial = Path(str(value)).expanduser() if value else None
+        initial = self.server.service.store.root if spec.kind == "data_directory" else Path(str(value)).expanduser() if value else None
         if initial and initial.is_file():
             initial = initial.parent
         if spec.kind == "outlook_store":
@@ -496,7 +565,11 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
         if spec is None or not key.startswith("paths."):
             raise ValidationError("Unknown path setting")
         short_key = key.split(".", 1)[1]
-        path = self.server.service.store.configured_directory(short_key)
+        path = (
+            self.server.service.store.root
+            if short_key == "data_directory"
+            else self.server.service.store.configured_directory(short_key)
+        )
         if path is None:
             raise ValidationError(f"{spec.label} is not configured")
         if path.is_file():

@@ -181,6 +181,7 @@ export interface SpareRequestContact {
 export interface SpareRequestProfile {
   client_initials: string;
   customer_name: string;
+  customer_organization: string;
   site_code: string;
   site_name: string | null;
   site_address: string;
@@ -198,6 +199,7 @@ export interface SpareRequestLine {
   device: string | null;
   slot: string | null;
   faulty_sn: string | null;
+  faulty_sns: string[];
   report_date: string | null;
   source_device_number: number | null;
   source_part_number: number | null;
@@ -213,6 +215,7 @@ export interface SpareRequestItem {
   device: string | null;
   slot: string | null;
   faulty_sn: string | null;
+  faulty_sns: string[];
   rma: string | null;
   delivered_bom: string | null;
   new_sn: string | null;
@@ -265,12 +268,86 @@ export interface SpareRequestDetail {
   updatedAt: string;
 }
 
-export interface SpareReferenceData {
+export interface UserProfile {
+  name: string;
+  email: string;
+  phone: string;
+  username: string | null;
+  photoDataUrl: string | null;
+}
+
+export interface UserProfilePayload {
   schemaVersion: number;
-  customers: Array<Record<string, unknown>>;
-  sites: Array<Record<string, unknown>>;
-  requesters: Array<Record<string, unknown>>;
-  boms: Array<Record<string, unknown>>;
+  complete: boolean;
+  profile: UserProfile | null;
+  startup?: Record<string, unknown>;
+}
+
+export interface CustomerOrganization {
+  id: string;
+  name: string;
+}
+
+export interface CustomerContact {
+  id: string;
+  organizationId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+}
+
+export interface ManagedSite {
+  id: string;
+  code: string;
+  name: string | null;
+  address: string;
+  cloud: string | null;
+}
+
+export interface RequesterProfile {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  username: string | null;
+  pinned: boolean;
+  currentUser?: boolean;
+}
+
+export interface GlobalReferenceData {
+  schemaVersion: number;
+  profile?: UserProfile | null;
+  organizations: CustomerOrganization[];
+  customers: CustomerContact[];
+  sites: ManagedSite[];
+  requesters: RequesterProfile[];
+}
+
+export interface BomCatalogEntry {
+  id: string;
+  bom: string;
+  description: string;
+  part: string | null;
+  model: string | null;
+  device: string | null;
+}
+
+export interface BomCatalogPayload {
+  schemaVersion: number;
+  boms: BomCatalogEntry[];
+}
+
+export interface SpareExportSetup {
+  requestReady: boolean;
+  returnReady: boolean;
+  requestMissing: Array<{ key: string; label: string }>;
+  returnMissing: Array<{ key: string; label: string }>;
+}
+
+export interface SpareReferenceData extends GlobalReferenceData {
+  schemaVersion: number;
+  boms: BomCatalogEntry[];
+  exportSetup: SpareExportSetup;
 }
 
 export interface SpareRequestPrefill {
@@ -366,6 +443,20 @@ export interface BootstrapPayload {
   eventSequence: number;
   startup: { warnings: string[]; notices: string[]; operations: Record<string, unknown> };
   jobs: Job[];
+  onboarding: {
+    required: boolean;
+    profile: UserProfile | null;
+    error: string | null;
+  };
+  storage: {
+    currentPath: string;
+    dataBytes: number;
+    freeBytes: number;
+    minimumFreeBytes: number;
+    lowSpace: boolean;
+    migrationPending: boolean;
+  };
+  spareRequestExport: SpareExportSetup;
   outlook: {
     enabled: boolean;
     configuredPathAvailable: boolean;

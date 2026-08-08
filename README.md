@@ -1,4 +1,4 @@
-# Zeus 3.1.1
+# Zeus 3.1.2
 
 Zeus is a strictly local ticket workstation. Its Python backend runs in the
 background, serves a bundled React interface on `127.0.0.1`, and opens that
@@ -10,7 +10,9 @@ external web service is required at runtime.
 1. Clone or extract Zeus to a local folder.
 2. Double-click `setup_windows.bat` once.
 3. Double-click `run_zeus.bat` whenever you want to open Zeus.
-4. Use the Configuration gear to choose the workbook and optional source paths.
+4. On first launch, save your name, email, and phone number. A picture and
+   username are optional; Zeus does not create an account or ask for a password.
+5. Use the Configuration gear to choose the workbook and optional source paths.
 
 The setup accepts `py -3`, `python`, or `python3`, creates `.venv`, and installs
 the Python application plus optional Classic Outlook support. Python 3.13 and
@@ -168,9 +170,25 @@ sheet set, extends item rows in place, verifies generated values, and writes
 numbered revisions under `Requests` and `Returns`; it never imports these
 outputs as authority.
 
+Zeus will not open the export form until the request export folder and request
+template exist. Customer, site, requester, and BOM inputs autocomplete from
+local data. The top-bar **Global data** manager owns the workstation profile,
+customer organizations, customer contacts, sites, and additional requesters;
+favorite requesters can be pinned. The **BOM catalog** remains in the Spare
+Requests toolbar.
+
+Each customer contact belongs to a customer organization, while sites remain
+independent. The selected contact name is also the workbook customer-contact
+name; there is no redundant second contact-name field. Filename initials are
+derived from that name rather than entered manually.
+
 Each request has one immutable eight-digit TT (manual TTs may be corrected with
 an audit note), one Ecuador export timestamp ID, and at most one seven-digit
-Spare SR. Quantity expands immediately into unit items. Each unit can receive
+Spare SR. Each BOM group requests one BOM with a quantity multiplier; multiple
+groups may be added to one request. Faulty serials are entered one per line and
+describe damaged components independently from that requested BOM—for example,
+CPU, memory, and mezzanine serials may support one whole-server BOM. Quantity
+expands immediately into unit items. Each unit can receive
 one immutable `C` plus ten-digit RMA, a delivered/substitute BOM distinct from
 the requested BOM, and one New SN. Out-of-order LASpare and iCare messages are
 reconciled; contradictory facts become visible conflicts instead of overwrites.
@@ -199,6 +217,10 @@ Configuration and generated data live under `%LOCALAPPDATA%\Zeus`:
 ├── logs\zeus.log
 ├── runtime\instances\*.json
 └── data\
+    ├── global\
+    │   ├── user_profile.json
+    │   ├── reference_data.json
+    │   └── spare_request_boms.json
     ├── current\
     │   ├── state.json
     │   ├── closed_index.json
@@ -220,6 +242,14 @@ Pendings or Closed. Spare-only archive rows and associated email are written to
 the two dedicated Closed tabs, retained for at most 180 days, and may be purged
 manually earlier. Reference-manager personal data is local-only and ships
 empty.
+
+The mutable `data` tree can be moved from Configuration when its drive is low
+on space. Zeus requires room for the full clone plus a 20 MiB reserve, compares
+the cloned file manifest and SHA-256 hashes, saves the new pointer, and performs
+a soft restart. The restarted process verifies both copies before deleting the
+old data tree; a mismatch rolls back to the original. A tiny configuration,
+runtime-registry, and diagnostic-log bootstrap remains under
+`%LOCALAPPDATA%\Zeus` so Zeus can find a relocated database.
 
 The HTTP server enforces loopback binding, Host validation, per-instance CSRF
 tokens, origin checks, a restrictive Content Security Policy, no CORS, and
