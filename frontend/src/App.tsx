@@ -590,11 +590,21 @@ export default function App() {
   }, [activeJob, runJob]);
 
   const closeDetail = useCallback(() => {
+    const rowId = selectedRowId;
     setSelectedTicketId(null);
     setSelectedRequestId(null);
-    setSelectedRowId(null);
     setTicketInitialTab("overview");
-  }, []);
+    window.requestAnimationFrame(() => {
+      const selectedRow = Array.from(document.querySelectorAll<HTMLElement>("[data-row-id]"))
+        .find((row) => row.dataset.rowId === rowId);
+      if (selectedRow) {
+        selectedRow.scrollIntoView({ block: "nearest" });
+        selectedRow.focus({ preventScroll: true });
+        return;
+      }
+      document.querySelector<HTMLElement>('[role="grid"]')?.focus({ preventScroll: true });
+    });
+  }, [selectedRowId]);
 
   const chooseWorkspace = useCallback((next: WorkspaceKey) => {
     if (next === workspace) return;
@@ -758,6 +768,27 @@ export default function App() {
     onOperations: () => setOperationsOpen(true),
     onQuery: queryData,
   });
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        keyboardDisabled
+        || (!selectedTicketId && !selectedRequestId)
+        || event.defaultPrevented
+        || event.isComposing
+        || event.repeat
+        || event.altKey
+        || event.ctrlKey
+        || event.metaKey
+        || event.key !== "Escape"
+        || document.querySelector(".modal-backdrop")
+      ) return;
+      event.preventDefault();
+      closeDetail();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [closeDetail, keyboardDisabled, selectedRequestId, selectedTicketId]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -967,7 +998,7 @@ export default function App() {
           <TicketGrid
             tickets={serviceFilters.filteredRows}
             columns={visibleColumns}
-            selectedId={selectedTicketId}
+            selectedRowId={selectedRowId}
             draftTicketIds={draftTicketIds}
             onSelect={selectServiceRequest}
             onCloseDetail={closeDetail}
@@ -997,7 +1028,7 @@ export default function App() {
         <span>↑↓ Select</span>
         <span>←→ Detail tab</span>
         <span>Wheel Scroll List</span>
-        <span>Click/Enter Open</span>
+        <span>Click/Enter Open · Esc Close</span>
         <span>Ctrl+F Search</span>
         <span>S Sort</span>
         <span>M Operations</span>

@@ -4,7 +4,7 @@ import { WorkspaceGrid, type WorkspaceGridRow } from "./WorkspaceGrid";
 interface Props {
   tickets: TicketSummary[];
   columns: ColumnDefinition[];
-  selectedId: string | null;
+  selectedRowId: string | null;
   draftTicketIds?: ReadonlySet<string>;
   onSelect: (ticketId: string) => void;
   onCloseDetail: () => void;
@@ -13,7 +13,7 @@ interface Props {
 export function TicketGrid({
   tickets,
   columns,
-  selectedId,
+  selectedRowId,
   draftTicketIds,
   onSelect,
   onCloseDetail,
@@ -25,7 +25,7 @@ export function TicketGrid({
         rowId: ticket.ticketId,
       } as TicketSummary & WorkspaceGridRow))}
       columns={columns}
-      selectedRowId={selectedId}
+      selectedRowId={selectedRowId}
       ariaLabel="Zeus service requests"
       emptyTitle="No matching Zeus ticket records."
       emptyHint="Check the configured Advanced Search source to discover new service requests."

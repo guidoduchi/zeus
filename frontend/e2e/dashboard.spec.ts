@@ -21,6 +21,67 @@ test("the dashboard owns wheel scrolling and opens the ticket panel", async ({ p
   await expect(page.getByRole("button", { name: "Work fields" })).toBeVisible();
 });
 
+test("Escape closes details without losing the row cursor in either workspace", async ({ page }) => {
+  await page.goto("/");
+  const serviceRows = page.locator("[data-ticket-id]");
+  const secondService = serviceRows.nth(1);
+  const thirdService = serviceRows.nth(2);
+  const secondServiceId = await secondService.getAttribute("data-ticket-id");
+  const thirdServiceId = await thirdService.getAttribute("data-ticket-id");
+  if (!secondServiceId || !thirdServiceId) throw new Error("Expected three service-request rows");
+
+  await secondService.click();
+  let serviceDetail = page.getByRole("complementary", { name: `SR ${secondServiceId} detail` });
+  await serviceDetail.getByRole("button", { name: "Work fields" }).click();
+  await serviceDetail.getByLabel("Notes").click();
+  await page.keyboard.press("Escape");
+
+  await expect(serviceDetail).toHaveCount(0);
+  await expect(secondService).toHaveAttribute("aria-selected", "true");
+  await expect(secondService).toHaveClass(/selected/);
+  await expect(secondService).toBeFocused();
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(secondService).toHaveClass(/selected/);
+
+  await page.keyboard.press("Enter");
+  serviceDetail = page.getByRole("complementary", { name: `SR ${secondServiceId} detail` });
+  await expect(serviceDetail).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(secondService).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("complementary", { name: `SR ${thirdServiceId} detail` })).toBeVisible();
+  await expect(thirdService).toHaveAttribute("aria-selected", "true");
+
+  await page.getByRole("button", { name: "Spare Requests" }).click();
+  const spareRows = page.locator("[data-row-id]");
+  const firstSpare = spareRows.nth(0);
+  const secondSpare = spareRows.nth(1);
+  const firstRequestId = await firstSpare.getAttribute("data-row-id");
+  const secondRequestId = await secondSpare.getAttribute("data-row-id");
+  if (!firstRequestId || !secondRequestId) throw new Error("Expected two Spare Request rows");
+  const firstSpareRequestId = firstRequestId.slice(0, 12);
+  const secondSpareRequestId = secondRequestId.slice(0, 12);
+
+  await firstSpare.click();
+  let spareDetail = page.getByRole("complementary", { name: `Spare Request ${firstSpareRequestId} detail` });
+  await spareDetail.getByLabel("Spare SR").click();
+  await page.keyboard.press("Escape");
+
+  await expect(spareDetail).toHaveCount(0);
+  await expect(firstSpare).toHaveAttribute("aria-selected", "true");
+  await expect(firstSpare).toHaveClass(/selected/);
+  await expect(firstSpare).toBeFocused();
+
+  await page.keyboard.press("Enter");
+  spareDetail = page.getByRole("complementary", { name: `Spare Request ${firstSpareRequestId} detail` });
+  await expect(spareDetail).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(firstSpare).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("complementary", { name: `Spare Request ${secondSpareRequestId} detail` })).toBeVisible();
+  await expect(secondSpare).toHaveAttribute("aria-selected", "true");
+});
+
 test("Service Requests and Spare Requests switch as independent management views", async ({ page }) => {
   const sparePrefetch = page.waitForResponse((response) =>
     response.url().includes("/api/dashboard?")

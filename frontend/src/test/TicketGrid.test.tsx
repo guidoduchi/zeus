@@ -48,13 +48,13 @@ function ticket(ticketId: string): TicketSummary {
   };
 }
 
-function renderGrid(selectedId: string | null = null) {
+function renderGrid(selectedRowId: string | null = null) {
   const onSelect = vi.fn();
   render(
     <TicketGrid
       tickets={[ticket("12345678"), ticket("87654321")]}
       columns={columns}
-      selectedId={selectedId}
+      selectedRowId={selectedRowId}
       onSelect={onSelect}
       onCloseDetail={vi.fn()}
     />,
@@ -105,7 +105,7 @@ describe("TicketGrid", () => {
       <TicketGrid
         tickets={[ticket("12345678"), ticket("87654321")]}
         columns={columns}
-        selectedId="87654321"
+        selectedRowId="87654321"
         draftTicketIds={new Set(["12345678"])}
         onSelect={vi.fn()}
         onCloseDetail={vi.fn()}
@@ -122,9 +122,9 @@ describe("TicketGrid", () => {
     const tickets = [ticket("12345678"), ticket("87654321")];
     let rerender: ReturnType<typeof render>["rerender"];
     const onSelect = vi.fn((ticketId: string) => {
-      rerender(<TicketGrid tickets={tickets} columns={columns} selectedId={ticketId} onSelect={onSelect} onCloseDetail={vi.fn()} />);
+      rerender(<TicketGrid tickets={tickets} columns={columns} selectedRowId={ticketId} onSelect={onSelect} onCloseDetail={vi.fn()} />);
     });
-    ({ rerender } = render(<TicketGrid tickets={tickets} columns={columns} selectedId={null} onSelect={onSelect} onCloseDetail={vi.fn()} />));
+    ({ rerender } = render(<TicketGrid tickets={tickets} columns={columns} selectedRowId={null} onSelect={onSelect} onCloseDetail={vi.fn()} />));
     const grid = screen.getByRole("grid");
     grid.focus();
     fireEvent.keyDown(grid, { key: "ArrowDown" });
