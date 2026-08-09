@@ -25,7 +25,7 @@ COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "ticketId", "label": "SR", "width": 94, "default": True},
     {"key": "risk", "label": "", "width": 18, "default": True},
     {"key": "lifecycle", "label": "Life", "width": 108, "default": True},
-    {"key": "done", "label": "MW", "width": 58, "default": True},
+    {"key": "done", "label": "MW", "width": 104, "default": True},
     {"key": "plannedDate", "label": "Planned", "width": 116, "default": True},
     {"key": "ticketAgeDays", "label": "Age", "width": 62, "default": True},
     {"key": "emailLabel", "label": "Last Email", "width": 154, "default": True},
@@ -55,7 +55,7 @@ SPARE_PART_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "faultySn", "label": "Faulty SN", "width": 155, "default": True},
     {"key": "newSn", "label": "New SN", "width": 155, "default": True},
     {"key": "lifecycle", "label": "Life", "width": 108, "default": False},
-    {"key": "done", "label": "MW", "width": 58, "default": False},
+    {"key": "done", "label": "MW", "width": 104, "default": False},
     {"key": "summary", "label": "Summary", "width": 320, "default": False, "flex": True},
 )
 

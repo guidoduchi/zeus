@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SpareRequestsGrid } from "../components/SpareRequestsGrid";
@@ -49,14 +49,16 @@ function row(overrides: Partial<SpareRequestItemSummary> = {}): SpareRequestItem
 describe("SpareRequestsGrid", () => {
   it("keeps lifecycle status color separate from dispatch aging and selects a unit item", async () => {
     const user = userEvent.setup();
-    const onSelect = vi.fn();
+    const onOpen = vi.fn();
     const requestItem = row();
     render(
       <SpareRequestsGrid
         rows={[requestItem]}
         columns={columns}
         selectedRowId={null}
-        onSelect={onSelect}
+        detailOpen={false}
+        onHighlight={vi.fn()}
+        onOpen={onOpen}
         onCloseDetail={vi.fn()}
       />,
     );
@@ -65,20 +67,30 @@ describe("SpareRequestsGrid", () => {
     expect(screen.getByText("Awaiting dispatch")).toHaveClass("tone-grey");
     expect(screen.getByText("16")).toHaveClass("tone-yellow");
     await user.click(screen.getByRole("row", { name: /C3209937826/ }));
-    expect(onSelect).toHaveBeenCalledWith(requestItem);
+    expect(onOpen).toHaveBeenCalledWith(requestItem);
   });
 
   it("marks completed archive rows as read-only", () => {
+    const onHighlight = vi.fn();
+    const onOpen = vi.fn();
+    const completed = row({ readOnly: true, source: "closed", status: "returned", statusLabel: "Returned" });
     render(
       <SpareRequestsGrid
-        rows={[row({ readOnly: true, source: "closed", status: "returned", statusLabel: "Returned" })]}
+        rows={[completed]}
         columns={columns}
         selectedRowId={null}
-        onSelect={vi.fn()}
+        detailOpen={false}
+        onHighlight={onHighlight}
+        onOpen={onOpen}
         onCloseDetail={vi.fn()}
       />,
     );
 
     expect(screen.getByRole("row", { name: /Returned/ })).toHaveAttribute("data-read-only", "true");
+    const grid = screen.getByRole("grid");
+    grid.focus();
+    fireEvent.keyDown(grid, { key: "ArrowDown" });
+    expect(onHighlight).toHaveBeenCalledWith(completed);
+    expect(onOpen).not.toHaveBeenCalled();
   });
 });

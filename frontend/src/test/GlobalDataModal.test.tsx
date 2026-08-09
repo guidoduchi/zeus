@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GlobalDataModal } from "../components/GlobalDataModal";
+import styles from "../styles.css?raw";
 
 const api = vi.hoisted(() => ({
   getDashboard: vi.fn(),
@@ -109,6 +110,8 @@ describe("GlobalDataModal", () => {
 
     await user.click(screen.getByRole("button", { name: /Sites/ }));
     expect(screen.getByText("Sites identify spare-part dispatch and return locations.")).toBeVisible();
+    expect(styles).toMatch(/\.global-data-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(220px, 30%\) minmax\(0, 1fr\)/s);
+    expect(styles).toMatch(/\.global-category-grid\s*\{[^}]*grid-template-columns:\s*1fr/s);
   });
 
   it("autocompletes SR customer imports and protects unsaved modal changes", async () => {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+import { maintenanceWindowLabel } from "../maintenanceWindow";
 import type { ColumnDefinition, Risk } from "../types";
 
 export interface WorkspaceGridRow {
@@ -18,13 +19,17 @@ interface Props<Row extends WorkspaceGridRow> {
   emptyHint: string;
   countLabel: string;
   draftTicketIds?: ReadonlySet<string>;
-  onSelect: (row: Row) => void;
+  detailOpen: boolean;
+  selectionLabel: (row: Row) => string;
+  onHighlight: (row: Row) => void;
+  onOpen: (row: Row) => void;
   onCloseDetail: () => void;
 }
 
 function displayValue(row: WorkspaceGridRow, key: string): string {
   if (key === "risk") return "";
   const value = row[key];
+  if (key === "done") return maintenanceWindowLabel(value);
   if (value === null || value === undefined || value === "") return "—";
   return String(value);
 }
@@ -51,40 +56,54 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
   emptyHint,
   countLabel,
   draftTicketIds,
-  onSelect,
+  detailOpen,
+  selectionLabel,
+  onHighlight,
+  onOpen,
   onCloseDetail,
 }: Props<Row>) {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const scrollRef = useRef<HTMLDivElement>(null);
   const gridTemplate = useMemo(
     () => columns.map((column) => column.flex ? `minmax(${column.width}px, 1fr)` : `${column.width}px`).join(" "),
     [columns],
   );
   const selectedIndex = selectedRowId ? rows.findIndex((row) => row.rowId === selectedRowId) : -1;
+  const selectedRow = selectedIndex >= 0 ? rows[selectedIndex] : null;
 
   useEffect(() => {
     if (selectedRowId) rowRefs.current.get(selectedRowId)?.scrollIntoView({ block: "nearest" });
   }, [selectedRowId]);
 
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const blockWheel = (event: WheelEvent) => event.preventDefault();
+    scroll.addEventListener("wheel", blockWheel, { passive: false });
+    return () => scroll.removeEventListener("wheel", blockWheel);
+  }, []);
+
   function moveSelection(index: number) {
     if (!rows.length) return;
     const bounded = Math.max(0, Math.min(rows.length - 1, index));
     const row = rows[bounded];
-    onSelect(row);
+    onHighlight(row);
     window.requestAnimationFrame(() => {
       rowRefs.current.get(row.rowId)?.focus({ preventScroll: true });
     });
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    const current = selectedIndex >= 0 ? selectedIndex : 0;
-    if (event.key === "ArrowDown") moveSelection(current + 1);
-    else if (event.key === "ArrowUp") moveSelection(current - 1);
-    else if (event.key === "PageDown") moveSelection(current + 12);
-    else if (event.key === "PageUp") moveSelection(current - 12);
+    const current = selectedIndex;
+    if (event.key === "ArrowDown") moveSelection(current < 0 ? 0 : current + 1);
+    else if (event.key === "ArrowUp") moveSelection(current < 0 ? rows.length - 1 : current - 1);
+    else if (event.key === "PageDown") moveSelection(current < 0 ? 0 : current + 12);
+    else if (event.key === "PageUp") moveSelection(current < 0 ? rows.length - 1 : current - 12);
     else if (event.key === "Home") moveSelection(0);
     else if (event.key === "End") moveSelection(rows.length - 1);
-    else if (event.key === "Enter" && rows[current]) onSelect(rows[current]);
-    else if (event.key === "Escape") onCloseDetail();
+    else if (event.key === "Enter" && rows[current < 0 ? 0 : current]) onOpen(rows[current < 0 ? 0 : current]);
+    else if (event.key === " ") { /* Row activation is deliberately click/Enter only. */ }
+    else if (event.key === "Escape" && detailOpen) onCloseDetail();
     else return;
     event.preventDefault();
   }
@@ -95,6 +114,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
         {columns.map((column) => <div role="columnheader" key={column.key}>{column.label}</div>)}
       </div>
       <div
+        ref={scrollRef}
         className="ticket-scroll"
         data-testid="dashboard-scroll"
         role="grid"
@@ -125,7 +145,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
                 if (element) rowRefs.current.set(row.rowId, element);
                 else rowRefs.current.delete(row.rowId);
               }}
-              onClick={() => onSelect(row)}
+              onClick={() => onOpen(row)}
             >
               {columns.map((column) => (
                 <span
@@ -143,7 +163,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
       </div>
       <div className="grid-status">
         <span>{rows.length} {countLabel}</span>
-        <span>Wheel scrolls this list</span>
+        <span>{selectedRow ? `${selectionLabel(selectedRow)} · Enter opens` : rows.length ? "No row highlighted · ↑↓ selects" : "No rows available in this view"}</span>
       </div>
     </section>
   );

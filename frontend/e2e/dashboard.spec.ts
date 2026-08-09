@@ -1,10 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-test("the dashboard owns wheel scrolling and opens the ticket panel", async ({ page }) => {
+test("the dashboard blocks wheel scrolling and opens rows only on activation", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("[data-ticket-id]");
   await expect(rows.first()).toBeVisible();
   expect(await rows.count()).toBeGreaterThan(25);
+  await expect(page.getByLabel("Service Requests summary")).toContainText("Pending");
+  await expect(rows.first().locator(".column-done")).toHaveText("Pending");
 
   const list = page.getByTestId("dashboard-scroll");
   const before = await page.evaluate(() => ({
@@ -13,10 +15,16 @@ test("the dashboard owns wheel scrolling and opens the ticket panel", async ({ p
   }));
   await list.hover();
   await page.mouse.wheel(0, 900);
-  await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBeGreaterThan(before.list);
+  await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBe(before.list);
   expect(await page.evaluate(() => document.scrollingElement?.scrollTop || 0)).toBe(before.body);
 
-  await rows.first().click();
+  await list.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(rows.first()).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".grid-status")).toContainText(/SR \d{8}/);
+  await expect(page.locator(".grid-status")).not.toContainText(/Wheel/i);
+  await expect(page.getByRole("complementary", { name: /SR \d{8} detail/ })).toHaveCount(0);
+  await page.keyboard.press("Enter");
   await expect(page.getByRole("complementary", { name: /SR \d{8} detail/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Work fields" })).toBeVisible();
 });
@@ -49,8 +57,11 @@ test("Escape closes details without losing the row cursor in either workspace", 
   await page.keyboard.press("Escape");
   await expect(secondService).toBeFocused();
   await page.keyboard.press("ArrowDown");
-  await expect(page.getByRole("complementary", { name: `SR ${thirdServiceId} detail` })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: `SR ${thirdServiceId} detail` })).toHaveCount(0);
   await expect(thirdService).toHaveAttribute("aria-selected", "true");
+  await expect(thirdService).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("complementary", { name: `SR ${thirdServiceId} detail` })).toBeVisible();
 
   await page.getByRole("button", { name: "Spare Requests" }).click();
   const spareRows = page.locator("[data-row-id]");
@@ -78,8 +89,11 @@ test("Escape closes details without losing the row cursor in either workspace", 
   await page.keyboard.press("Escape");
   await expect(firstSpare).toBeFocused();
   await page.keyboard.press("ArrowDown");
-  await expect(page.getByRole("complementary", { name: `Spare Request ${secondSpareRequestId} detail` })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: `Spare Request ${secondSpareRequestId} detail` })).toHaveCount(0);
   await expect(secondSpare).toHaveAttribute("aria-selected", "true");
+  await expect(secondSpare).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("complementary", { name: `Spare Request ${secondSpareRequestId} detail` })).toBeVisible();
 });
 
 test("Service Requests and Spare Requests switch as independent management views", async ({ page }) => {
@@ -139,7 +153,12 @@ test("eligible SR parts seed exports and completed items stay read-only", async 
   await search.fill("39400001");
   const eligible = page.locator('[data-row-id="39400001:1:1"]');
   await expect(eligible).toBeVisible();
-  await eligible.click();
+  const eligibleGrid = page.getByRole("grid");
+  await eligibleGrid.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(eligible).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("dialog", { name: "Export Spare Request" })).toHaveCount(0);
+  await page.keyboard.press("Enter");
   const exportDialog = page.getByRole("dialog", { name: "Export Spare Request" });
   await expect(exportDialog).toBeVisible();
   await expect(exportDialog.getByLabel("TT · 8 digits")).toHaveValue("39400001");
@@ -150,6 +169,59 @@ test("eligible SR parts seed exports and completed items stay read-only", async 
   const archived = page.locator('[data-row-id="260807123456-0001"]');
   await expect(archived).toBeVisible();
   await expect(archived).toHaveAttribute("data-read-only", "true");
+});
+
+test("Escape on blank table space never outlines the entire work area", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Spare Requests" }).click();
+  await page.getByRole("tab", { name: "Completed" }).click();
+  await page.getByPlaceholder("Search TT, RMA, Spare SR, BOM, serial, site…").fill("no-such-record");
+  await expect(page.getByText("No matching Spare Request items.")).toBeVisible();
+
+  const grid = page.getByTestId("dashboard-scroll");
+  await grid.click({ position: { x: 20, y: 120 } });
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".ticket-row.selected")).toHaveCount(0);
+  expect(await grid.evaluate((element) => getComputedStyle(element).outlineStyle)).toBe("none");
+});
+
+test("Spare Request controls form two clean rows and collapse to icons", async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Spare Requests" }).click();
+
+  const tabs = page.getByRole("tablist", { name: "Spare Request view" });
+  const search = page.getByPlaceholder("Search TT, RMA, Spare SR, BOM, serial, site…");
+  const geometry = await page.locator(".dashboard-toolbar").evaluate((toolbar) => {
+    const tabsBox = toolbar.querySelector(".spare-view-switcher")?.getBoundingClientRect();
+    const searchBox = toolbar.querySelector(".search-box")?.getBoundingClientRect();
+    const queryBox = toolbar.querySelector<HTMLButtonElement>('button[aria-label="Check Advanced Search"]')?.getBoundingClientRect();
+    const fieldsBox = toolbar.querySelector<HTMLButtonElement>('button[aria-label="Fields"]')?.getBoundingClientRect();
+    if (!tabsBox || !searchBox || !queryBox || !fieldsBox) throw new Error("Responsive toolbar controls missing");
+    return {
+      separateRows: tabsBox.bottom <= searchBox.top,
+      controlsShareSecondRow: Math.abs(searchBox.top - queryBox.top) <= 1 && Math.abs(searchBox.top - fieldsBox.top) <= 1,
+      fits: toolbar.scrollWidth <= toolbar.clientWidth + 1,
+    };
+  });
+  expect(geometry).toEqual({ separateRows: true, controlsShareSecondRow: true, fits: true });
+  await expect(tabs).toBeVisible();
+
+  await page.setViewportSize({ width: 1080, height: 900 });
+  const query = page.getByRole("button", { name: "Check Advanced Search" });
+  await expect(query).toBeVisible();
+  expect(await query.locator(".toolbar-label").evaluate((element) => getComputedStyle(element).display)).toBe("none");
+  await expect(page.getByRole("button", { name: "Manual request" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "BOM catalog" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Filters" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Fields" })).toBeVisible();
+  expect(await page.locator(".dashboard-toolbar").evaluate((toolbar) => {
+    const searchBox = toolbar.querySelector(".search-box")?.getBoundingClientRect();
+    const fieldsBox = toolbar.querySelector<HTMLButtonElement>('button[aria-label="Fields"]')?.getBoundingClientRect();
+    return Boolean(searchBox && fieldsBox)
+      && Math.abs(searchBox.top - fieldsBox.top) <= 1
+      && toolbar.scrollWidth <= toolbar.clientWidth + 1;
+  })).toBe(true);
 });
 
 test("field choices persist and a manual source query is visible", async ({ page }) => {
@@ -241,7 +313,7 @@ test("saving to Zeus keeps the workstation mounted", async ({ page }, testInfo) 
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("zeus3.ticket-draft.")).length)).toBe(0);
 });
 
-test("unsaved Work Fields survive row arrows and keyboard reload is blocked", async ({ page }) => {
+test("unsaved Work Fields survive highlight-only arrows and keyboard reload is blocked", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("[data-ticket-id]");
   const firstId = await rows.nth(0).getAttribute("data-ticket-id");
@@ -255,6 +327,12 @@ test("unsaved Work Fields survive row arrows and keyboard reload is blocked", as
   await detail.getByLabel("Notes").fill("Protected navigation draft");
   await page.locator(".stats-bar").click();
   await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("complementary", { name: `SR ${firstId} detail` })).toBeVisible();
+  await expect(page.locator(`[data-ticket-id="${secondId}"]`)).toBeFocused();
+  await expect(page.locator(`[data-ticket-id="${secondId}"]`)).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText(new RegExp(`Unsaved SR ${firstId} draft kept safely`))).toHaveCount(0);
+
+  await page.keyboard.press("Enter");
   await expect(page.getByText(new RegExp(`Unsaved SR ${firstId} draft kept safely`))).toBeVisible();
   await expect(page.getByRole("complementary", { name: `SR ${secondId} detail` })).toBeVisible();
   await expect(page.getByRole("button", { name: "Work fields" })).toHaveClass(/active/);
@@ -269,6 +347,9 @@ test("unsaved Work Fields survive row arrows and keyboard reload is blocked", as
   await expect(page.getByRole("button", { name: "Work fields" })).toBeFocused();
 
   await page.keyboard.press("ArrowUp");
+  await expect(page.getByRole("complementary", { name: `SR ${secondId} detail` })).toBeVisible();
+  await expect(page.locator(`[data-ticket-id="${firstId}"]`)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Enter");
   await expect(page.getByRole("complementary", { name: `SR ${firstId} detail` })).toBeVisible();
   await expect(page.getByLabel("Notes")).toHaveValue("Protected navigation draft");
   await page.getByRole("button", { name: /1 protected draft/i }).click();
@@ -287,6 +368,16 @@ test("Global data protects dirty forms and stays open after save", async ({ page
   await page.getByRole("button", { name: "Global data" }).click();
   const modal = page.getByRole("dialog", { name: "Global data" });
   await expect(modal.getByRole("button", { name: "Save global data" })).toBeDisabled();
+  const globalDataLayout = await modal.evaluate((dialog) => {
+    const navigation = dialog.querySelector(".global-category-grid")?.getBoundingClientRect();
+    const manager = dialog.querySelector(".manager-workspace")?.getBoundingClientRect();
+    if (!navigation || !manager) throw new Error("Global data layout missing");
+    return {
+      navigationIsLeft: navigation.right <= manager.left,
+      navigationStartsLeft: navigation.left < manager.left,
+    };
+  });
+  expect(globalDataLayout).toEqual({ navigationIsLeft: true, navigationStartsLeft: true });
 
   await modal.getByRole("button", { name: "Customer organizations", exact: true }).click();
   await expect(modal.getByText("Customer organizations group customer contacts.")).toBeVisible();

@@ -6,7 +6,9 @@ interface Props {
   columns: ColumnDefinition[];
   selectedRowId: string | null;
   draftTicketIds?: ReadonlySet<string>;
-  onSelect: (row: SparePartSummary) => void;
+  detailOpen: boolean;
+  onHighlight: (row: SparePartSummary) => void;
+  onOpen: (row: SparePartSummary) => void;
   onCloseDetail: () => void;
 }
 
@@ -15,7 +17,9 @@ export function SparePartsGrid({
   columns,
   selectedRowId,
   draftTicketIds,
-  onSelect,
+  detailOpen,
+  onHighlight,
+  onOpen,
   onCloseDetail,
 }: Props) {
   return (
@@ -28,7 +32,10 @@ export function SparePartsGrid({
       emptyHint="Add damaged devices and parts from an SR's Spare Parts editor."
       countLabel="part row(s)"
       draftTicketIds={draftTicketIds}
-      onSelect={onSelect}
+      detailOpen={detailOpen}
+      selectionLabel={(row) => `SR ${row.ticketId}${row.part ? ` · ${row.part}` : ""}${row.slot ? ` · ${row.slot}` : ""}`}
+      onHighlight={onHighlight}
+      onOpen={onOpen}
       onCloseDetail={onCloseDetail}
     />
   );

@@ -45,7 +45,8 @@ function row(rowId: string, bom: string, part: string): SparePartSummary {
 describe("SparePartsGrid", () => {
   it("manages each damaged part as a selectable row under its parent SR", async () => {
     const user = userEvent.setup();
-    const onSelect = vi.fn();
+    const onHighlight = vi.fn();
+    const onOpen = vi.fn();
     const rows = [
       row("12345678:1:1", "BOM-1", "Disk"),
       row("12345678:1:2", "—", "Backplane"),
@@ -54,19 +55,22 @@ describe("SparePartsGrid", () => {
       <SparePartsGrid
         rows={rows}
         columns={columns}
-        selectedRowId={null}
-        onSelect={onSelect}
+        selectedRowId={rows[0].rowId}
+        detailOpen={false}
+        onHighlight={onHighlight}
+        onOpen={onOpen}
         onCloseDetail={vi.fn()}
       />,
     );
 
     await user.click(screen.getByRole("row", { name: /Backplane/i }));
-    expect(onSelect).toHaveBeenCalledWith(rows[1]);
+    expect(onOpen).toHaveBeenCalledWith(rows[1]);
     expect(screen.getByText("—", { selector: ".column-bom" })).toHaveClass("tone-yellow");
 
     const grid = screen.getByRole("grid");
     grid.focus();
-    await user.keyboard("{ArrowDown}{Enter}");
-    expect(onSelect).toHaveBeenCalledWith(rows[1]);
+    await user.keyboard("{ArrowDown}");
+    expect(onHighlight).toHaveBeenCalledWith(rows[1]);
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 });

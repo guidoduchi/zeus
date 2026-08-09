@@ -89,6 +89,21 @@ describe("TicketDetail", () => {
     expect(screen.getByRole("button", { name: /^Spare Parts/ })).toHaveClass("active");
   });
 
+  it("presents Maintenance Window codes with their operational meanings", async () => {
+    const user = userEvent.setup();
+    render(<TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} />);
+
+    expect(screen.getByText("Maintenance Window")).toBeVisible();
+    expect(screen.getByText("Pending")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /work fields/i }));
+    const mw = screen.getByLabelText("Maintenance Window (MW)");
+    expect(mw).toHaveValue("N");
+    expect(screen.getByRole("option", { name: "Y — Done" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "N — Pending" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /P — Uncompleted.*follow-up pending/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "? — N/A" })).toBeInTheDocument();
+  });
+
   it("renders email content as escaped plain text and toggles full history", async () => {
     const user = userEvent.setup();
     const { container } = render(

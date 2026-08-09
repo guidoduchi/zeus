@@ -20,6 +20,7 @@ import {
 } from "../ticketDraftModel";
 import type { EmailMessage, SpareDevice, TicketDetail as TicketDetailType } from "../types";
 import { ConfirmationDialog } from "./ConfirmationDialog";
+import { maintenanceWindowLabel, maintenanceWindowOptionLabel } from "../maintenanceWindow";
 
 type Tab = "overview" | "work" | "spares" | "emails" | "mops" | "history";
 
@@ -190,12 +191,12 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
               if (field === "Done?") {
                 return (
                   <label className="form-field" key={field}>
-                    <span>{label}</span>
+                    <span>Maintenance Window (MW)</span>
                     <select value={draft[field] || "N"} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)}>
-                      <option value="N">N — Not completed</option>
-                      <option value="Y">Y — Completed</option>
-                      <option value="P">P — Attempted, issue pending</option>
-                      <option value="?">? — Outside visibility</option>
+                      <option value="N">{maintenanceWindowOptionLabel("N")}</option>
+                      <option value="Y">{maintenanceWindowOptionLabel("Y")}</option>
+                      <option value="P">{maintenanceWindowOptionLabel("P")}</option>
+                      <option value="?">{maintenanceWindowOptionLabel("?")}</option>
                     </select>
                   </label>
                 );
@@ -568,7 +569,7 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
           <div className="tab-content">
             <div className="fact-grid">
               <div><span>Lifecycle</span><strong>{ticket.lifecycle}</strong></div>
-              <div><span>MW</span><strong>{ticket.done}</strong></div>
+              <div><span>Maintenance Window</span><strong>{maintenanceWindowLabel(ticket.done)}</strong></div>
               <div><span>Planned</span><strong>{ticket.plannedDate}</strong></div>
               <div><span>Ticket age</span><strong>{ticket.ticketAgeDays ?? "—"} days</strong></div>
               <div><span>Resolve by</span><strong>{ticket.resolveBy}</strong></div>

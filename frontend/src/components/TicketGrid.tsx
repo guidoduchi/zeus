@@ -6,7 +6,9 @@ interface Props {
   columns: ColumnDefinition[];
   selectedRowId: string | null;
   draftTicketIds?: ReadonlySet<string>;
-  onSelect: (ticketId: string) => void;
+  detailOpen: boolean;
+  onHighlight: (ticketId: string) => void;
+  onOpen: (ticketId: string) => void;
   onCloseDetail: () => void;
 }
 
@@ -15,7 +17,9 @@ export function TicketGrid({
   columns,
   selectedRowId,
   draftTicketIds,
-  onSelect,
+  detailOpen,
+  onHighlight,
+  onOpen,
   onCloseDetail,
 }: Props) {
   return (
@@ -31,7 +35,10 @@ export function TicketGrid({
       emptyHint="Check the configured Advanced Search source to discover new service requests."
       countLabel="service request(s)"
       draftTicketIds={draftTicketIds}
-      onSelect={(ticket) => onSelect(ticket.ticketId)}
+      detailOpen={detailOpen}
+      selectionLabel={(ticket) => `SR ${ticket.ticketId}${ticket.summary ? ` · ${ticket.summary}` : ""}`}
+      onHighlight={(ticket) => onHighlight(ticket.ticketId)}
+      onOpen={(ticket) => onOpen(ticket.ticketId)}
       onCloseDetail={onCloseDetail}
     />
   );

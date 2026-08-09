@@ -41,6 +41,7 @@ import {
 import { useColumnPreferences } from "./hooks/useColumnPreferences";
 import { isEditingArea, useGlobalCommands } from "./hooks/useGlobalCommands";
 import { useRowFilters, type RowFilterBlueprint } from "./hooks/useRowFilters";
+import { maintenanceWindowOptionLabel } from "./maintenanceWindow";
 import type {
   BootstrapPayload,
   DashboardPayload,
@@ -121,12 +122,7 @@ const SERVICE_FILTERS: Array<RowFilterBlueprint<TicketSummary>> = [
     label: "MW",
     values: (row) => row.done || "N",
     order: ["N", "P", "Y", "?"],
-    optionLabel: (value) => ({
-      N: "N — Not completed",
-      P: "P — Attempted, pending",
-      Y: "Y — Completed",
-      "?": "? — Outside visibility",
-    }[value] || value),
+    optionLabel: maintenanceWindowOptionLabel,
   },
   { key: "severity", label: "Severity", values: (row) => row.severity || "—" },
 ];
@@ -181,6 +177,7 @@ const ELIGIBLE_PART_FILTERS: Array<RowFilterBlueprint<SparePartSummary>> = [
     label: "MW",
     values: (row) => row.done || "N",
     order: ["N", "P", "Y", "?"],
+    optionLabel: maintenanceWindowOptionLabel,
   },
   { key: "site", label: "Site", values: (row) => row.site || "—" },
   { key: "cloud", label: "Cloud", values: (row) => row.cloud || "—" },
@@ -590,6 +587,7 @@ export default function App() {
   }, [activeJob, runJob]);
 
   const closeDetail = useCallback(() => {
+    if (!selectedTicketId && !selectedRequestId) return;
     const rowId = selectedRowId;
     setSelectedTicketId(null);
     setSelectedRequestId(null);
@@ -604,7 +602,7 @@ export default function App() {
       }
       document.querySelector<HTMLElement>('[role="grid"]')?.focus({ preventScroll: true });
     });
-  }, [selectedRowId]);
+  }, [selectedRequestId, selectedRowId, selectedTicketId]);
 
   const chooseWorkspace = useCallback((next: WorkspaceKey) => {
     if (next === workspace) return;
@@ -648,6 +646,10 @@ export default function App() {
     setSelectedRowId(ticketId);
   }, [informProtectedTicketMove]);
 
+  const highlightServiceRequest = useCallback((ticketId: string) => {
+    setSelectedRowId(ticketId);
+  }, []);
+
   const selectSparePart = useCallback((row: SparePartSummary) => {
     informProtectedTicketMove(row.ticketId);
     setSelectedRequestId(null);
@@ -656,9 +658,17 @@ export default function App() {
     setTicketInitialTab("spares");
   }, [informProtectedTicketMove]);
 
+  const highlightSparePart = useCallback((row: SparePartSummary) => {
+    setSelectedRowId(row.rowId);
+  }, []);
+
   const selectSpareRequest = useCallback((row: SpareRequestItemSummary) => {
     setSelectedTicketId(null);
     setSelectedRequestId(row.readOnly ? null : row.requestId);
+    setSelectedRowId(row.rowId);
+  }, []);
+
+  const highlightSpareRequest = useCallback((row: SpareRequestItemSummary) => {
     setSelectedRowId(row.rowId);
   }, []);
 
@@ -809,7 +819,7 @@ export default function App() {
       function nextIndex(rows: Array<{ rowId: string }>): number {
         if (!rows.length) return -1;
         const current = selectedRowId ? rows.findIndex((row) => row.rowId === selectedRowId) : -1;
-        if (current < 0) return 0;
+        if (current < 0) return delta > 0 ? 0 : rows.length - 1;
         return Math.max(0, Math.min(rows.length - 1, current + delta));
       }
 
@@ -819,21 +829,21 @@ export default function App() {
         const next = serviceFilters.filteredRows[index];
         if (next) {
           nextRowId = next.ticketId;
-          selectServiceRequest(next.ticketId);
+          highlightServiceRequest(next.ticketId);
         }
       } else if (dashboard.view === "eligible") {
         const index = nextIndex(eligiblePartFilters.filteredRows);
         const next = eligiblePartFilters.filteredRows[index];
         if (next) {
           nextRowId = next.rowId;
-          selectSparePart(next);
+          highlightSparePart(next);
         }
       } else {
         const index = nextIndex(spareRequestFilters.filteredRows);
         const next = spareRequestFilters.filteredRows[index];
         if (next) {
           nextRowId = next.rowId;
-          selectSpareRequest(next);
+          highlightSpareRequest(next);
         }
       }
       if (!nextRowId) return;
@@ -848,10 +858,10 @@ export default function App() {
   }, [
     dashboard,
     eligiblePartFilters.filteredRows,
+    highlightServiceRequest,
+    highlightSparePart,
+    highlightSpareRequest,
     keyboardDisabled,
-    selectServiceRequest,
-    selectSparePart,
-    selectSpareRequest,
     selectedRowId,
     serviceFilters.filteredRows,
     spareRequestFilters.filteredRows,
@@ -893,7 +903,11 @@ export default function App() {
   }
 
   return (
-    <main className={`app-shell ${selectedTicketId || selectedRequestId ? "with-detail" : ""}`} data-workspace={workspace}>
+    <main
+      className={`app-shell ${selectedTicketId || selectedRequestId ? "with-detail" : ""}`}
+      data-workspace={workspace}
+      data-spare-view={workspace === "spare-requests" ? spareView : undefined}
+    >
       <TopBar
         version={bootstrap.version || "3.1.5"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId)}
@@ -915,7 +929,7 @@ export default function App() {
       <JobBanner jobs={jobs} onCancel={stopJob} onOpenActivity={() => setOperationsOpen(true)} />
       <StatsBar dashboard={dashboard} />
       <section className="dashboard-toolbar">
-        {workspace === "spare-requests" && <div className="spare-view-switcher" role="tablist" aria-label="Spare Request view">{(["active", "eligible", "completed"] as SpareRequestView[]).map((view) => <button type="button" role="tab" aria-selected={spareView === view} className={spareView === view ? "active" : ""} onClick={() => chooseSpareView(view)} key={view}>{view === "active" ? "Active Requests" : view === "eligible" ? "Eligible SR Parts" : "Completed"}</button>)}</div>}
+        {workspace === "spare-requests" && <div className="spare-view-row"><div className="spare-view-switcher" role="tablist" aria-label="Spare Request view">{(["active", "eligible", "completed"] as SpareRequestView[]).map((view) => <button type="button" role="tab" aria-selected={spareView === view} className={spareView === view ? "active" : ""} onClick={() => chooseSpareView(view)} key={view}>{view === "active" ? "Active Requests" : view === "eligible" ? "Eligible SR Parts" : "Completed"}</button>)}</div></div>}
         <label className="search-box">
           <span>⌕</span>
           <input
@@ -937,8 +951,12 @@ export default function App() {
             <option value="desc">↓ Descending</option>
           </select>
         </div>
-        <button type="button" className="toolbar-button" onClick={queryData} disabled={Boolean(activeJob)}>↻ Check Advanced Search</button>
-        {workspace === "spare-requests" && <><button type="button" className="toolbar-button" onClick={() => openSpareExport()}>+ Manual request</button><button type="button" className="toolbar-button" onClick={() => setBomCatalogOpen(true)}>BOM catalog</button>{spareView === "completed" && <button type="button" className="toolbar-button danger-text" disabled={!selectedCompletedItem} onClick={() => setPurgeConfirmationOpen(true)}>Purge selected</button>}</>}
+        <button type="button" className="toolbar-button compactable-button" aria-label="Check Advanced Search" title="Check Advanced Search" onClick={queryData} disabled={Boolean(activeJob)}><span className="toolbar-icon" aria-hidden="true">↻</span><span className="toolbar-label">Check Advanced Search</span></button>
+        {workspace === "spare-requests" && <>
+          <button type="button" className="toolbar-button compactable-button" aria-label="Manual request" title="Manual request" onClick={() => openSpareExport()}><span className="toolbar-icon" aria-hidden="true">+</span><span className="toolbar-label">Manual request</span></button>
+          <button type="button" className="toolbar-button compactable-button" aria-label="BOM catalog" title="BOM catalog" onClick={() => setBomCatalogOpen(true)}><span className="toolbar-icon" aria-hidden="true">▤</span><span className="toolbar-label">BOM catalog</span></button>
+          {spareView === "completed" && <button type="button" className="toolbar-button compactable-button danger-text" aria-label="Purge selected" title="Purge selected" disabled={!selectedCompletedItem} onClick={() => setPurgeConfirmationOpen(true)}><span className="toolbar-icon" aria-hidden="true">⌫</span><span className="toolbar-label">Purge selected</span></button>}
+        </>}
         {dashboard.workspace === "service-requests" ? (
           <FilterBar
             definitions={serviceFilters.definitions}
@@ -965,7 +983,7 @@ export default function App() {
           />
         )}
         <div className="columns-anchor">
-          <button type="button" className="toolbar-button" onClick={() => setColumnsOpen((value) => !value)}>⚙ Fields</button>
+          <button type="button" className="toolbar-button compactable-button" aria-label="Fields" title="Fields" aria-expanded={columnsOpen} onClick={() => setColumnsOpen((value) => !value)}><span className="toolbar-icon" aria-hidden="true">⚙</span><span className="toolbar-label">Fields</span></button>
           {columnsOpen && (
             <ColumnChooser
               columns={orderedColumns}
@@ -985,13 +1003,17 @@ export default function App() {
             columns={visibleColumns}
             selectedRowId={selectedRowId}
             draftTicketIds={draftTicketIds}
-            onSelect={(row) => { selectSparePart(row); openSpareExport(row.ticketId, row); }}
+            detailOpen={Boolean(selectedTicketId || selectedRequestId)}
+            onHighlight={highlightSparePart}
+            onOpen={(row) => { selectSparePart(row); openSpareExport(row.ticketId, row); }}
             onCloseDetail={closeDetail}
           /> : <SpareRequestsGrid
             rows={spareRequestFilters.filteredRows}
             columns={visibleColumns}
             selectedRowId={selectedRowId}
-            onSelect={selectSpareRequest}
+            detailOpen={Boolean(selectedTicketId || selectedRequestId)}
+            onHighlight={highlightSpareRequest}
+            onOpen={selectSpareRequest}
             onCloseDetail={closeDetail}
           />
         ) : (
@@ -1000,7 +1022,9 @@ export default function App() {
             columns={visibleColumns}
             selectedRowId={selectedRowId}
             draftTicketIds={draftTicketIds}
-            onSelect={selectServiceRequest}
+            detailOpen={Boolean(selectedTicketId || selectedRequestId)}
+            onHighlight={highlightServiceRequest}
+            onOpen={selectServiceRequest}
             onCloseDetail={closeDetail}
           />
         )}
@@ -1027,7 +1051,6 @@ export default function App() {
       <footer className="command-strip">
         <span>↑↓ Select</span>
         <span>←→ Detail tab</span>
-        <span>Wheel Scroll List</span>
         <span>Click/Enter Open · Esc Close</span>
         <span>Ctrl+F Search</span>
         <span>S Sort</span>

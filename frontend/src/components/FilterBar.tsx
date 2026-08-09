@@ -15,11 +15,14 @@ export function FilterBar({ definitions, selections, activeCount, onToggle, onCl
     <div className="filter-anchor">
       <button
         type="button"
-        className={`toolbar-button ${activeCount ? "active-filter" : ""}`}
+        className={`toolbar-button compactable-button ${activeCount ? "active-filter" : ""}`}
+        aria-label={activeCount ? `Filters (${activeCount} active)` : "Filters"}
+        title={activeCount ? `Filters (${activeCount} active)` : "Filters"}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        Filters{activeCount ? ` (${activeCount})` : ""}
+        <span className="toolbar-icon" aria-hidden="true">≡</span>
+        <span className="toolbar-label">Filters{activeCount ? ` (${activeCount})` : ""}</span>
       </button>
       {open && (
         <section className="filter-panel" aria-label="Table filters">

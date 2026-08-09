@@ -674,8 +674,17 @@ class DatabaseFirstSourceTests(WebFixture):
         email_column = next(
             column for column in dashboard["columns"] if column["key"] == "emailLabel"
         )
+        mw_column = next(
+            column for column in dashboard["columns"] if column["key"] == "done"
+        )
         self.assertEqual(email_column["label"], "Last Email")
         self.assertTrue(email_column["default"])
+        self.assertEqual(mw_column, {
+            "key": "done",
+            "label": "MW",
+            "width": 104,
+            "default": True,
+        })
         self.assertEqual(dashboard["tickets"][0]["emailLabel"], "No email [8]")
         self.assertNotIn("emailCount", {column["key"] for column in dashboard["columns"]})
 

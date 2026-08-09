@@ -324,11 +324,15 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("workspace selection and detail focus", () => {
-  it("closes an SR detail from inside it and resumes Enter/arrows from the same row", async () => {
+  it("closes an SR detail, moves the row cursor without opening, and activates only on Enter", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     const second = await screen.findByRole("row", { name: /20000002/ });
+    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Done 0");
+    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Pending 3");
+    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Uncompleted 0");
+    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("N/A 0");
     await user.click(second);
     const detail = await screen.findByRole("complementary", { name: "SR 20000002 detail" });
     await user.click(screen.getByRole("button", { name: "Work fields" }));
@@ -352,12 +356,20 @@ describe("workspace selection and detail focus", () => {
 
     await user.keyboard("{Escape}");
     await waitFor(() => expect(second).toHaveFocus());
+    apiMocks.getTicket.mockClear();
     await user.keyboard("{ArrowDown}");
+    const third = screen.getByRole("row", { name: /20000003/ });
+    await waitFor(() => expect(third).toHaveFocus());
+    expect(third).toHaveClass("selected");
+    expect(screen.queryByRole("complementary", { name: "SR 20000003 detail" })).not.toBeInTheDocument();
+    expect(apiMocks.getTicket).not.toHaveBeenCalled();
+
+    await user.keyboard("{Enter}");
     await screen.findByRole("complementary", { name: "SR 20000003 detail" });
-    expect(screen.getByRole("row", { name: /20000003/ })).toHaveClass("selected");
+    expect(apiMocks.getTicket).toHaveBeenCalledWith("20000003");
   });
 
-  it("applies the same Escape, retained selection, Enter, and arrows behavior to Spare Requests", async () => {
+  it("applies the same highlight-versus-open behavior to Spare Requests", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -382,8 +394,16 @@ describe("workspace selection and detail focus", () => {
 
     await user.keyboard("{Escape}");
     await waitFor(() => expect(second).toHaveFocus());
+    apiMocks.getSpareRequest.mockClear();
     await user.keyboard("{ArrowDown}");
+    const third = screen.getByRole("row", { name: /C3209937823/ });
+    await waitFor(() => expect(third).toHaveFocus());
+    expect(third).toHaveClass("selected");
+    expect(screen.queryByRole("complementary", { name: `Spare Request ${spareRows[2].requestId} detail` })).not.toBeInTheDocument();
+    expect(apiMocks.getSpareRequest).not.toHaveBeenCalled();
+
+    await user.keyboard("{Enter}");
     await screen.findByRole("complementary", { name: `Spare Request ${spareRows[2].requestId} detail` });
-    expect(screen.getByRole("row", { name: /C3209937823/ })).toHaveClass("selected");
+    expect(apiMocks.getSpareRequest).toHaveBeenCalledWith(spareRows[2].requestId);
   });
 });
