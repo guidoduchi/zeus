@@ -28,7 +28,7 @@ function ticket(ticketId: string): TicketSummary {
     ticketAgeDays: 10,
     ticketAgeColor: null,
     emailInactivityDays: null,
-    emailLabel: "No email [7]",
+    emailLabel: "No email",
     emailCount: 7,
     emailColor: "grey",
     lastEmailDirection: null,
@@ -134,9 +134,33 @@ describe("TicketGrid", () => {
     renderGrid();
     expect(screen.getAllByText("Unplanned")[0]).toHaveClass("tone-yellow");
     expect(screen.getAllByText("10")[0]).toHaveClass("tone-none");
-    expect(screen.getAllByText("No email [7]")[0]).toHaveClass("tone-grey");
+    expect(screen.getAllByText("No email")[0].closest('[role="gridcell"]')).toHaveClass("tone-grey");
     expect(screen.getAllByText("Pending")[0]).toHaveClass("column-done");
     expect(screen.queryByRole("columnheader", { name: "Emails" })).not.toBeInTheDocument();
+  });
+
+  it("encloses email totals in semantic zero and positive badges", () => {
+    const positive = ticket("12345678");
+    const zero = { ...ticket("87654321"), emailCount: 0 };
+    render(
+      <TicketGrid
+        tickets={[positive, zero]}
+        columns={columns}
+        selectedRowId={null}
+        detailOpen={false}
+        onHighlight={vi.fn()}
+        onOpen={vi.fn()}
+        onCloseDetail={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("7 total emails")).toHaveClass("email-count-positive");
+    expect(screen.getByLabelText("7 total emails")).toHaveTextContent("7");
+    expect(screen.getByLabelText("0 total emails")).toHaveClass("email-count-zero");
+    expect(screen.getByLabelText("0 total emails")).toHaveTextContent("0");
+    expect(screen.queryByText("[7]")).not.toBeInTheDocument();
+    expect(styles).toMatch(/\.email-count-zero\s*\{[^}]*background:\s*var\(--red\)/s);
+    expect(styles).toMatch(/\.email-count-positive\s*\{[^}]*background:\s*var\(--grey\)/s);
   });
 
   it("marks protected SR drafts without confusing them with row selection", () => {

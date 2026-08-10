@@ -14,7 +14,7 @@
 | `global/user_profile.json` | explicit local profile setup/edit |
 | `global/reference_data.json` | structured Global data manager |
 | `global/spare_request_boms.json` | Spare Requests BOM catalog |
-| `current/spare_requests/active` | explicit Spare Request export plus configured-mail and manual lifecycle transactions |
+| `current/spare_requests/active` | explicit Zeus exports, already-sent manual registrations, configured-mail facts, and manual lifecycle transactions |
 | Completed Spare Request rows/email | dedicated `Closed.xlsx` tabs; never copied back to active Markdown |
 
 Every current ticket lives at `current/tickets/<SRNo>/<SRNo>.md`. The first
@@ -60,11 +60,13 @@ Service Requests projects current ticket Markdown. The top-level Spare Requests
 workspace is different: Active Requests projects independent records under
 `current/spare_requests/active/<request_id>/`; Eligible SR Parts is a reusable
 projection of current `local.spare_parts`; Completed reads the two dedicated
-tabs in validated Closed.xlsx. An eligible source part is never consumed and
-may seed multiple independent requests.
+tabs in validated Closed.xlsx. A source part is identified by TT, Device #, and
+Part #. It remains in the SR database but is withheld from eligibility while an
+Active Request owns that identity, then becomes eligible again after the active
+units are completed or cancelled.
 
 The request ID is a unique Ecuador `YYMMDDHHmmss` allocated at initial XLSX
-export. One request carries one eight-digit TT, one original TT report date, at
+export or already-sent manual registration. One request carries one eight-digit TT, one original TT report date, at
 most one `SR` plus seven-digit Spare SR, a profile snapshot, original BOM groups,
 and quantity-expanded unit items. The report date is captured once at TT level
 and propagated to unit/Fault Tag output; it is not independently edited per BOM.

@@ -47,6 +47,11 @@ function displayTone(row: WorkspaceGridRow, key: string): string {
   return value === "red" || value === "yellow" || value === "grey" || value === "green" || value === "black" ? String(value) : "none";
 }
 
+function emailCount(row: WorkspaceGridRow): number {
+  const value = Number(row.emailCount);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
 export function WorkspaceGrid<Row extends WorkspaceGridRow>({
   rows,
   columns,
@@ -141,10 +146,22 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
                 <span
                   role="gridcell"
                   className={`ticket-cell column-${column.key} tone-${displayTone(row, column.key)}`}
-                  title={displayValue(row, column.key)}
+                  title={column.key === "emailLabel"
+                    ? `${displayValue(row, column.key)} · ${emailCount(row)} total email(s)`
+                    : displayValue(row, column.key)}
                   key={column.key}
                 >
-                  {column.key === "risk" ? <i className={`risk-mark risk-${row.risk}`} aria-label={`${row.risk} risk`} /> : <>{displayValue(row, column.key)}{column.key === "ticketId" && hasDraft && <i className="draft-mark" aria-label="Protected draft" title="This SR has protected unsaved changes">✎</i>}</>}
+                  {column.key === "risk" ? (
+                    <i className={`risk-mark risk-${row.risk}`} aria-label={`${row.risk} risk`} />
+                  ) : column.key === "emailLabel" ? (
+                    <span className="email-fact">
+                      <span>{displayValue(row, column.key)}</span>
+                      <i
+                        className={`email-count-badge ${emailCount(row) === 0 ? "email-count-zero" : "email-count-positive"}`}
+                        aria-label={`${emailCount(row)} total email${emailCount(row) === 1 ? "" : "s"}`}
+                      >{emailCount(row)}</i>
+                    </span>
+                  ) : <>{displayValue(row, column.key)}{column.key === "ticketId" && hasDraft && <i className="draft-mark" aria-label="Protected draft" title="This SR has protected unsaved changes">✎</i>}</>}
                 </span>
               ))}
             </button>

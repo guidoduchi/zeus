@@ -31,10 +31,12 @@ interface LineDraft {
 interface Props {
   initialTicketId?: string;
   initialPart?: SparePartSummary | null;
+  initialAction?: "export" | "manual";
   configurationRevision?: number;
   suspended?: boolean;
   onClose: () => void;
   onExport: (payload: Record<string, unknown>) => Promise<void>;
+  onRegisterManual?: (payload: Record<string, unknown>) => Promise<void>;
   onExportSetupRequired: (missing: string[]) => void;
   onError: (error: unknown) => void;
 }
@@ -48,7 +50,7 @@ function normalized(value: unknown): string {
   return String(value || "").trim().toLocaleLowerCase();
 }
 
-export function SpareRequestModal({ initialTicketId, initialPart, configurationRevision = 0, suspended = false, onClose, onExport, onExportSetupRequired, onError }: Props) {
+export function SpareRequestModal({ initialTicketId, initialPart, initialAction = "export", configurationRevision = 0, suspended = false, onClose, onExport, onRegisterManual, onExportSetupRequired, onError }: Props) {
   const inheritedTicket = Boolean(initialTicketId || initialPart);
   const [ticketId, setTicketId] = useState(initialTicketId || initialPart?.ticketId || "");
   const [source, setSource] = useState<"ticket" | "manual">(inheritedTicket ? "ticket" : "manual");
@@ -76,6 +78,7 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
   }] : [{ ...EMPTY_LINE }]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingAction, setSavingAction] = useState<"export" | "manual" | null>(null);
   const [importing, setImporting] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
   const [references, setReferences] = useState<SpareReferenceData | null>(null);
@@ -298,40 +301,48 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
     }
   }
 
-  async function submit() {
+  function requestPayload(): Record<string, unknown> {
+    return {
+      source,
+      ticketId,
+      reportDate,
+      profile: {
+        customerOrganization: profile.customerOrganization,
+        customerName: profile.customerName,
+        siteCode: profile.siteCode,
+        siteName: profile.siteName,
+        siteAddress: profile.siteAddress,
+        cloud: profile.cloud,
+        requester: { name: profile.requesterName, email: profile.requesterEmail, phone: profile.requesterPhone },
+        contact: { name: profile.customerName, email: profile.contactEmail, phone: profile.contactPhone },
+      },
+      lines: lines.map((line) => ({
+        ...line,
+        amount: Number(line.amount || 1),
+        faultySns: line.faultySn.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+      })),
+    };
+  }
+
+  async function submit(action: "export" | "manual") {
     if (!references || saving) return;
-    if (!requestReady) {
+    if (action === "export" && !requestReady) {
       onExportSetupRequired(references?.exportSetup.requestMissing.map((item) => item.label) || []);
       return;
     }
-    if (!canAttemptExport) return;
+    if (!canAttemptExport || (action === "manual" && !onRegisterManual)) return;
     setSaving(true);
+    setSavingAction(action);
     try {
-      await onExport({
-        source,
-        ticketId,
-        reportDate,
-        profile: {
-          customerOrganization: profile.customerOrganization,
-          customerName: profile.customerName,
-          siteCode: profile.siteCode,
-          siteName: profile.siteName,
-          siteAddress: profile.siteAddress,
-          cloud: profile.cloud,
-          requester: { name: profile.requesterName, email: profile.requesterEmail, phone: profile.requesterPhone },
-          contact: { name: profile.customerName, email: profile.contactEmail, phone: profile.contactPhone },
-        },
-        lines: lines.map((line) => ({
-          ...line,
-          amount: Number(line.amount || 1),
-          faultySns: line.faultySn.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
-        })),
-      });
+      const payload = requestPayload();
+      if (action === "manual") await onRegisterManual!(payload);
+      else await onExport(payload);
       onClose();
     } catch (error) {
       onError(error);
     } finally {
       setSaving(false);
+      setSavingAction(null);
     }
   }
 
@@ -339,22 +350,30 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
 
   const setupRequired = Boolean(references && !requestReady);
 
-  return <Modal title="Export Spare Request" subtitle="Choose the customer, site, requester, and one BOM per group. Newline-separated slots set quantity automatically; slotless groups keep a manual multiplier." onClose={onClose} wide actions={<>
+  return <Modal title="Export Spare Request" subtitle="Review the request once, then export it through Zeus or register a file that was already sent manually." onClose={onClose} wide actions={<>
     <span className="modal-action-note">{source === "ticket" ? "TT inherited from active SR" : "Manual TT · warning allowed"}</span>
     <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
+    {onRegisterManual && <button
+      type="button"
+      className="secondary-button manual-registration-button"
+      disabled={!references || saving || !canAttemptExport}
+      title="Register this request in Active Requests without creating another XLSX"
+      autoFocus={initialAction === "manual"}
+      onClick={() => void submit("manual")}
+    >{savingAction === "manual" ? "Registering…" : "Already sent manually"}</button>}
     <button
       type="button"
       className={setupRequired ? "danger-button export-setup-button" : "primary-button"}
       disabled={!references || saving || (!setupRequired && !canAttemptExport)}
       title={setupRequired ? `Configure ${references?.exportSetup.requestMissing.map((item) => item.label).join(" and ") || "the Spare Request export paths"}` : undefined}
-      onClick={() => void submit()}
-    >{saving ? "Exporting…" : "Export XLSX & create request"}</button>
+      onClick={() => void submit("export")}
+    >{savingAction === "export" ? "Exporting…" : "Export XLSX & create request"}</button>
   </>}>
     <div className="spare-request-form">
       <section className="form-section">
         <div className="section-heading"><strong>Customer and ticket</strong><span>{source}</span></div>
         <div className="form-grid three">
-          <AutocompleteField label="Customer name" required value={profile.customerName} options={customerOptions} onChange={chooseCustomer} onSelect={(option) => chooseCustomerById(option.key)} autoFocus />
+          <AutocompleteField label="Customer name" required value={profile.customerName} options={customerOptions} onChange={chooseCustomer} onSelect={(option) => chooseCustomerById(option.key)} autoFocus={initialAction !== "manual"} />
           <AutocompleteField label="Customer organization" required value={profile.customerOrganization} options={organizationOptions} onChange={(value) => updateProfile("customerOrganization", value)} />
           <label className="form-field"><span>TT · 8 digits</span><input value={ticketId} disabled={ttLocked} maxLength={8} onChange={(event) => { setTicketId(event.target.value.replace(/\D/g, "")); setSource("manual"); setReportDate(""); }} /></label>
           <label className="form-field"><span>Customer email *</span><input type="email" required value={profile.contactEmail} onChange={(event) => updateProfile("contactEmail", event.target.value)} /></label>

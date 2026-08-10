@@ -87,8 +87,9 @@ The blue title rail switches seamlessly between two management workspaces:
   per-unit RMA lifecycle. It contains **Active Requests**, reusable **Eligible
   SR Parts**, and read-only **Completed** archive views.
 
-Last Email combines age and cumulative count in one value such as
-`17 days [13]`; there is no separate email-count column. Lifecycle attendance
+Last Email combines age and cumulative count in one cell: the age remains text,
+while the total is enclosed in a compact badge. Zero is red and every positive
+total uses the same neutral color; there is no separate email-count column. Lifecycle attendance
 is a separate black/gray/green signal; the
 dispatch timer is normal through day 14, amber on days 15–19, and red from day
 20 until the item is confirmed returned and archived. Selecting an eligible SR
@@ -97,9 +98,11 @@ request, spare-only email, conflict, return, and archive history.
 
 The damaged-device **Spare Parts** editor remains inside SR detail and saves
 directly to the database. Exporting from that editor immediately writes a
-template-based XLSX and creates an independent request. Later work occurs only
-in Spare Requests. A source part stays eligible and may be reused by more than
-one request.
+template-based XLSX and creates an independent request. If the XLSX was prepared
+and sent outside Zeus, **Already sent manually** creates the same Active Request
+without needing export configuration, a Spare SR, or an RMA. The exact source
+part leaves Eligible SR Parts while active and returns after completion or
+cancellation.
 
 The gear beside **Fields** can show/hide and reorder every available field.
 Each workspace remembers its own search, filters, sort field,
@@ -183,8 +186,10 @@ sheet set, extends item rows in place, verifies generated values, and writes
 numbered revisions under `Requests` and `Returns`; it never imports these
 outputs as authority.
 
-Zeus will not open the export form until the request export folder and request
-template exist. Customer, site, requester, and BOM inputs autocomplete from
+Zeus opens the request form even when export paths are missing. Only an explicit
+Zeus export redirects to Configuration; manual registration remains available.
+After a successful XLSX export, Zeus advances to Active Requests and displays a
+reminder to attach and send the file. Customer, site, requester, and BOM inputs autocomplete from
 local data. The top-bar **Global data** manager owns the workstation profile,
 customer organizations, customer contacts, sites, and additional requesters;
 favorite requesters can be pinned. The **BOM catalog** remains in the Spare

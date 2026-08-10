@@ -219,7 +219,13 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
       </nav>
       <div className="detail-scroll">
         {tab === "items" && <div className="tab-content spare-request-items">
-          <div className="source-contract"><strong>Independent persistent request.</strong><span>Requested BOMs stay separate from delivered substitutions. One RMA belongs to one unit item and is immutable.</span></div>
+          <div className="source-contract">
+            <strong>Independent persistent request.</strong>
+            <span>Requested BOMs stay separate from delivered substitutions. One RMA belongs to one unit item and is immutable.</span>
+            <span className="request-entry-guidance">{request.creationMethod === "manual_confirmation"
+              ? "Registered as already sent manually. Add the Spare SR and RMA when they arrive, or let email synchronization fill them."
+              : "Exported through Zeus. Prefer email synchronization for Spare SR and RMA; manual entry remains available when independently verified."}</span>
+          </div>
           <div className="request-identity-form">
             <label className="form-field"><span>Original TT</span><input value={ticketId} disabled={!request.ttEditable} maxLength={8} onChange={(event) => setTicketId(event.target.value.replace(/\D/g, ""))} /></label>
             <label className="form-field"><span>Spare SR</span><input value={spareSr} placeholder="SR1234567" onChange={(event) => setSpareSr(event.target.value.toUpperCase())} /></label>

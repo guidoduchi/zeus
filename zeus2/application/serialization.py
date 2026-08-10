@@ -10,6 +10,7 @@ from ..mail import strip_quoted_history
 from ..spare_request_excel import read_archived_items
 from ..spare_requests import (
     ECUADOR_TIMEZONE,
+    active_source_part_keys,
     aging_color as spare_aging_color,
     dispatch_age_days,
     item_status,
@@ -138,14 +139,14 @@ def _risk(*colors: str | None) -> str:
     return "none"
 
 
-def _last_email_label(days: int | None, count: int) -> str:
+def _last_email_label(days: int | None, _count: int) -> str:
     if days is None:
-        return f"No email [{count}]"
+        return "No email"
     if days == 0:
-        return f"Today [{count}]"
+        return "Today"
     if days == 1:
-        return f"1 day [{count}]"
-    return f"{days} days [{count}]"
+        return "1 day"
+    return f"{days} days"
 
 
 def serialize_ticket_summary(
@@ -713,10 +714,20 @@ def _archived_spare_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def _eligible_spare_rows(store: ZeusStore) -> list[dict[str, Any]]:
     rows = _spare_part_rows(store.iter_tickets(status="active"), store.config)
+    occupied = active_source_part_keys(store.iter_spare_requests())
     return [
         {**row, "eligible": True}
         for row in rows
-        if row.get("hasPart") and row.get("bom") != "—"
+        if (
+            row.get("hasPart")
+            and row.get("bom") != "—"
+            and (
+                row.get("ticketId"),
+                row.get("deviceNumber"),
+                row.get("partNumber"),
+            )
+            not in occupied
+        )
     ]
 
 
@@ -830,6 +841,11 @@ def serialize_spare_request_detail(request: dict[str, Any]) -> dict[str, Any]:
         ),
         "ttEditable": bool(request.get("tt_editable")),
         "source": request.get("source"),
+        "creationMethod": request.get("creation_method") or (
+            "zeus_export"
+            if request.get("export", {}).get("request_filename")
+            else "legacy"
+        ),
         "spareSr": request.get("spare_sr"),
         "status": request_overall_status(request),
         "profile": deepcopy(request.get("profile") or {}),

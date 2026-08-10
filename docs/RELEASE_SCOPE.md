@@ -23,7 +23,11 @@ Included:
 - independent active Spare Request Markdown records, unit-level items, partial
   stock, requested/delivered BOM separation, immutable RMAs, and visible
   conflict handling;
-- Active Requests, reusable Eligible SR Parts, and Completed archive subviews;
+- Active Requests, Eligible SR Parts that are reserved only while their exact
+  source part is active, and Completed archive subviews;
+- an **Already sent manually** path that creates the same Active Request without
+  requiring an export folder, template, Spare SR, or RMA;
+- a post-export acknowledgement reminding the user to attach and send the XLSX;
 - configurable local request/return XLSX templates and a one-way export root,
   with exact sheet preservation, dynamic row extension, and revision-safe names;
 - locally configured confirmation sender, dispatch/substitution sender, and

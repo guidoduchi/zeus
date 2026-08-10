@@ -7,6 +7,7 @@ import type { ColumnDefinition, SpareRequestItemSummary } from "../types";
 const columns: ColumnDefinition[] = [
   { key: "ticketId", label: "TT", width: 94, default: true },
   { key: "rma", label: "RMA", width: 132, default: true },
+  { key: "emailLabel", label: "Last Email", width: 154, default: true },
   { key: "statusLabel", label: "Status", width: 170, default: true },
   { key: "dispatchAgeDays", label: "Days", width: 62, default: true },
 ];
@@ -92,5 +93,22 @@ describe("SpareRequestsGrid", () => {
     fireEvent.keyDown(grid, { key: "ArrowDown" });
     expect(onHighlight).toHaveBeenCalledWith(completed);
     expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("uses the same enclosed email-count badge in Active Requests", () => {
+    render(
+      <SpareRequestsGrid
+        rows={[row(), row({ rowId: "260808123456-0002", itemId: "260808123456-0002", emailCount: 0 })]}
+        columns={columns}
+        selectedRowId={null}
+        detailOpen={false}
+        onHighlight={vi.fn()}
+        onOpen={vi.fn()}
+        onCloseDetail={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("3 total emails")).toHaveClass("email-count-positive");
+    expect(screen.getByLabelText("0 total emails")).toHaveClass("email-count-zero");
   });
 });

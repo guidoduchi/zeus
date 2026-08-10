@@ -38,6 +38,7 @@ interface Props {
   onSave: (ticketId: string, revision: string, changes: Record<string, unknown>) => Promise<void>;
   onGenerateMop: (ticketId: string, template: string) => void;
   onExportSpareRequest?: (ticketId: string) => void;
+  onRegisterSpareRequest?: (ticketId: string) => void;
 }
 
 const TAB_ORDER: Tab[] = ["overview", "work", "spares", "emails", "mops", "history"];
@@ -228,7 +229,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
   </>;
 }
 
-function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ticket" | "onSave" | "onExportSpareRequest"> & { ticket: TicketDetailType }) {
+function SparePartsTab({ ticket, onSave, onExportSpareRequest, onRegisterSpareRequest }: Pick<Props, "ticket" | "onSave" | "onExportSpareRequest" | "onRegisterSpareRequest"> & { ticket: TicketDetailType }) {
   const [devices, setDevices] = useState<DraftDevice[]>(() => spareDraft(ticket.spareParts));
   const [draftRevision, setDraftRevision] = useState(ticket.revision);
   const [baseValue, setBaseValue] = useState<SpareDevice[]>(() => cleanSpareParts(ticket.spareParts));
@@ -423,7 +424,7 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest }: Pick<Props, "ti
       </div>
       <div className="inline-actions edit-actions">
         <span>{ticket.readOnly ? `${cleaned.length} device(s), ${partCount} BOM group(s), ${requestedUnits} unit(s) · closed SR archive` : changed ? `${cleaned.length} device(s), ${partCount} BOM group(s), ${requestedUnits} unit(s) · unsaved draft protected` : `${cleaned.length} device(s), ${partCount} BOM group(s), ${requestedUnits} unit(s)`}</span>
-        {!ticket.readOnly && <div className="inline-actions">{changed && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}{stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore changes</button>}{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!partCount || changed} title={changed ? "Save Spare Parts before exporting" : "Create an independent request from this TT"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Spare Request</button>}<button type="button" className="primary-button" disabled={!changed || saving || stale} onClick={save}>{saving ? "Saving…" : "Save to Zeus"}</button></div>}
+        {!ticket.readOnly && <div className="inline-actions">{changed && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}{stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore changes</button>}{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!partCount || changed} title={changed ? "Save Spare Parts before exporting" : "Create an independent request from this TT"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Spare Request</button>}{onRegisterSpareRequest && <button type="button" className="secondary-button" disabled={!partCount || changed} title={changed ? "Save Spare Parts before registering the request" : "Register a Spare Request that was already sent outside Zeus"} onClick={() => onRegisterSpareRequest(ticket.ticketId)}>Already sent manually</button>}<button type="button" className="primary-button" disabled={!changed || saving || stale} onClick={save}>{saving ? "Saving…" : "Save to Zeus"}</button></div>}
       </div>
     </div>
     {restoreOpen && <ConfirmationDialog title={`Restore protected SR ${ticket.ticketId} Spare Parts?`} message="The protected device, serial, slot, BOM, and notes changes will be reapplied over the latest Zeus record for review. This action does not save to the database." confirmLabel="Restore for review" onCancel={() => setRestoreOpen(false)} onConfirm={restoreDraft} />}
@@ -506,7 +507,7 @@ function MopsTab({ ticket, templates, onGenerateMop }: { ticket: TicketDetailTyp
   );
 }
 
-export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onGenerateMop, onExportSpareRequest }: Props) {
+export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onGenerateMop, onExportSpareRequest, onRegisterSpareRequest }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
   useEffect(() => setTab(initialTab), [initialTab]);
@@ -580,7 +581,7 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
           </div>
         )}
         {tab === "work" && <WorkTab ticket={ticket} onSave={onSave} />}
-        {tab === "spares" && <SparePartsTab ticket={ticket} onSave={onSave} onExportSpareRequest={onExportSpareRequest} />}
+        {tab === "spares" && <SparePartsTab ticket={ticket} onSave={onSave} onExportSpareRequest={onExportSpareRequest} onRegisterSpareRequest={onRegisterSpareRequest} />}
         {tab === "emails" && <EmailsTab messages={ticket.email.messages} />}
         {tab === "mops" && <MopsTab ticket={ticket} templates={templates} onGenerateMop={onGenerateMop} />}
         {tab === "history" && (

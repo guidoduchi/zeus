@@ -155,6 +155,7 @@ describe("SpareRequestModal", () => {
   it("defers missing export configuration until the explicit export attempt", async () => {
     const user = userEvent.setup();
     const onExport = vi.fn().mockResolvedValue(undefined);
+    const onRegisterManual = vi.fn().mockResolvedValue(undefined);
     const onExportSetupRequired = vi.fn();
     api.getSpareReferenceData.mockResolvedValue({
       schemaVersion: 2,
@@ -196,6 +197,7 @@ describe("SpareRequestModal", () => {
       initialPart: part,
       onClose: vi.fn(),
       onExport,
+      onRegisterManual,
       onExportSetupRequired,
       onError: vi.fn(),
     };
@@ -219,6 +221,16 @@ describe("SpareRequestModal", () => {
       "Spare Request template",
     ]);
     expect(onExport).not.toHaveBeenCalled();
+
+    const manualButton = screen.getByRole("button", { name: "Already sent manually" });
+    expect(manualButton).toBeEnabled();
+    await user.click(manualButton);
+    expect(onRegisterManual).toHaveBeenCalledTimes(1);
+    expect(onRegisterManual.mock.calls[0][0]).toMatchObject({
+      source: "ticket",
+      ticketId: "39416095",
+      reportDate: "2026-07-01",
+    });
 
     api.getSpareReferenceData.mockResolvedValue({
       schemaVersion: 2,

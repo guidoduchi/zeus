@@ -30,7 +30,8 @@ Consequences:
    its own scroll position.
 3. Columns may be toggled and reordered, but not resized.
 4. The default field set preserves the original dashboard, labels `Done?` as
-   MW, and combines email age plus cumulative count in Last Email.
+   MW, and combines email age plus a compact cumulative-count badge in Last
+   Email. Zero is red; every positive total uses the same neutral badge.
 5. Opening a ticket reveals full detail without requiring every detail column
    in the list.
 6. Search, category filters, sort, theme, visible columns, and column order
@@ -53,14 +54,18 @@ Consequences:
     Spare Requests share the same dense interaction grammar without sharing
     incompatible sort, search, filter, or column preferences.
 14. Spare Requests has Active Requests, reusable Eligible SR Parts, and
-    Completed subviews. Eligible rows remain a projection; exporting creates an
-    independent persistent request immediately.
+    Completed subviews. Eligible rows remain a projection. Exporting through
+    Zeus or confirming an already-sent manual file creates the same independent
+    persistent request immediately. Its exact TT/device/part source is withheld
+    from eligibility while active and released after completion or cancellation.
 15. TT, RMA, and Last Email are first-class active-request fields. Last Email
-    renders age and count together (for example `17 days [13]`); lifecycle
-    attendance and dispatch aging use separate visual signals.
+    renders age beside an enclosed count (for example `17 days` plus a `13`
+    badge); lifecycle attendance and dispatch aging use separate visual signals.
 16. The damaged-device Spare Parts editor remains inside SR detail. Once its
-    request XLSX is exported, later request work is available only in the Spare
-    Requests workspace.
+    request is exported or registered as already sent, later request work is
+    available in Active Requests. Spare SR and RMA may arrive later in either
+    path; Zeus-exported requests recommend email synchronization before manual
+    entry.
 17. Warehouse email only creates a candidate. Returned archive requires a user
     confirmation, or a manual override with a mandatory note.
 18. The first usable screen is local profile setup until name, email, and phone

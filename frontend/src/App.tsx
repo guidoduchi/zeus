@@ -9,6 +9,7 @@ import {
   getTemplates,
   getTicket,
   purgeSpareArchive,
+  registerSpareRequest,
   saveUserProfile,
   saveTicket,
   startJob,
@@ -20,6 +21,7 @@ import { DraftsModal } from "./components/DraftsModal";
 import { FilterBar } from "./components/FilterBar";
 import { GlobalDataModal } from "./components/GlobalDataModal";
 import { JobBanner } from "./components/JobBanner";
+import { Modal } from "./components/Modal";
 import { NoticeStrip } from "./components/NoticeStrip";
 import { OperationsModal } from "./components/OperationsModal";
 import { ProfileSetup } from "./components/ProfileSetup";
@@ -251,6 +253,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [configurationRevision, setConfigurationRevision] = useState(0);
   const [spareExportOpen, setSpareExportOpen] = useState(false);
+  const [spareExportAction, setSpareExportAction] = useState<"export" | "manual">("export");
+  const [spareEmailReminder, setSpareEmailReminder] = useState<string | null>(null);
   const [globalDataOpen, setGlobalDataOpen] = useState(false);
   const [bomCatalogOpen, setBomCatalogOpen] = useState(false);
   const [draftsOpen, setDraftsOpen] = useState(false);
@@ -587,6 +591,10 @@ export default function App() {
     if (dashboard?.workspace !== "spare-requests" || dashboard.view !== "completed") return null;
     return dashboard.spareRequests.find((row) => row.rowId === selectedRowId) || null;
   }, [dashboard, selectedRowId]);
+  const selectedEligiblePart = useMemo(() => {
+    if (dashboard?.workspace !== "spare-requests" || dashboard.view !== "eligible") return null;
+    return dashboard.eligibleParts.find((row) => row.rowId === selectedRowId) || null;
+  }, [dashboard, selectedRowId]);
   const chooseSort = useCallback((next: string) => {
     updateWorkspacePreference({
       sort: next,
@@ -740,9 +748,10 @@ export default function App() {
     setSelectedRowId(ticketId);
   }, [workspace, workspacePreferences]);
 
-  const openSpareExport = useCallback((ticketId?: string, part: SparePartSummary | null = null) => {
+  const openSpareExport = useCallback((ticketId?: string, part: SparePartSummary | null = null, action: "export" | "manual" = "export") => {
     setSpareExportTicketId(ticketId);
     setSpareExportPart(part);
+    setSpareExportAction(action);
     setSpareExportOpen(true);
   }, []);
 
@@ -767,8 +776,26 @@ export default function App() {
     setSelectedRequestId(result.request.requestId);
     setSelectedRowId(result.request.items[0]?.item_id || null);
     setSpareRequest(result.request);
+    setSpareExportOpen(false);
     try { await navigator.clipboard.writeText(result.subject); } catch { /* The exported file remains complete. */ }
     setToast({ tone: result.warnings.length ? "info" : "success", message: `Exported ${result.filename}. Email subject copied.${result.warnings.length ? ` ${result.warnings.join(" ")}` : ""}` });
+    setSpareEmailReminder(result.filename);
+    await loadDashboard("spare-requests", "tt", "desc", "", "active");
+  }, [loadDashboard]);
+
+  const registerManualSpareRequest = useCallback(async (payload: Record<string, unknown>) => {
+    const result = await registerSpareRequest(payload);
+    setWorkspace("spare-requests");
+    setSpareView("active");
+    setSelectedTicketId(null);
+    setSelectedRequestId(result.request.requestId);
+    setSelectedRowId(result.request.items[0]?.item_id || null);
+    setSpareRequest(result.request);
+    setSpareExportOpen(false);
+    setToast({
+      tone: result.warnings.length ? "info" : "success",
+      message: `Manually sent request registered in Active Requests.${result.warnings.length ? ` ${result.warnings.join(" ")}` : ""}`,
+    });
     await loadDashboard("spare-requests", "tt", "desc", "", "active");
   }, [loadDashboard]);
 
@@ -785,7 +812,7 @@ export default function App() {
     }
   }
 
-  const keyboardDisabled = operationsOpen || settingsOpen || spareExportOpen || globalDataOpen || bomCatalogOpen || draftsOpen || purgeConfirmationOpen || Boolean(bootstrap?.onboarding.required);
+  const keyboardDisabled = operationsOpen || settingsOpen || spareExportOpen || Boolean(spareEmailReminder) || globalDataOpen || bomCatalogOpen || draftsOpen || purgeConfirmationOpen || Boolean(bootstrap?.onboarding.required);
 
   useGlobalCommands({
     disabled: keyboardDisabled,
@@ -1055,7 +1082,8 @@ export default function App() {
           onClose={closeDetail}
           onSave={saveLocalFields}
           onGenerateMop={(ticketId, template) => runJob("mop", { ticketId, template })}
-          onExportSpareRequest={(ticketId) => openSpareExport(ticketId)}
+          onExportSpareRequest={(ticketId) => openSpareExport(ticketId, selectedEligiblePart?.ticketId === ticketId ? selectedEligiblePart : null)}
+          onRegisterSpareRequest={(ticketId) => openSpareExport(ticketId, selectedEligiblePart?.ticketId === ticketId ? selectedEligiblePart : null, "manual")}
         />}
         {selectedRequestId && <SpareRequestDetail
           request={spareRequest}
@@ -1089,7 +1117,7 @@ export default function App() {
           onError={reportError}
         />
       )}
-      {spareExportOpen && <SpareRequestModal initialTicketId={spareExportTicketId} initialPart={spareExportPart} configurationRevision={configurationRevision} suspended={settingsOpen} onClose={() => setSpareExportOpen(false)} onExport={createSpareRequest} onExportSetupRequired={(missing) => {
+      {spareExportOpen && <SpareRequestModal initialTicketId={spareExportTicketId} initialPart={spareExportPart} initialAction={spareExportAction} configurationRevision={configurationRevision} suspended={settingsOpen} onClose={() => setSpareExportOpen(false)} onExport={createSpareRequest} onRegisterManual={registerManualSpareRequest} onExportSetupRequired={(missing) => {
         setToast({
           tone: "info",
           message: `Configure ${missing.join(" and ") || "the Spare Request export paths"} before exporting.`,
@@ -1111,6 +1139,17 @@ export default function App() {
       {draftsOpen && <DraftsModal onClose={() => setDraftsOpen(false)} onReview={reviewProtectedDraft} onSaved={(tickets) => { if (selectedTicketId && tickets[selectedTicketId]) setTicket(tickets[selectedTicketId]); loadDashboard().catch(reportError); }} onError={reportError} onNotice={(message) => setToast({ tone: "success", message })} />}
       {bomCatalogOpen && <BomCatalogModal onClose={() => setBomCatalogOpen(false)} onSaved={() => setToast({ tone: "success", message: "BOM catalog saved locally." })} onError={reportError} />}
       {purgeConfirmationOpen && selectedCompletedItem && <ConfirmationDialog title={`Purge ${selectedCompletedItem.itemId}?`} message="This permanently removes the completed item and its retained email from the local archive. This action cannot be undone." confirmLabel="Permanently purge" tone="danger" onCancel={() => setPurgeConfirmationOpen(false)} onConfirm={() => void purgeSelectedCompleted()} />}
+      {spareEmailReminder && !spareExportOpen && <Modal
+        title="Spare Request created"
+        subtitle="The request is now registered in Active Requests."
+        dismissible={false}
+        onClose={() => undefined}
+        actions={<button type="button" className="primary-button" autoFocus onClick={() => setSpareEmailReminder(null)}>OK</button>}
+      >
+        <section className="local-confirmation">
+          <p><strong>{spareEmailReminder}</strong> was exported successfully. Please do not forget to attach it and send the email.</p>
+        </section>
+      </Modal>}
       {toast && <div className={`toast toast-${toast.tone}`} role="status"><span>{toast.message}</span><button type="button" onClick={() => setToast(null)}>×</button></div>}
     </main>
   );

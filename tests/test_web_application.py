@@ -685,7 +685,7 @@ class DatabaseFirstSourceTests(WebFixture):
             "width": 104,
             "default": True,
         })
-        self.assertEqual(dashboard["tickets"][0]["emailLabel"], "No email [8]")
+        self.assertEqual(dashboard["tickets"][0]["emailLabel"], "No email")
         self.assertEqual(dashboard["tickets"][0]["customerContact"], "Customer")
         self.assertNotIn("emailCount", {column["key"] for column in dashboard["columns"]})
 
@@ -1303,6 +1303,58 @@ class WebServerTests(WebFixture):
         self.assertEqual(payload["columns"][0]["label"], "TT")
         self.assertNotIn("tickets", payload)
         self.assertEqual(audit_before, audit_after)
+
+    def test_manual_spare_registration_route_needs_no_export_configuration(self) -> None:
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        payload = {
+            "source": "manual",
+            "ticketId": "12345678",
+            "reportDate": "2026-07-01",
+            "profile": {
+                "customerName": "Customer Network Team",
+                "siteCode": "GYE",
+                "siteAddress": "Guayaquil operations center",
+                "cloud": "Cloud",
+                "requester": {
+                    "name": "Zeus Test User",
+                    "email": "zeus.user@example.com",
+                    "phone": "+593990000000",
+                },
+                "contact": {
+                    "name": "Customer Contact",
+                    "email": "customer@example.com",
+                    "phone": "+593980000000",
+                },
+            },
+            "lines": [
+                {
+                    "bom": "BOM-1",
+                    "amount": 1,
+                    "description": "Disk",
+                    "part": "Disk",
+                    "reportDate": "2026-07-01",
+                }
+            ],
+        }
+        request = urllib.request.Request(
+            self.url + "/api/spare-requests/register-manual",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            registered = json.loads(response.read())
+            self.assertEqual(response.status, 201)
+
+        self.assertEqual(registered["request"]["creationMethod"], "manual_confirmation")
+        self.assertIsNone(registered["request"]["export"]["request_filename"])
+        self.assertEqual(
+            registered["request"]["history"][0]["action"],
+            "request-registered-manually",
+        )
 
     def test_ticket_patch_returns_the_complete_detail_contract(self) -> None:
         _, bootstrap, _ = self.read_json("/api/bootstrap")

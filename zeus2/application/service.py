@@ -44,6 +44,7 @@ from ..spare_request_mail import purge_old_active_email_bodies
 from ..spare_requests import (
     ECUADOR_TIMEZONE,
     SpareRequestError,
+    active_source_part_keys,
     create_request_record,
     next_request_id,
     normalize_profile,
@@ -55,6 +56,7 @@ from ..spare_requests import (
     request_filename,
     request_history,
     request_subject,
+    source_part_key,
 )
 from ..storage_migration import (
     StorageMigrationError,
@@ -757,66 +759,123 @@ class ApplicationService:
             "createdCustomer": created_customer,
         }
 
+    def _prepare_new_spare_request(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        source = str(payload.get("source") or "manual").strip().casefold()
+        try:
+            tt = normalize_tt(payload.get("ticketId"))
+            profile = normalize_profile(payload.get("profile"))
+            raw_lines = payload.get("lines")
+            raw_report_date = payload.get("reportDate")
+            if not raw_report_date and isinstance(raw_lines, list):
+                legacy_dates = {
+                    normalize_report_date(
+                        raw.get("reportDate") or raw.get("report_date"),
+                        required=True,
+                    )
+                    for raw in raw_lines
+                    if isinstance(raw, dict)
+                    and (raw.get("reportDate") or raw.get("report_date"))
+                }
+                if len(legacy_dates) > 1:
+                    raise SpareRequestError(
+                        "Every BOM in one TT must use the same original report date"
+                    )
+                raw_report_date = next(iter(legacy_dates), None)
+            report_date = normalize_report_date(raw_report_date, required=True)
+            prepared_lines = (
+                [
+                    {**raw, "reportDate": report_date}
+                    if isinstance(raw, dict)
+                    else raw
+                    for raw in raw_lines
+                ]
+                if isinstance(raw_lines, list)
+                else raw_lines
+            )
+            lines = normalize_request_lines(prepared_lines)
+        except SpareRequestError as exc:
+            raise ValidationError(str(exc)) from exc
+        ticket_exists = self.store.ticket_file(tt).is_file()
+        if source == "ticket" and not ticket_exists:
+            raise ValidationError(
+                f"SR {tt} must be active before creating a request from its detail"
+            )
+        if source not in {"ticket", "manual"}:
+            raise ValidationError("Request source must be ticket or manual")
+        return {
+            "source": source,
+            "tt": tt,
+            "profile": profile,
+            "lines": lines,
+            "ticket_exists": ticket_exists,
+        }
+
+    def _occupied_spare_request_ids(
+        self,
+        *,
+        export_root: Path | None = None,
+    ) -> set[str]:
+        occupied = set(self.store.iter_spare_request_ids())
+        closed_path = self._closed_workbook_path()
+        if closed_path is not None:
+            occupied.update(
+                str(row.get("Request ID") or "")
+                for row in read_archived_items(closed_path)
+                if row.get("Request ID")
+            )
+        requests_directory = (
+            export_root / "Requests" if export_root is not None else None
+        )
+        if requests_directory is not None and requests_directory.is_dir():
+            for prior_export in requests_directory.glob("*.xlsx"):
+                suffix = prior_export.stem.rsplit("–", 1)[-1].split("-r", 1)[0]
+                if len(suffix) == 12 and suffix.isdigit():
+                    occupied.add(suffix)
+        return occupied
+
+    def _ensure_source_parts_available(
+        self,
+        tt: str,
+        lines: list[dict[str, Any]],
+    ) -> None:
+        requested = {
+            key
+            for line in lines
+            if (key := source_part_key(tt, line)) is not None
+        }
+        conflicts = sorted(
+            requested & active_source_part_keys(self.store.iter_spare_requests())
+        )
+        if not conflicts:
+            return
+        positions = ", ".join(
+            f"device {device_number}, part {part_number}"
+            for _, device_number, part_number in conflicts
+        )
+        raise ValidationError(
+            f"TT {tt} already has an Active Request for {positions}"
+        )
+
     def export_spare_request(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self._operation_lock.acquire(blocking=False):
             raise BusyError("Another Zeus operation is changing data")
         exported: Path | None = None
         persisted = False
         try:
-            source = str(payload.get("source") or "manual").strip().casefold()
-            try:
-                tt = normalize_tt(payload.get("ticketId"))
-                profile = normalize_profile(payload.get("profile"))
-                raw_lines = payload.get("lines")
-                raw_report_date = payload.get("reportDate")
-                if not raw_report_date and isinstance(raw_lines, list):
-                    legacy_dates = {
-                        normalize_report_date(
-                            raw.get("reportDate") or raw.get("report_date"),
-                            required=True,
-                        )
-                        for raw in raw_lines
-                        if isinstance(raw, dict)
-                        and (raw.get("reportDate") or raw.get("report_date"))
-                    }
-                    if len(legacy_dates) > 1:
-                        raise SpareRequestError(
-                            "Every BOM in one TT must use the same original report date"
-                        )
-                    raw_report_date = next(iter(legacy_dates), None)
-                report_date = normalize_report_date(raw_report_date, required=True)
-                prepared_lines = (
-                    [
-                        {**raw, "reportDate": report_date}
-                        if isinstance(raw, dict)
-                        else raw
-                        for raw in raw_lines
-                    ]
-                    if isinstance(raw_lines, list)
-                    else raw_lines
-                )
-                lines = normalize_request_lines(prepared_lines)
-            except SpareRequestError as exc:
-                raise ValidationError(str(exc)) from exc
-            ticket_exists = self.store.ticket_file(tt).is_file()
-            if source == "ticket" and not ticket_exists:
-                raise ValidationError(f"SR {tt} must be active before exporting from its detail")
-            if source not in {"ticket", "manual"}:
-                raise ValidationError("Request source must be ticket or manual")
-            occupied_request_ids = set(self.store.iter_spare_request_ids())
-            closed_path = self._closed_workbook_path()
-            if closed_path is not None:
-                occupied_request_ids.update(
-                    str(row.get("Request ID") or "")
-                    for row in read_archived_items(closed_path)
-                    if row.get("Request ID")
-                )
-            requests_directory = self._spare_export_root() / "Requests"
-            if requests_directory.is_dir():
-                for prior_export in requests_directory.glob("*.xlsx"):
-                    suffix = prior_export.stem.rsplit("–", 1)[-1].split("-r", 1)[0]
-                    if len(suffix) == 12 and suffix.isdigit():
-                        occupied_request_ids.add(suffix)
+            prepared = self._prepare_new_spare_request(payload)
+            source = prepared["source"]
+            tt = prepared["tt"]
+            profile = prepared["profile"]
+            lines = prepared["lines"]
+            ticket_exists = prepared["ticket_exists"]
+            self._ensure_source_parts_available(tt, lines)
+            export_root = self._spare_export_root()
+            occupied_request_ids = self._occupied_spare_request_ids(
+                export_root=export_root
+            )
             request_id = next_request_id(occupied_request_ids)
             subject = request_subject(request_id, tt, lines)
             filename = request_filename(request_id, tt, profile, lines)
@@ -829,9 +888,10 @@ class ApplicationService:
                 export_path=None,
                 subject=subject,
             )
+            request["creation_method"] = "zeus_export"
             exported = export_initial_request(
                 self._spare_template("spare_request_template_path", "Spare Request XLSX"),
-                self._spare_export_root(),
+                export_root,
                 request,
                 filename,
             )
@@ -872,6 +932,58 @@ class ApplicationService:
             if exported is not None and not persisted:
                 exported.unlink(missing_ok=True)
             raise
+        finally:
+            self._operation_lock.release()
+
+    def register_spare_request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Register a request that the user already prepared and sent externally."""
+
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        try:
+            prepared = self._prepare_new_spare_request(payload)
+            source = prepared["source"]
+            tt = prepared["tt"]
+            profile = prepared["profile"]
+            lines = prepared["lines"]
+            ticket_exists = prepared["ticket_exists"]
+            self._ensure_source_parts_available(tt, lines)
+            request_id = next_request_id(
+                self._occupied_spare_request_ids(
+                    export_root=self.store.configured_directory(
+                        "spare_parts_export_directory"
+                    )
+                )
+            )
+            subject = request_subject(request_id, tt, lines)
+            request = create_request_record(
+                request_id=request_id,
+                tt=tt,
+                source=source,
+                profile=profile,
+                lines=lines,
+                export_path=None,
+                subject=subject,
+            )
+            request["creation_method"] = "manual_confirmation"
+            request["history"][0]["action"] = "request-registered-manually"
+            request["history"][0]["summary"]["sent_outside_zeus"] = True
+            with self.store.transaction(
+                "spare-request-register-manual",
+                {"request_id": request_id, "tt": tt, "items": len(request["items"])},
+            ) as staging:
+                self.store.write_spare_request(staging, request)
+            self._touch_data("spare-request-register-manual")
+            warnings = []
+            if source == "manual" and not ticket_exists:
+                warnings.append(
+                    f"TT {tt} is not in local Service Requests. The manually sent request was registered with that warning recorded."
+                )
+            return {
+                "request": self.spare_request(request_id),
+                "subject": subject,
+                "warnings": warnings,
+            }
         finally:
             self._operation_lock.release()
 

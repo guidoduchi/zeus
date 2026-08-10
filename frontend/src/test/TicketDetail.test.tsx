@@ -90,6 +90,39 @@ describe("TicketDetail", () => {
     expect(screen.getByRole("button", { name: /^Spare Parts/ })).toHaveClass("active");
   });
 
+  it("offers manual registration beside export for saved Spare Parts", async () => {
+    const user = userEvent.setup();
+    const onExportSpareRequest = vi.fn();
+    const onRegisterSpareRequest = vi.fn();
+    const withPart: TicketDetailType = {
+      ...detail,
+      spareParts: [{
+        device: "server-a",
+        model: "2288H V5",
+        faulty_sns: ["FAULTY-1"],
+        parts: [{ slot: "Slot 1", part: "Disk", bom: "BOM-1", notes: null, new_sn: null }],
+      }],
+    };
+    render(
+      <TicketDetail
+        ticket={withPart}
+        loading={false}
+        initialTab="spares"
+        templates={[]}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        onGenerateMop={vi.fn()}
+        onExportSpareRequest={onExportSpareRequest}
+        onRegisterSpareRequest={onRegisterSpareRequest}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Already sent manually" }));
+    expect(onRegisterSpareRequest).toHaveBeenCalledWith("12345678");
+    expect(screen.getByRole("button", { name: "Export Spare Request" })).toBeEnabled();
+    expect(styles).toMatch(/\.edit-actions, \.edit-actions > \.inline-actions\s*\{[^}]*flex-wrap:\s*wrap/s);
+  });
+
   it("presents Maintenance Window codes with their operational meanings", async () => {
     const user = userEvent.setup();
     render(<TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} />);

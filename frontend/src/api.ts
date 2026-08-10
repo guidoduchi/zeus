@@ -144,6 +144,17 @@ export function exportSpareRequest(payload: Record<string, unknown>): Promise<{
   });
 }
 
+export function registerSpareRequest(payload: Record<string, unknown>): Promise<{
+  request: SpareRequestDetail;
+  subject: string;
+  warnings: string[];
+}> {
+  return request("/api/spare-requests/register-manual", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function reexportSpareRequest(requestId: string): Promise<{
   request: SpareRequestDetail;
   filename: string;

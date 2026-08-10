@@ -332,6 +332,12 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 self.server.service.export_spare_request(payload),
             )
             return
+        if path == "/api/spare-requests/register-manual":
+            self._send_json(
+                HTTPStatus.CREATED,
+                self.server.service.register_spare_request(payload),
+            )
+            return
         reexport_match = SPARE_REQUEST_REEXPORT_ROUTE.fullmatch(path)
         if reexport_match:
             self._send_json(

@@ -24,6 +24,7 @@ const apiMocks = vi.hoisted(() => ({
   getTemplates: vi.fn(),
   getTicket: vi.fn(),
   purgeSpareArchive: vi.fn(),
+  registerSpareRequest: vi.fn(),
   saveTicket: vi.fn(),
   saveUserProfile: vi.fn(),
   startJob: vi.fn(),
@@ -174,6 +175,7 @@ function spareDetail(row: SpareRequestItemSummary): SpareRequestDetail {
     reportDate: null,
     ttEditable: false,
     source: "ticket",
+    creationMethod: "zeus_export",
     spareSr: row.spareSr,
     status: row.status,
     profile: {
@@ -335,6 +337,48 @@ const spareDashboard: SpareRequestsDashboardPayload = {
   spareRequests: spareRows,
   eligibleParts: [],
 };
+
+function mockEligibleRequestFlow(requestReady: boolean) {
+  const exportSetup = {
+    requestReady,
+    returnReady: requestReady,
+    requestMissing: requestReady ? [] : [{ key: "paths.spare_parts_export_directory", label: "Spare Request export folder" }],
+    returnMissing: [],
+  };
+  apiMocks.getSpareReferenceData.mockResolvedValue({
+    schemaVersion: 2,
+    organizations: [],
+    customers: [],
+    sites: [],
+    requesters: [{ id: "__current_user__", name: "Nebby Operator", email: "nebby@example.com", phone: "+593991234567", username: "nebby", pinned: true, currentUser: true }],
+    boms: [],
+    exportSetup,
+  });
+  apiMocks.getSpareRequestPrefill.mockResolvedValue({
+    ticketId: eligiblePart.ticketId,
+    ticketExists: true,
+    reportDate: "2026-07-01 10:00:00",
+    profile: {
+      customerName: "Juan Piguave",
+      customerOrganization: "Claro Ecuador",
+      siteCode: "GYE",
+      siteAddress: "Av. Example 123",
+      cloud: "Cloud",
+      contact: {
+        name: "Juan Piguave",
+        email: "juan@example.com",
+        phone: "+593981111111",
+      },
+    },
+    lines: [],
+    warning: null,
+  });
+  apiMocks.getDashboard.mockImplementation(async (nextWorkspace: string, _sort: string, _direction: string, _search: string, view: string) => {
+    if (nextWorkspace === "service-requests") return serviceDashboard;
+    if (view === "eligible") return { ...spareDashboard, view: "eligible", spareRequests: [], eligibleParts: [eligiblePart] };
+    return spareDashboard;
+  });
+}
 
 class FakeEventSource {
   addEventListener() {}
@@ -520,6 +564,73 @@ describe("workspace selection and detail focus", () => {
     const restoredEditor = await screen.findByRole("dialog", { name: "Export Spare Request" });
     expect(within(restoredEditor).getByLabelText("TT · 8 digits")).toHaveValue(eligiblePart.ticketId);
     expect(within(restoredEditor).getByLabelText("Customer name *")).toHaveValue("Juan Piguave");
+  });
+
+  it("registers an already-sent eligible part without export configuration", async () => {
+    const user = userEvent.setup();
+    mockEligibleRequestFlow(false);
+    const manuallyRegistered = {
+      ...spareDetail(spareRows[0]),
+      creationMethod: "manual_confirmation" as const,
+      spareSr: null,
+      items: spareDetail(spareRows[0]).items.map((item) => ({ ...item, rma: null })),
+    };
+    apiMocks.registerSpareRequest.mockResolvedValue({
+      request: manuallyRegistered,
+      subject: "Manual request already sent",
+      warnings: [],
+    });
+    apiMocks.getSpareRequest.mockResolvedValue(manuallyRegistered);
+    render(<App />);
+
+    await screen.findByRole("row", { name: /20000001/ });
+    await user.click(screen.getByRole("button", { name: "Spare Requests" }));
+    await user.click(screen.getByRole("tab", { name: "Eligible SR Parts" }));
+    await user.click(await screen.findByRole("row", { name: /20000001/ }));
+    const editor = await screen.findByRole("dialog", { name: "Export Spare Request" });
+    const manual = within(editor).getByRole("button", { name: "Already sent manually" });
+    await waitFor(() => expect(manual).toBeEnabled());
+    await user.click(manual);
+
+    expect(apiMocks.registerSpareRequest).toHaveBeenCalledTimes(1);
+    expect(apiMocks.registerSpareRequest.mock.calls[0][0]).toMatchObject({
+      source: "ticket",
+      ticketId: eligiblePart.ticketId,
+      lines: [{ deviceNumber: 1, partNumber: 1, bom: "BOM-1" }],
+    });
+    expect(await screen.findByRole("complementary", { name: `Spare Request ${manuallyRegistered.requestId} detail` })).toBeVisible();
+    expect(screen.getByText(/Registered as already sent manually/i)).toBeVisible();
+    expect(screen.queryByRole("dialog", { name: "Spare Request created" })).not.toBeInTheDocument();
+  });
+
+  it("closes the export form before showing the send-email reminder", async () => {
+    const user = userEvent.setup();
+    mockEligibleRequestFlow(true);
+    const exported = { ...spareDetail(spareRows[0]), creationMethod: "zeus_export" as const };
+    apiMocks.exportSpareRequest.mockResolvedValue({
+      request: exported,
+      filename: "SP–CNT–GYE–Cloud–BOM-1–20000001–260808123451.xlsx",
+      path: "C:\\Zeus\\Requests\\request.xlsx",
+      subject: "Exported Spare Request",
+      warnings: [],
+    });
+    render(<App />);
+
+    await screen.findByRole("row", { name: /20000001/ });
+    await user.click(screen.getByRole("button", { name: "Spare Requests" }));
+    await user.click(screen.getByRole("tab", { name: "Eligible SR Parts" }));
+    await user.click(await screen.findByRole("row", { name: /20000001/ }));
+    const editor = await screen.findByRole("dialog", { name: "Export Spare Request" });
+    const exportButton = within(editor).getByRole("button", { name: "Export XLSX & create request" });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    await user.click(exportButton);
+
+    const reminder = await screen.findByRole("dialog", { name: "Spare Request created" });
+    expect(screen.queryByRole("dialog", { name: "Export Spare Request" })).not.toBeInTheDocument();
+    expect(within(reminder).getByText(/do not forget to attach it and send the email/i)).toBeVisible();
+    await user.click(within(reminder).getByRole("button", { name: "OK" }));
+    expect(screen.queryByRole("dialog", { name: "Spare Request created" })).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: `Spare Request ${exported.requestId} detail` })).toBeVisible();
   });
 
   it("closes an SR detail, moves the row cursor without opening, and activates only on Enter", async () => {

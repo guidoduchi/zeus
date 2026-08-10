@@ -516,6 +516,88 @@ class SpareRequestApplicationTests(unittest.TestCase):
         dashboard = spare_requests_dashboard_payload(self.store, view="active")
         self.assertEqual(len(dashboard["spareRequests"]), 2)
 
+    def test_manual_confirmation_owns_only_its_source_part_until_archived(self) -> None:
+        ticket = {
+            "schema_version": 2,
+            "ticket_id": "39416095",
+            "lifecycle": {"status": "active"},
+            "upstream": {
+                "fields": {
+                    "SRNo": "39416095",
+                    "Report Date": "2026-07-01 10:00:00",
+                    "Customer Severity": "Minor",
+                    "Problem Summary": "Controller board failure",
+                }
+            },
+            "local": {
+                "fields": {"Done?": "N", "Site": "UIO1", "Cloud": "Ecuador Cloud"},
+                "spare_parts": [
+                    {
+                        "device": "SW-UIO-01",
+                        "model": "S6730",
+                        "faulty_sns": ["FAULTY-1"],
+                        "parts": [
+                            {
+                                "slot": "1/0/1",
+                                "part": "Controller board",
+                                "bom": "02312RCC",
+                                "notes": None,
+                                "new_sn": None,
+                            }
+                        ],
+                    }
+                ],
+            },
+            "email": {
+                "total_received": 0,
+                "total_sent": 0,
+                "last_activity_at": None,
+                "messages": [],
+            },
+            "mop": {"latest": None, "versions": 0},
+            "updated_at": None,
+        }
+        self.store.write_ticket_bundle(self.store.current, ticket)
+        payload = {
+            "source": "ticket",
+            "ticketId": "39416095",
+            "reportDate": "2026-07-01",
+            "profile": profile_input(),
+            "lines": [
+                {
+                    **lines_input(1)[0],
+                    "deviceNumber": 1,
+                    "partNumber": 1,
+                }
+            ],
+        }
+
+        before = spare_requests_dashboard_payload(self.store, view="eligible")
+        self.assertEqual([row["rowId"] for row in before["eligibleParts"]], ["39416095:1:1"])
+        registered = self.service.register_spare_request(payload)["request"]
+
+        self.assertEqual(registered["creationMethod"], "manual_confirmation")
+        self.assertIsNone(registered["spareSr"])
+        self.assertIsNone(registered["items"][0]["rma"])
+        self.assertIsNone(registered["export"]["request_filename"])
+        self.assertEqual(registered["history"][0]["action"], "request-registered-manually")
+        self.assertFalse(self.exports.exists())
+        self.assertEqual(
+            spare_requests_dashboard_payload(self.store, view="eligible")["eligibleParts"],
+            [],
+        )
+        with self.assertRaisesRegex(ValidationError, "already has an Active Request"):
+            self.service.export_spare_request(payload)
+
+        item_id = registered["items"][0]["item_id"]
+        self.service.archive_spare_items(
+            item_ids=[item_id],
+            reason="cancelled",
+            note="The externally prepared request was cancelled.",
+        )
+        released = spare_requests_dashboard_payload(self.store, view="eligible")
+        self.assertEqual([row["rowId"] for row in released["eligibleParts"]], ["39416095:1:1"])
+
     def test_rma_is_immutable_and_return_archive_requires_confirmation(self) -> None:
         result = self.service.export_spare_request(
             {

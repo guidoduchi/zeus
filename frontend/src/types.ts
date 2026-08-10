@@ -244,6 +244,7 @@ export interface SpareRequestDetail {
   reportDate: string | null;
   ttEditable: boolean;
   source: "ticket" | "manual" | "recovered";
+  creationMethod: "zeus_export" | "manual_confirmation" | "legacy";
   spareSr: string | null;
   status: string;
   profile: SpareRequestProfile;

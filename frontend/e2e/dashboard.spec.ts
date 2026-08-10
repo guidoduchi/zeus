@@ -7,6 +7,10 @@ test("the dashboard wheel scrolls the table while activation remains click or En
   expect(await rows.count()).toBeGreaterThan(25);
   await expect(page.getByLabel("Service Requests summary")).toContainText("Pending");
   await expect(rows.first().locator(".column-done")).toHaveText("Pending");
+  await expect(page.locator('[data-ticket-id="39400001"] .email-count-badge')).toHaveText("1");
+  await expect(page.locator('[data-ticket-id="39400001"] .email-count-badge')).toHaveClass(/email-count-positive/);
+  await expect(page.locator('[data-ticket-id="39400002"] .email-count-badge')).toHaveText("0");
+  await expect(page.locator('[data-ticket-id="39400002"] .email-count-badge')).toHaveClass(/email-count-zero/);
 
   const list = page.getByTestId("dashboard-scroll");
   const before = await page.evaluate(() => ({
@@ -172,7 +176,16 @@ test("eligible SR parts seed exports and completed items stay read-only", async 
   const exportDialog = page.getByRole("dialog", { name: "Export Spare Request" });
   await expect(exportDialog).toBeVisible();
   await expect(exportDialog.getByLabel("TT · 8 digits")).toHaveValue("39400001");
-  await exportDialog.getByRole("button", { name: "Cancel" }).click();
+  await exportDialog.getByLabel("Customer organization *").fill("Customer Network Team");
+  await exportDialog.getByLabel("Customer email *").fill("customer@example.com");
+  await exportDialog.getByLabel("Customer phone *").fill("+593980000000");
+  await exportDialog.getByLabel("Site address *").fill("Guayaquil operations center");
+  const alreadySent = exportDialog.getByRole("button", { name: "Already sent manually" });
+  await expect(alreadySent).toBeEnabled();
+  await alreadySent.click();
+  await expect(page.getByRole("tab", { name: "Active Requests" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText(/Registered as already sent manually/i)).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Spare Request created" })).toHaveCount(0);
 
   await page.getByRole("tab", { name: "Completed" }).click();
   await search.fill("39400003");

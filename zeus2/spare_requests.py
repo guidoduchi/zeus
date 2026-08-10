@@ -78,6 +78,44 @@ def normalize_rma(value: Any, *, required: bool = False) -> str | None:
     return text
 
 
+def source_part_key(
+    tt: Any,
+    value: dict[str, Any],
+) -> tuple[str, int, int] | None:
+    """Return the stable SR-owned identity for one requested source part.
+
+    Older and fully manual requests may not contain source positions.  Those
+    records remain valid, but only app-created records with both positions can
+    reserve an Eligible SR Parts row without guessing from mutable labels.
+    """
+
+    try:
+        ticket_id = normalize_tt(tt)
+        device_number = int(value.get("source_device_number"))
+        part_number = int(value.get("source_part_number"))
+    except (SpareRequestError, TypeError, ValueError):
+        return None
+    if device_number < 1 or part_number < 1:
+        return None
+    return ticket_id, device_number, part_number
+
+
+def active_source_part_keys(
+    requests: Iterable[dict[str, Any]],
+) -> set[tuple[str, int, int]]:
+    """Collect exact source parts still owned by an Active Request."""
+
+    keys: set[tuple[str, int, int]] = set()
+    for request in requests:
+        for item in request.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            key = source_part_key(request.get("tt"), item)
+            if key is not None:
+                keys.add(key)
+    return keys
+
+
 def _optional_text(value: Any, *, maximum: int = 500) -> str | None:
     if value is None:
         return None
@@ -400,6 +438,7 @@ def create_request_record(
         "tt": ticket_id,
         "report_date": report_date,
         "source": normalized_source,
+        "creation_method": None,
         "tt_editable": normalized_source == "manual",
         "spare_sr": None,
         "profile": deepcopy(profile),
@@ -617,6 +656,12 @@ def validate_request_record(request: dict[str, Any], directory_name: str | None 
     normalize_spare_sr(request.get("spare_sr"))
     if request.get("source") not in {"ticket", "manual", "recovered"}:
         raise SpareRequestError(f"Spare Request {request_id} has an invalid source")
+    if request.get("creation_method") not in {
+        None,
+        "zeus_export",
+        "manual_confirmation",
+    }:
+        raise SpareRequestError(f"Spare Request {request_id} has an invalid creation method")
     items = request.get("items")
     if not isinstance(items, list) or not items:
         raise SpareRequestError(f"Spare Request {request_id} must contain active items")
