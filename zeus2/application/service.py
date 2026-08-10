@@ -271,6 +271,11 @@ class ApplicationService:
                 ),
                 "enabled": self._next_query_at is not None,
             },
+            "appearance": {
+                "fontScale": str(
+                    self.store.config.get("web", {}).get("font_scale") or "standard"
+                ),
+            },
         }
 
     def profile_complete(self) -> bool:

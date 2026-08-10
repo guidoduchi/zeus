@@ -25,6 +25,7 @@ const detail: TicketDetailType = {
   received: 1,
   sent: 0,
   summary: "A compact detail",
+  customerContact: "Customer Contact",
   severity: "Minor",
   product: "Product",
   handler: "Handler",

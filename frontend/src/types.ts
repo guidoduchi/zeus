@@ -30,6 +30,7 @@ export interface TicketSummary {
   received: number;
   sent: number;
   summary: string;
+  customerContact: string;
   severity: string;
   product: string;
   handler: string;
@@ -468,6 +469,7 @@ export interface BootstrapPayload {
     stagedMessageCount: number;
   };
   polling: { intervalMinutes: number; enabled: boolean };
+  appearance: { fontScale: "compact" | "standard" | "large" };
 }
 
 export interface Setting {

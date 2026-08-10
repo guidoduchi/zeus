@@ -35,6 +35,7 @@ function ticket(ticketId: string): TicketSummary {
     received: 0,
     sent: 0,
     summary: `Ticket ${ticketId}`,
+    customerContact: `Customer ${ticketId}`,
     severity: "Minor",
     product: "Product",
     handler: "Handler",
@@ -87,21 +88,46 @@ describe("TicketGrid", () => {
     expect(onOpen).toHaveBeenLastCalledWith("12345678");
   });
 
-  it("blocks wheel scrolling while keeping explicit list navigation available", () => {
+  it("leaves wheel events available for native table scrolling", () => {
     renderGrid("12345678");
     const scroll = screen.getByTestId("dashboard-scroll");
     const wheel = new WheelEvent("wheel", { deltaY: 120, cancelable: true, bubbles: true });
     scroll.dispatchEvent(wheel);
-    expect(wheel.defaultPrevented).toBe(true);
+    expect(wheel.defaultPrevented).toBe(false);
     expect(scroll).toHaveClass("ticket-scroll");
     expect(styles).toMatch(/\.ticket-scroll\s*\{[^}]*overflow:\s*auto/s);
     expect(styles).toMatch(/html, body, #root\s*\{[^}]*overflow:\s*hidden/s);
+  });
+
+  it("shows customer contact only while the highlighted SR detail is closed", () => {
+    const props = {
+      tickets: [ticket("12345678")],
+      columns,
+      selectedRowId: "12345678",
+      onHighlight: vi.fn(),
+      onOpen: vi.fn(),
+      onCloseDetail: vi.fn(),
+    };
+    const { rerender } = render(<TicketGrid {...props} detailOpen={false} />);
+    expect(screen.getByText("Customer contact: Customer 12345678")).toBeVisible();
+    expect(screen.queryByText(/Enter opens/i)).not.toBeInTheDocument();
+
+    rerender(<TicketGrid {...props} detailOpen />);
+    expect(screen.queryByText("Customer contact: Customer 12345678")).not.toBeInTheDocument();
   });
 
   it("does not resize columns and clips dense rows to one line", () => {
     renderGrid();
     expect(styles).not.toMatch(/\.(?:ticket-cell|ticket-row|grid-header)[^{]*\{[^}]*resize:/s);
     expect(styles).toMatch(/\.ticket-cell\s*\{[^}]*white-space:\s*nowrap/s);
+  });
+
+  it("uses one configurable semantic typography scale", () => {
+    expect(styles).toMatch(/:root\s*\{[^}]*--font-body:\s*11px[^}]*--font-heading:\s*15px/s);
+    expect(styles).toMatch(/:root\[data-font-scale="compact"\]\s*\{[^}]*--font-body:\s*10px/s);
+    expect(styles).toMatch(/:root\[data-font-scale="large"\]\s*\{[^}]*--font-body:\s*13px/s);
+    expect(styles).toMatch(/body\s*\{[^}]*font-size:\s*var\(--font-body\)/s);
+    expect(styles).not.toMatch(/font-size:\s*(?:9|10|11|12|13|14|15|16)px/);
   });
 
   it("keeps the CLI warning colors on their matching facts", () => {

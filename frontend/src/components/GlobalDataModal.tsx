@@ -88,6 +88,9 @@ export function GlobalDataModal({ onClose, onSaved, onError }: Props) {
   });
   const [importTt, setImportTt] = useState("");
   const [ticketSuggestions, setTicketSuggestions] = useState<Array<{ ticketId: string; summary: string }>>([]);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [suggestionStatus, setSuggestionStatus] = useState<"idle" | "loading" | "ready">("idle");
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null);
@@ -107,19 +110,39 @@ export function GlobalDataModal({ onClose, onSaved, onError }: Props) {
   }, [onError]);
 
   useEffect(() => {
-    if (active !== "customers") return;
+    const query = importTt.trim();
+    if (active !== "customers" || !query) {
+      setTicketSuggestions([]);
+      setSuggestionStatus("idle");
+      setActiveSuggestion(-1);
+      return;
+    }
     let cancelled = false;
+    setSuggestionStatus("loading");
+    setActiveSuggestion(-1);
     const timer = window.setTimeout(() => {
-      getDashboard("service-requests", "sr", "desc", importTt, "active")
+      getDashboard("service-requests", "sr", "desc", query, "active")
         .then((result) => {
           if (!cancelled && result.workspace === "service-requests") {
-            setTicketSuggestions(result.tickets.slice(0, 30).map((ticket) => ({
-              ticketId: ticket.ticketId,
-              summary: ticket.summary,
-            })));
+            setTicketSuggestions(
+              result.tickets
+                .filter((ticket) => ticket.ticketId.startsWith(query))
+                .slice(0, 30)
+                .map((ticket) => ({
+                  ticketId: ticket.ticketId,
+                  summary: ticket.summary,
+                })),
+            );
+            setSuggestionStatus("ready");
           }
         })
-        .catch((error) => { if (!cancelled) onError(error); });
+        .catch((error) => {
+          if (!cancelled) {
+            setTicketSuggestions([]);
+            setSuggestionStatus("ready");
+            onError(error);
+          }
+        });
     }, 180);
     return () => {
       cancelled = true;
@@ -177,11 +200,50 @@ export function GlobalDataModal({ onClose, onSaved, onError }: Props) {
 
   function chooseTab(tab: Tab) {
     setActive(tab);
+    if (tab !== "customers") setSuggestionsOpen(false);
     if (tab === "profile" || selected[tab]) return;
     const rows = tab === "requesters" && currentRequester
       ? [currentRequester, ...data.requesters]
       : data[tab];
     if (rows[0]) setSelected((current) => ({ ...current, [tab]: rows[0].id }));
+  }
+
+  function chooseSuggestion(ticketId: string) {
+    setImportTt(ticketId);
+    setSuggestionsOpen(false);
+    setTicketSuggestions([]);
+    setSuggestionStatus("loading");
+    setActiveSuggestion(-1);
+  }
+
+  function moveSuggestion(direction: -1 | 1) {
+    if (!ticketSuggestions.length) return;
+    setActiveSuggestion((current) => {
+      if (current < 0) return direction > 0 ? 0 : ticketSuggestions.length - 1;
+      return Math.max(0, Math.min(ticketSuggestions.length - 1, current + direction));
+    });
+  }
+
+  function handleSuggestionKey(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape" && suggestionsOpen) {
+      event.preventDefault();
+      setSuggestionsOpen(false);
+      setActiveSuggestion(-1);
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (!importTt || !ticketSuggestions.length) return;
+      event.preventDefault();
+      setSuggestionsOpen(true);
+      moveSuggestion(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Enter" && suggestionsOpen && activeSuggestion >= 0) {
+      const suggestion = ticketSuggestions[activeSuggestion];
+      if (!suggestion) return;
+      event.preventDefault();
+      chooseSuggestion(suggestion.ticketId);
+    }
   }
 
   function updateRow(key: CollectionKey, id: string, changes: Record<string, unknown>) {
@@ -377,7 +439,57 @@ export function GlobalDataModal({ onClose, onSaved, onError }: Props) {
         </nav>
         <section className="manager-workspace">
           <div className="source-contract manager-description"><strong>{MANAGER_DESCRIPTIONS[active].title}</strong><span>{MANAGER_DESCRIPTIONS[active].body}</span></div>
-          {active === "customers" && <div className="manager-import"><input list="zeus-global-sr-options" inputMode="numeric" maxLength={8} value={importTt} onChange={(event) => setImportTt(event.target.value.replace(/\D/g, ""))} placeholder="Search or choose an SR" aria-label="Service Request to import" /><datalist id="zeus-global-sr-options">{ticketSuggestions.map((ticket) => <option value={ticket.ticketId} label={ticket.summary} key={ticket.ticketId} />)}</datalist><button type="button" className="secondary-button" disabled={!/^\d{8}$/.test(importTt)} onClick={() => void importCustomer()}>Import customer from SR</button></div>}
+          {active === "customers" && <div className="manager-import">
+            <div
+              className="sr-autocomplete"
+              onBlur={(event) => {
+                const nextTarget = event.relatedTarget;
+                if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+                  setSuggestionsOpen(false);
+                  setActiveSuggestion(-1);
+                }
+              }}
+            >
+              <input
+                inputMode="numeric"
+                maxLength={8}
+                value={importTt}
+                onChange={(event) => {
+                  const value = event.target.value.replace(/\D/g, "");
+                  setImportTt(value);
+                  setSuggestionsOpen(Boolean(value));
+                  setTicketSuggestions([]);
+                  setSuggestionStatus(value ? "loading" : "idle");
+                  setActiveSuggestion(-1);
+                }}
+                onFocus={() => { if (importTt) setSuggestionsOpen(true); }}
+                onKeyDown={handleSuggestionKey}
+                placeholder="Type an SR number"
+                aria-label="Service Request to import"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={Boolean(importTt && suggestionsOpen)}
+                aria-controls="zeus-global-sr-options"
+                aria-activedescendant={activeSuggestion >= 0 ? `zeus-global-sr-${ticketSuggestions[activeSuggestion]?.ticketId}` : undefined}
+                autoComplete="off"
+              />
+              {importTt && suggestionsOpen && <div className="sr-autocomplete-menu" id="zeus-global-sr-options" role="listbox" aria-label="Matching Service Requests">
+                {suggestionStatus === "loading" ? <span className="sr-autocomplete-status">Searching SR numbers…</span>
+                  : ticketSuggestions.length ? ticketSuggestions.map((ticket, index) => <button
+                    type="button"
+                    role="option"
+                    id={`zeus-global-sr-${ticket.ticketId}`}
+                    aria-selected={activeSuggestion === index}
+                    className={activeSuggestion === index ? "active" : ""}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => chooseSuggestion(ticket.ticketId)}
+                    key={ticket.ticketId}
+                  ><strong>SR {ticket.ticketId}</strong><span>{ticket.summary || "No summary"}</span></button>)
+                    : <span className="sr-autocomplete-status">No SR number begins with {importTt}.</span>}
+              </div>}
+            </div>
+            <button type="button" className="secondary-button" disabled={!/^\d{8}$/.test(importTt)} onClick={() => void importCustomer()}>Import customer from SR</button>
+          </div>}
           {active !== "profile" && <div className="manager-records">
             <div className="manager-list"><button type="button" className="primary-button" onClick={() => addRow(active)}>+ Add {({ organizations: "organization", customers: "contact", sites: "site", requesters: "requester" })[active]}</button>{activeRows.map((row) => <button type="button" className={row.id === activeId ? "selected" : ""} onClick={() => setSelected((current) => ({ ...current, [active]: row.id }))} key={row.id}><span>{labelFor(active, row as unknown as Record<string, unknown>)}</span>{active === "requesters" && Boolean((row as RequesterProfile).pinned) && <em>★</em>}</button>)}</div>
             <div className="manager-form"><header><strong>{activeRow ? labelFor(active, activeRow as unknown as Record<string, unknown>) : "Editor"}</strong>{activeRow && activeRow.id !== "__current_user__" && <button type="button" className="text-button danger-text" onClick={() => removeRow(active, activeRow.id)}>Delete</button>}</header>{editor()}</div>

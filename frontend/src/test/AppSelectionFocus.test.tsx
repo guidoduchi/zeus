@@ -58,6 +58,7 @@ const bootstrap: BootstrapPayload = {
   },
   outlook: { enabled: false, configuredPathAvailable: false, stagedMessageCount: 0 },
   polling: { intervalMinutes: 15, enabled: true },
+  appearance: { fontScale: "standard" },
 };
 
 function serviceSummary(ticketId: string): TicketSummary {
@@ -80,6 +81,7 @@ function serviceSummary(ticketId: string): TicketSummary {
     received: 0,
     sent: 0,
     summary: `Ticket ${ticketId}`,
+    customerContact: `Customer ${ticketId}`,
     severity: "Minor",
     product: "Product",
     handler: "Handler",
@@ -321,9 +323,20 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  document.documentElement.removeAttribute("data-font-scale");
+});
 
 describe("workspace selection and detail focus", () => {
+  it("applies the persisted interface text-size preset", async () => {
+    apiMocks.getBootstrap.mockResolvedValue({ ...bootstrap, appearance: { fontScale: "large" } });
+    render(<App />);
+
+    await screen.findByRole("row", { name: /20000001/ });
+    expect(document.documentElement).toHaveAttribute("data-font-scale", "large");
+  });
+
   it("closes an SR detail, moves the row cursor without opening, and activates only on Enter", async () => {
     const user = userEvent.setup();
     render(<App />);

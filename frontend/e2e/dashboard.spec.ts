@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("the dashboard blocks wheel scrolling and opens rows only on activation", async ({ page }) => {
+test("the dashboard wheel scrolls the table while activation remains click or Enter only", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("[data-ticket-id]");
   await expect(rows.first()).toBeVisible();
@@ -15,17 +15,21 @@ test("the dashboard blocks wheel scrolling and opens rows only on activation", a
   }));
   await list.hover();
   await page.mouse.wheel(0, 900);
-  await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBe(before.list);
+  await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBeGreaterThan(before.list);
   expect(await page.evaluate(() => document.scrollingElement?.scrollTop || 0)).toBe(before.body);
+  await expect(page.locator(".ticket-row.selected")).toHaveCount(0);
+  await expect(page.getByRole("complementary", { name: /SR \d{8} detail/ })).toHaveCount(0);
 
   await list.focus();
   await page.keyboard.press("ArrowDown");
   await expect(rows.first()).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator(".grid-status")).toContainText(/SR \d{8}/);
+  await expect(page.locator(".grid-status")).toContainText("Customer contact: Customer");
   await expect(page.locator(".grid-status")).not.toContainText(/Wheel/i);
+  await expect(page.locator(".grid-status")).not.toContainText(/Enter opens/i);
   await expect(page.getByRole("complementary", { name: /SR \d{8} detail/ })).toHaveCount(0);
   await page.keyboard.press("Enter");
   await expect(page.getByRole("complementary", { name: /SR \d{8} detail/ })).toBeVisible();
+  await expect(page.locator(".grid-status")).not.toContainText("Customer contact:");
   await expect(page.getByRole("button", { name: "Work fields" })).toBeVisible();
 });
 
@@ -207,6 +211,10 @@ test("Spare Request controls form two clean rows and collapse to icons", async (
   expect(geometry).toEqual({ separateRows: true, controlsShareSecondRow: true, fits: true });
   await expect(tabs).toBeVisible();
 
+  await page.evaluate(() => { document.documentElement.dataset.fontScale = "large"; });
+  expect(await page.locator(".dashboard-controls").evaluate((controls) => controls.scrollWidth <= controls.clientWidth + 1)).toBe(true);
+  expect(await page.getByRole("button", { name: "Check Advanced Search" }).locator(".toolbar-label").evaluate((element) => getComputedStyle(element).display)).toBe("none");
+
   await page.setViewportSize({ width: 1080, height: 900 });
   const query = page.getByRole("button", { name: "Check Advanced Search" });
   await expect(query).toBeVisible();
@@ -378,6 +386,23 @@ test("Global data protects dirty forms and stays open after save", async ({ page
     };
   });
   expect(globalDataLayout).toEqual({ navigationIsLeft: true, navigationStartsLeft: true });
+
+  await modal.getByRole("button", { name: "Customer contacts", exact: true }).click();
+  const srImport = modal.getByRole("combobox", { name: "Service Request to import" });
+  await expect(modal.getByRole("listbox", { name: "Matching Service Requests" })).toHaveCount(0);
+  await srImport.fill("394");
+  const suggestions = modal.getByRole("listbox", { name: "Matching Service Requests" });
+  await expect(suggestions).toBeVisible();
+  expect(await suggestions.getByRole("option").evaluateAll((options) => options.every((option) => option.textContent?.includes("SR 394")))).toBe(true);
+  const suggestionGeometry = await suggestions.evaluate((element) => ({
+    bounded: element.clientHeight < element.scrollHeight,
+    overflow: getComputedStyle(element).overflowY,
+  }));
+  expect(suggestionGeometry).toEqual({ bounded: true, overflow: "auto" });
+  const suggestionScroll = await suggestions.evaluate((element) => element.scrollTop);
+  await suggestions.hover();
+  await page.mouse.wheel(0, 500);
+  await expect.poll(() => suggestions.evaluate((element) => element.scrollTop)).toBeGreaterThan(suggestionScroll);
 
   await modal.getByRole("button", { name: "Customer organizations", exact: true }).click();
   await expect(modal.getByText("Customer organizations group customer contacts.")).toBeVisible();

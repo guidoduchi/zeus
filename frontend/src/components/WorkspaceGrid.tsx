@@ -63,7 +63,6 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
   onCloseDetail,
 }: Props<Row>) {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
-  const scrollRef = useRef<HTMLDivElement>(null);
   const gridTemplate = useMemo(
     () => columns.map((column) => column.flex ? `minmax(${column.width}px, 1fr)` : `${column.width}px`).join(" "),
     [columns],
@@ -74,14 +73,6 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
   useEffect(() => {
     if (selectedRowId) rowRefs.current.get(selectedRowId)?.scrollIntoView({ block: "nearest" });
   }, [selectedRowId]);
-
-  useEffect(() => {
-    const scroll = scrollRef.current;
-    if (!scroll) return;
-    const blockWheel = (event: WheelEvent) => event.preventDefault();
-    scroll.addEventListener("wheel", blockWheel, { passive: false });
-    return () => scroll.removeEventListener("wheel", blockWheel);
-  }, []);
 
   function moveSelection(index: number) {
     if (!rows.length) return;
@@ -114,7 +105,6 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
         {columns.map((column) => <div role="columnheader" key={column.key}>{column.label}</div>)}
       </div>
       <div
-        ref={scrollRef}
         className="ticket-scroll"
         data-testid="dashboard-scroll"
         role="grid"
@@ -163,7 +153,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
       </div>
       <div className="grid-status">
         <span>{rows.length} {countLabel}</span>
-        <span>{selectedRow ? `${selectionLabel(selectedRow)} · Enter opens` : rows.length ? "No row highlighted · ↑↓ selects" : "No rows available in this view"}</span>
+        {!detailOpen && <span>{selectedRow ? selectionLabel(selectedRow) : rows.length ? "No row highlighted · ↑↓ selects" : "No rows available in this view"}</span>}
       </div>
     </section>
   );

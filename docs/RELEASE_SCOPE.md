@@ -41,6 +41,10 @@ Included:
   closure deletion only after success;
 - independent ticket-list and detail scrolling; no whole-page scrolling;
 - fixed-width columns with locally persisted visibility and order controls;
+- native wheel scrolling inside dense tables without wheel-driven row changes,
+  plus click/Enter-only activation and closed-detail customer-contact context;
+- a bounded, themed SR-number-prefix autocomplete in Global data and persisted
+  Compact, Standard, and Large interface typography presets;
 - severity in the default dense dashboard, MW as the UI label for `Done?`, and
   Last Email combining age plus count without a separate count column;
 - locally persisted dark/light theme, filters, sort field, and

@@ -16,6 +16,11 @@ function editValue(value: unknown): string | boolean {
   return value === null || value === undefined ? "" : String(value);
 }
 
+function choiceLabel(value: string): string {
+  const words = value.replaceAll("_", " ").replaceAll("-", " ");
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+}
+
 function SettingControl({
   setting,
   value,
@@ -46,7 +51,7 @@ function SettingControl({
           </label>
         ) : setting.kind === "choice" ? (
           <select id={`setting-${setting.key}`} value={String(value)} disabled={!setting.editable} onChange={(event) => onChange(event.target.value)}>
-            {setting.choices.map((choice) => <option value={choice} key={choice}>{choice}</option>)}
+            {setting.choices.map((choice) => <option value={choice} key={choice}>{choiceLabel(choice)}</option>)}
           </select>
         ) : setting.kind === "locked" ? (
           <input id={`setting-${setting.key}`} value={String(value)} disabled />

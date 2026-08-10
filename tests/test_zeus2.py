@@ -224,10 +224,15 @@ class UtilityAndConfigTests(ZeusCase):
         self.assertEqual(config["email"]["sync_interval_days"], 7)
         self.assertEqual(config["email"]["retained_message_count"], 7)
         self.assertTrue(config["email"]["fetch_new_ticket_history_automatically"])
+        self.assertEqual(config["web"]["font_scale"], "standard")
         bad = deepcopy(config)
         bad["email"]["fetch_interval_days"] = -2
         with self.assertRaises(ValueError):
             save_config(self.home, bad)
+        bad_scale = deepcopy(config)
+        bad_scale["web"]["font_scale"] = "enormous"
+        with self.assertRaisesRegex(ValueError, "web.font_scale"):
+            save_config(self.home, bad_scale)
 
     def test_calendar_interval_convention(self) -> None:
         today = date(2026, 8, 6)
@@ -235,6 +240,17 @@ class UtilityAndConfigTests(ZeusCase):
         self.assertFalse(interval_due(0, None, today=today))
         self.assertTrue(interval_due(7, "2026-07-30 23:59:59", today=today))
         self.assertFalse(interval_due(7, "2026-07-31 00:00:00", today=today))
+
+    def test_schema_eight_configuration_backfills_standard_typography(self) -> None:
+        legacy = deepcopy(self.store.config)
+        legacy["schema_version"] = 8
+        legacy["web"].pop("font_scale", None)
+        self.store.config_file.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = load_config(self.home)
+
+        self.assertEqual(migrated["schema_version"], 9)
+        self.assertEqual(migrated["web"]["font_scale"], "standard")
 
     def test_outlook_configuration_requires_an_exact_store_file(self) -> None:
         folder = self.root / "email"

@@ -430,6 +430,10 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    document.documentElement.dataset.fontScale = bootstrap?.appearance.fontScale || "standard";
+  }, [bootstrap?.appearance.fontScale]);
+
+  useEffect(() => {
     const refreshDraftCount = () => {
       setDraftCount(countUnsavedDrafts());
       setDraftTicketIds(ticketIdsWithDrafts());
@@ -930,70 +934,72 @@ export default function App() {
       <StatsBar dashboard={dashboard} />
       <section className="dashboard-toolbar">
         {workspace === "spare-requests" && <div className="spare-view-row"><div className="spare-view-switcher" role="tablist" aria-label="Spare Request view">{(["active", "eligible", "completed"] as SpareRequestView[]).map((view) => <button type="button" role="tab" aria-selected={spareView === view} className={spareView === view ? "active" : ""} onClick={() => chooseSpareView(view)} key={view}>{view === "active" ? "Active Requests" : view === "eligible" ? "Eligible SR Parts" : "Completed"}</button>)}</div></div>}
-        <label className="search-box">
-          <span>⌕</span>
-          <input
-            ref={searchRef}
-            value={search}
-            onChange={(event) => updateWorkspacePreference({ search: event.target.value })}
-            placeholder={workspaceConfig.searchPlaceholder}
-          />
-          {search && <button type="button" onClick={() => updateWorkspacePreference({ search: "" })} aria-label="Clear search">×</button>}
-        </label>
-        <div className="sort-control" role="group" aria-label="Dashboard sorting">
-          <label>Sort
-          <select aria-label="Sort field" value={sort} onChange={(event) => chooseSort(event.target.value)}>
-            {workspaceConfig.sorts.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
-          </select>
+        <div className="dashboard-controls">
+          <label className="search-box">
+            <span>⌕</span>
+            <input
+              ref={searchRef}
+              value={search}
+              onChange={(event) => updateWorkspacePreference({ search: event.target.value })}
+              placeholder={workspaceConfig.searchPlaceholder}
+            />
+            {search && <button type="button" onClick={() => updateWorkspacePreference({ search: "" })} aria-label="Clear search">×</button>}
           </label>
-          <select aria-label="Sort direction" value={direction} onChange={(event) => updateWorkspacePreference({ direction: event.target.value as SortDirection })}>
-            <option value="asc">↑ Ascending</option>
-            <option value="desc">↓ Descending</option>
-          </select>
-        </div>
-        <button type="button" className="toolbar-button compactable-button" aria-label="Check Advanced Search" title="Check Advanced Search" onClick={queryData} disabled={Boolean(activeJob)}><span className="toolbar-icon" aria-hidden="true">↻</span><span className="toolbar-label">Check Advanced Search</span></button>
-        {workspace === "spare-requests" && <>
-          <button type="button" className="toolbar-button compactable-button" aria-label="Manual request" title="Manual request" onClick={() => openSpareExport()}><span className="toolbar-icon" aria-hidden="true">+</span><span className="toolbar-label">Manual request</span></button>
-          <button type="button" className="toolbar-button compactable-button" aria-label="BOM catalog" title="BOM catalog" onClick={() => setBomCatalogOpen(true)}><span className="toolbar-icon" aria-hidden="true">▤</span><span className="toolbar-label">BOM catalog</span></button>
-          {spareView === "completed" && <button type="button" className="toolbar-button compactable-button danger-text" aria-label="Purge selected" title="Purge selected" disabled={!selectedCompletedItem} onClick={() => setPurgeConfirmationOpen(true)}><span className="toolbar-icon" aria-hidden="true">⌫</span><span className="toolbar-label">Purge selected</span></button>}
-        </>}
-        {dashboard.workspace === "service-requests" ? (
-          <FilterBar
-            definitions={serviceFilters.definitions}
-            selections={serviceFilters.selections}
-            activeCount={serviceFilters.activeCount}
-            onToggle={serviceFilters.toggle}
-            onClear={serviceFilters.clear}
-          />
-        ) : dashboard.view === "eligible" ? (
-          <FilterBar
-            definitions={eligiblePartFilters.definitions}
-            selections={eligiblePartFilters.selections}
-            activeCount={eligiblePartFilters.activeCount}
-            onToggle={eligiblePartFilters.toggle}
-            onClear={eligiblePartFilters.clear}
-          />
-        ) : (
-          <FilterBar
-            definitions={spareRequestFilters.definitions}
-            selections={spareRequestFilters.selections}
-            activeCount={spareRequestFilters.activeCount}
-            onToggle={spareRequestFilters.toggle}
-            onClear={spareRequestFilters.clear}
-          />
-        )}
-        <div className="columns-anchor">
-          <button type="button" className="toolbar-button compactable-button" aria-label="Fields" title="Fields" aria-expanded={columnsOpen} onClick={() => setColumnsOpen((value) => !value)}><span className="toolbar-icon" aria-hidden="true">⚙</span><span className="toolbar-label">Fields</span></button>
-          {columnsOpen && (
-            <ColumnChooser
-              columns={orderedColumns}
-              visibleKeys={visibleKeys}
-              onToggle={toggle}
-              onMove={move}
-              onReset={reset}
-              onClose={() => setColumnsOpen(false)}
+          <div className="sort-control" role="group" aria-label="Dashboard sorting">
+            <label>Sort
+              <select aria-label="Sort field" value={sort} onChange={(event) => chooseSort(event.target.value)}>
+                {workspaceConfig.sorts.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <select aria-label="Sort direction" value={direction} onChange={(event) => updateWorkspacePreference({ direction: event.target.value as SortDirection })}>
+              <option value="asc">↑ Ascending</option>
+              <option value="desc">↓ Descending</option>
+            </select>
+          </div>
+          <button type="button" className="toolbar-button compactable-button" aria-label="Check Advanced Search" title="Check Advanced Search" onClick={queryData} disabled={Boolean(activeJob)}><span className="toolbar-icon" aria-hidden="true">↻</span><span className="toolbar-label">Check Advanced Search</span></button>
+          {workspace === "spare-requests" && <>
+            <button type="button" className="toolbar-button compactable-button" aria-label="Manual request" title="Manual request" onClick={() => openSpareExport()}><span className="toolbar-icon" aria-hidden="true">+</span><span className="toolbar-label">Manual request</span></button>
+            <button type="button" className="toolbar-button compactable-button" aria-label="BOM catalog" title="BOM catalog" onClick={() => setBomCatalogOpen(true)}><span className="toolbar-icon" aria-hidden="true">▤</span><span className="toolbar-label">BOM catalog</span></button>
+            {spareView === "completed" && <button type="button" className="toolbar-button compactable-button danger-text" aria-label="Purge selected" title="Purge selected" disabled={!selectedCompletedItem} onClick={() => setPurgeConfirmationOpen(true)}><span className="toolbar-icon" aria-hidden="true">⌫</span><span className="toolbar-label">Purge selected</span></button>}
+          </>}
+          {dashboard.workspace === "service-requests" ? (
+            <FilterBar
+              definitions={serviceFilters.definitions}
+              selections={serviceFilters.selections}
+              activeCount={serviceFilters.activeCount}
+              onToggle={serviceFilters.toggle}
+              onClear={serviceFilters.clear}
+            />
+          ) : dashboard.view === "eligible" ? (
+            <FilterBar
+              definitions={eligiblePartFilters.definitions}
+              selections={eligiblePartFilters.selections}
+              activeCount={eligiblePartFilters.activeCount}
+              onToggle={eligiblePartFilters.toggle}
+              onClear={eligiblePartFilters.clear}
+            />
+          ) : (
+            <FilterBar
+              definitions={spareRequestFilters.definitions}
+              selections={spareRequestFilters.selections}
+              activeCount={spareRequestFilters.activeCount}
+              onToggle={spareRequestFilters.toggle}
+              onClear={spareRequestFilters.clear}
             />
           )}
+          <div className="columns-anchor">
+            <button type="button" className="toolbar-button compactable-button" aria-label="Fields" title="Fields" aria-expanded={columnsOpen} onClick={() => setColumnsOpen((value) => !value)}><span className="toolbar-icon" aria-hidden="true">⚙</span><span className="toolbar-label">Fields</span></button>
+            {columnsOpen && (
+              <ColumnChooser
+                columns={orderedColumns}
+                visibleKeys={visibleKeys}
+                onToggle={toggle}
+                onMove={move}
+                onReset={reset}
+                onClose={() => setColumnsOpen(false)}
+              />
+            )}
+          </div>
         </div>
       </section>
       <section className="workspace">

@@ -16,6 +16,11 @@
 - Prefetches and caches Service Requests and Spare Requests projections in the
   browser and server so workspace changes refresh in place instead of reopening
   the full workbench loading screen.
+- Keeps arrow keys highlight-only while native wheel input scrolls the table,
+  and shows the highlighted SR's customer contact only while detail is closed.
+- Replaces the browser-native Global data SR picker with a bounded Zeus-themed
+  prefix autocomplete, fixes the two-row narrow Spare Request toolbar, and adds
+  persisted Compact, Standard, and Large semantic typography presets.
 
 ## 3.1.4 - 2026-08-08
 

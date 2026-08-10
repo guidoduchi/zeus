@@ -13,24 +13,40 @@ const api = vi.hoisted(() => ({
 
 vi.mock("../api", () => api);
 
+function settingsPayload(fontScale = "standard") {
+  return {
+    schemaVersion: 9,
+    settings: [{
+      key: "paths.data_directory",
+      label: "Zeus data folder",
+      category: "Application storage",
+      kind: "data_directory",
+      description: "Mutable Zeus data.",
+      minimum: null,
+      choices: [],
+      nullable: false,
+      editable: false,
+      value: "C:\\Users\\Nebby\\AppData\\Local\\Zeus\\data",
+      status: { exists: true, path: "C:\\Users\\Nebby\\AppData\\Local\\Zeus\\data", message: "1024 MiB available" },
+    }, {
+      key: "web.font_scale",
+      label: "Interface text size",
+      category: "Appearance",
+      kind: "choice",
+      description: "Use one consistent typography scale throughout Zeus.",
+      minimum: null,
+      choices: ["compact", "standard", "large"],
+      nullable: false,
+      editable: true,
+      value: fontScale,
+    }],
+  };
+}
+
 describe("SettingsModal data storage", () => {
   beforeEach(() => {
-    api.getSettings.mockResolvedValue({
-      schemaVersion: 8,
-      settings: [{
-        key: "paths.data_directory",
-        label: "Zeus data folder",
-        category: "Application storage",
-        kind: "data_directory",
-        description: "Mutable Zeus data.",
-        minimum: null,
-        choices: [],
-        nullable: false,
-        editable: false,
-        value: "C:\\Users\\Nebby\\AppData\\Local\\Zeus\\data",
-        status: { exists: true, path: "C:\\Users\\Nebby\\AppData\\Local\\Zeus\\data", message: "1024 MiB available" },
-      }],
-    });
+    api.getSettings.mockResolvedValue(settingsPayload());
+    api.saveSettings.mockImplementation(async (updates) => settingsPayload(String(updates["web.font_scale"] || "standard")));
     api.browsePath.mockResolvedValue({ cancelled: false, path: "D:\\ZeusData" });
     api.migrateDataDirectory.mockResolvedValue({
       restartRequired: true,
@@ -63,5 +79,21 @@ describe("SettingsModal data storage", () => {
     expect(screen.getByText(/verified data clone is complete/i)).toBeVisible();
     timeout.mockRestore();
     confirm.mockRestore();
+  });
+
+  it("persists Compact, Standard, and Large as validated interface presets", async () => {
+    const user = userEvent.setup();
+    render(<SettingsModal onClose={vi.fn()} onSaved={vi.fn()} onError={vi.fn()} />);
+
+    const scale = await screen.findByLabelText("Interface text size");
+    expect(scale).toHaveValue("standard");
+    expect(screen.getByRole("option", { name: "Compact" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Standard" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Large" })).toBeVisible();
+
+    await user.selectOptions(scale, "large");
+    await user.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => expect(api.saveSettings).toHaveBeenCalledWith({ "web.font_scale": "large" }));
+    expect(scale).toHaveValue("large");
   });
 });

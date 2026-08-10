@@ -106,7 +106,8 @@ Each workspace remembers its own search, filters, sort field,
 ascending/descending direction, visible fields, and field order in the browser
 profile. Multiple values are OR within a filter category and categories are
 ANDed together. The dark/light theme is shared. Column resizing is intentionally
-not supported.
+not supported. Configuration offers Compact, Standard, and Large interface text
+presets; every view derives its typography from the same semantic scale.
 
 The page itself never scrolls. The ticket list owns its wheel and keyboard
 scrolling; the ticket detail panel has a separate scroll area. A row opens in a
@@ -188,6 +189,10 @@ local data. The top-bar **Global data** manager owns the workstation profile,
 customer organizations, customer contacts, sites, and additional requesters;
 favorite requesters can be pinned. The **BOM catalog** remains in the Spare
 Requests toolbar.
+
+Global data does not show SR suggestions until a numeric prefix is typed. Its
+themed result list is height-bounded and owns its wheel scrolling, so a broad
+prefix never expands the modal beyond the Zeus workspace.
 
 Each customer contact belongs to a customer organization, while sites remain
 independent. The selected contact name is also the workbook customer-contact

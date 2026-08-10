@@ -18,7 +18,7 @@ OUTLOOK_STORE_SUFFIXES = {".ost", ".pst"}
 # Runtime markers (processed filenames, hashes and successful operation times)
 # live in current/state.json and are never accepted from this file.
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 8,
+    "schema_version": 9,
     "paths": {
         # ``None`` keeps the mutable database under ``%LOCALAPPDATA%\\Zeus\\data``.
         # A configured value is only written by the verified migration workflow;
@@ -67,6 +67,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "port": 8765,
         "open_browser": True,
         "system_tray": True,
+        "font_scale": "standard",
     },
 }
 
@@ -341,6 +342,14 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "boolean",
         "Keep Open, Logs, Restart, and Exit controls in the Windows notification area.",
     ),
+    SettingSpec(
+        "web.font_scale",
+        "Interface text size",
+        "Appearance",
+        "choice",
+        "Use one consistent typography scale throughout Zeus.",
+        choices=("compact", "standard", "large"),
+    ),
 )
 
 SETTING_SPEC_BY_KEY = {spec.key: spec for spec in SETTING_SPECS}
@@ -435,7 +444,7 @@ def _migrate_legacy_keys(saved: dict[str, Any]) -> dict[str, Any]:
     migrated.pop("updatefile_dir", None)
     migrated.pop("mail", None)
     paths.pop("update_directory", None)
-    migrated["schema_version"] = 8
+    migrated["schema_version"] = 9
     return migrated
 
 
@@ -540,6 +549,8 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
     for key in ("open_browser", "system_tray"):
         if not isinstance(config.get("web", {}).get(key), bool):
             raise ValueError(f"web.{key} must be true or false")
+    if config.get("web", {}).get("font_scale") not in {"compact", "standard", "large"}:
+        raise ValueError("web.font_scale must be 'compact', 'standard', or 'large'")
 
 
 def load_config(home: Path) -> dict[str, Any]:
@@ -550,7 +561,7 @@ def load_config(home: Path) -> dict[str, Any]:
     migrated = _migrate_legacy_keys(saved)
     _assert_known_structure(migrated)
     config = deep_merge(DEFAULT_CONFIG, migrated)
-    config["schema_version"] = 8
+    config["schema_version"] = 9
     _validate(config)
     return config
 
@@ -560,7 +571,7 @@ def save_config(home: Path, config: dict[str, Any]) -> Path:
     resolved_home.mkdir(parents=True, exist_ok=True)
     _assert_known_structure(config)
     prepared = deep_merge(DEFAULT_CONFIG, config)
-    prepared["schema_version"] = 8
+    prepared["schema_version"] = 9
     _validate(prepared, validate_paths=True)
     path = config_path(resolved_home)
     atomic_write_json(path, prepared)

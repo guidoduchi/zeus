@@ -686,6 +686,7 @@ class DatabaseFirstSourceTests(WebFixture):
             "default": True,
         })
         self.assertEqual(dashboard["tickets"][0]["emailLabel"], "No email [8]")
+        self.assertEqual(dashboard["tickets"][0]["customerContact"], "Customer")
         self.assertNotIn("emailCount", {column["key"] for column in dashboard["columns"]})
 
     def test_external_excel_change_is_ignored_by_database_edit(self) -> None:
@@ -1210,6 +1211,7 @@ class WebServerTests(WebFixture):
         self.assertEqual(status, 200)
         self.assertEqual(dashboard["stats"]["active"], 1)  # type: ignore[index]
         self.assertEqual(index["instanceId"], "test-instance")
+        self.assertEqual(index["appearance"], {"fontScale": "standard"})
         self.assertEqual(audit_before, audit_after)
 
     def test_first_run_requires_profile_then_unlocks_the_workbench(self) -> None:

@@ -190,6 +190,12 @@ def serialize_ticket_summary(
         "received": int(email.get("total_received") or 0),
         "sent": int(email.get("total_sent") or 0),
         "summary": upstream.get("Problem Summary") or "",
+        "customerContact": (
+            upstream.get("Customer Contact")
+            or upstream.get("Contact Name")
+            or upstream.get("Contact Person")
+            or "—"
+        ),
         "severity": upstream.get("Customer Severity") or "—",
         "product": upstream.get("Product") or "—",
         "handler": upstream.get("Current Handler") or "—",

@@ -36,7 +36,7 @@ export function TicketGrid({
       countLabel="service request(s)"
       draftTicketIds={draftTicketIds}
       detailOpen={detailOpen}
-      selectionLabel={(ticket) => `SR ${ticket.ticketId}${ticket.summary ? ` · ${ticket.summary}` : ""}`}
+      selectionLabel={(ticket) => `Customer contact: ${ticket.customerContact || "—"}`}
       onHighlight={(ticket) => onHighlight(ticket.ticketId)}
       onOpen={(ticket) => onOpen(ticket.ticketId)}
       onCloseDetail={onCloseDetail}

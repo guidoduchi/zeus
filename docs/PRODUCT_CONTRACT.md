@@ -81,6 +81,11 @@ Consequences:
     draft was left protected. ←/→ changes detail tabs without wrapping.
 24. Service filters cover Planning, MW, and Severity. Spare Request filters
     cover Status, dispatch risk, Site, Cloud, conflict state, and RMA state.
+25. The mouse wheel scrolls the table viewport without changing its highlighted
+    row. Only click or Enter opens a row; arrow keys only move the highlight.
+26. Global data SR lookup is hidden until a numeric prefix is typed, remains
+    height-bounded, and scrolls independently. Interface typography uses one
+    persisted Compact, Standard, or Large semantic scale.
 
 ## Authority invariants
 

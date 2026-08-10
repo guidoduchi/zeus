@@ -42,7 +42,10 @@ describe("GlobalDataModal", () => {
     api.saveGlobalReferenceData.mockImplementation(async (value) => value);
     api.getDashboard.mockResolvedValue({
       workspace: "service-requests",
-      tickets: [{ ticketId: "39366148", summary: "Customer contact source" }],
+      tickets: [
+        { ticketId: "39366148", summary: "Customer contact source" },
+        { ticketId: "13936614", summary: "Contains the digits but does not begin with them" },
+      ],
     });
     api.getSpareRequestPrefill.mockResolvedValue({
       ticketId: "39366148",
@@ -121,12 +124,18 @@ describe("GlobalDataModal", () => {
 
     await user.click(await screen.findByRole("button", { name: /Customer contacts/ }));
     const ticketInput = screen.getByLabelText("Service Request to import");
+    expect(screen.queryByRole("listbox", { name: "Matching Service Requests" })).not.toBeInTheDocument();
+    expect(api.getDashboard).not.toHaveBeenCalled();
     await user.type(ticketInput, "3936");
     await waitFor(() => expect(api.getDashboard).toHaveBeenLastCalledWith("service-requests", "sr", "desc", "3936", "active"));
-    expect(document.querySelector('option[value="39366148"]')).not.toBeNull();
+    const suggestions = await screen.findByRole("listbox", { name: "Matching Service Requests" });
+    expect(screen.getByRole("option", { name: /SR 39366148/ })).toBeVisible();
+    expect(screen.queryByRole("option", { name: /SR 13936614/ })).not.toBeInTheDocument();
+    expect(styles).toMatch(/\.sr-autocomplete-menu\s*\{[^}]*max-height:\s*198px[^}]*overflow-y:\s*auto/s);
 
-    await user.clear(ticketInput);
-    await user.type(ticketInput, "39366148");
+    await user.click(screen.getByRole("option", { name: /SR 39366148/ }));
+    expect(suggestions).not.toBeInTheDocument();
+    expect(ticketInput).toHaveValue("39366148");
     await user.click(screen.getByRole("button", { name: "Import customer from SR" }));
     expect(await screen.findByDisplayValue("María Cliente")).toBeVisible();
     expect(screen.getByRole("button", { name: "Save global data" })).toBeEnabled();
