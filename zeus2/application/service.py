@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..diagnostics import diagnostic_log_path, record_exception
+from ..database_maintenance import (
+    CURRENT_DATABASE_SCHEMA_VERSION,
+    inspect_database,
+    maintain_database,
+)
 from ..excel_export import (
     list_pendings_backups,
     preview_pendings_restore,
@@ -69,7 +74,11 @@ from ..startup import StartupResult, reconcile_advanced_and_new_mail, run_startu
 from ..store import StoreError, ZeusStore
 from ..tickets import empty_email, newline_values, normalize_local
 from ..utils import iso_now, local_today, normalize_ticket_id
-from .edits import edit_ticket_in_database, edit_tickets_in_database
+from .edits import (
+    confirm_maintenance_window_in_database,
+    edit_ticket_in_database,
+    edit_tickets_in_database,
+)
 from .errors import (
     BusyError,
     ConflictError,
@@ -85,6 +94,7 @@ from .serialization import (
     SPARE_REQUEST_DEFAULT_SORT_DIRECTIONS,
     dashboard_payload,
     serialize_spare_request_detail,
+    serialize_ticket_summary,
     serialize_ticket_detail,
     spare_parts_dashboard_payload,
     spare_request_revision,
@@ -234,7 +244,6 @@ class ApplicationService:
 
     def bootstrap_payload(self) -> dict[str, Any]:
         outlook_path = self.store.config.get("paths", {}).get("outlook_store_path")
-        state = self.store.state()
         try:
             profile = user_profile_payload(self.store.root)
             profile_error = None
@@ -247,6 +256,84 @@ class ApplicationService:
             *startup.get("notices", []),
         ]
         capacity = storage_status(self.store)
+        state: dict[str, Any] = {}
+        maintenance_windows_due: list[dict[str, Any]] = []
+        if not self._operation_lock.acquire(blocking=False):
+            database_maintenance = {
+                "status": "busy",
+                "currentSchemaVersion": CURRENT_DATABASE_SCHEMA_VERSION,
+                "storedSchemaVersion": int(
+                    state.get("database_schema_version") or 2
+                ),
+                "ticketCount": 0,
+                "spareRequestCount": 0,
+                "outdatedTicketCount": 0,
+                "outdatedTicketIds": [],
+                "repairableMarkdownCount": 0,
+                "repairableMarkdown": [],
+                "reviewCount": 0,
+                "reviewRecords": [],
+                "blockedCount": 0,
+                "blockedRecords": [],
+                "canApply": False,
+                "backupRequired": True,
+                "message": "Database inspection will resume after the current operation.",
+            }
+        else:
+            try:
+                try:
+                    state = self.store.state()
+                    database_maintenance = inspect_database(self.store)
+                except Exception as exc:
+                    database_maintenance = {
+                        "status": "blocked",
+                        "currentSchemaVersion": CURRENT_DATABASE_SCHEMA_VERSION,
+                        "storedSchemaVersion": int(
+                            state.get("database_schema_version") or 2
+                        ),
+                        "ticketCount": 0,
+                        "spareRequestCount": 0,
+                        "outdatedTicketCount": 0,
+                        "outdatedTicketIds": [],
+                        "repairableMarkdownCount": 0,
+                        "repairableMarkdown": [],
+                        "reviewCount": 0,
+                        "reviewRecords": [],
+                        "blockedCount": 1,
+                        "blockedRecords": [
+                            {"path": "database", "message": str(exc)}
+                        ],
+                        "canApply": False,
+                        "backupRequired": True,
+                    }
+                try:
+                    for ticket in self.store.iter_tickets():
+                        summary = serialize_ticket_summary(ticket, self.store.config)
+                        if summary.get("maintenanceWindow", {}).get(
+                            "confirmationRequired"
+                        ):
+                            maintenance_windows_due.append(summary)
+                except Exception:
+                    # The maintenance status above owns database-corruption reporting;
+                    # bootstrap must still open Configuration so recovery remains possible.
+                    maintenance_windows_due = []
+            finally:
+                self._operation_lock.release()
+        if database_maintenance.get("status") == "upgrade_available":
+            startup["notices"] = [
+                "A Zeus database format upgrade is available in Configuration → Database maintenance.",
+                *startup.get("notices", []),
+            ]
+        elif database_maintenance.get("status") == "repair_available":
+            startup["notices"] = [
+                "Readable Markdown repair is available in Configuration → Database maintenance.",
+                *startup.get("notices", []),
+            ]
+        elif database_maintenance.get("status") == "blocked":
+            startup["warnings"] = [
+                "Database maintenance found a record that cannot be safely repaired automatically.",
+                *startup.get("warnings", []),
+            ]
         return {
             "datasetRevision": self.dataset_revision,
             "eventSequence": self.broker.sequence,
@@ -258,6 +345,8 @@ class ApplicationService:
                 "error": profile_error,
             },
             "storage": capacity,
+            "databaseMaintenance": database_maintenance,
+            "maintenanceWindowsDue": maintenance_windows_due,
             "spareRequestExport": self.spare_export_setup(),
             "outlook": {
                 "enabled": bool(outlook_path),
@@ -1744,6 +1833,34 @@ class ApplicationService:
         }
         return response
 
+    def confirm_maintenance_window(
+        self,
+        ticket_id: str,
+        *,
+        planned_date: str,
+        successful: bool,
+        expected_revision: str,
+    ) -> dict[str, Any]:
+        normalized_ticket_id = normalize_ticket_id(ticket_id)
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data. Try again when it finishes.")
+        try:
+            result = confirm_maintenance_window_in_database(
+                self.store,
+                normalized_ticket_id,
+                planned_date=planned_date,
+                successful=successful,
+                expected_revision=expected_revision,
+            )
+        finally:
+            self._operation_lock.release()
+        self._touch_data("maintenance-window-confirmation")
+        return {
+            "changed": True,
+            "changedFields": result.get("changedFields", []),
+            "ticket": self.ticket(normalized_ticket_id),
+        }
+
     def edit_tickets(
         self,
         edits: list[dict[str, Any]],
@@ -1791,6 +1908,28 @@ class ApplicationService:
             self._dashboard_cache.clear()
         self._schedule_wakeup.set()
         self.broker.publish("configuration", {"changed": result.get("changed", [])})
+        return result
+
+    def database_maintenance_status(self) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Wait for the current Zeus operation before checking the database")
+        try:
+            return inspect_database(self.store)
+        finally:
+            self._operation_lock.release()
+
+    def run_database_maintenance(self, *, confirmed: bool) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Wait for the current Zeus operation before maintaining the database")
+        try:
+            try:
+                result = maintain_database(self.store, confirmed=confirmed)
+            except StoreError as exc:
+                raise ValidationError(str(exc)) from exc
+        finally:
+            self._operation_lock.release()
+        if result.get("changed"):
+            self._touch_data("database-maintenance")
         return result
 
     def migrate_data_directory(self, destination: str) -> dict[str, Any]:
@@ -2035,6 +2174,7 @@ class ApplicationService:
             "paths": {},
             "tickets": 0,
             "diagnosticLog": str(diagnostic_log_path(self.store.config_home)),
+            "databaseMaintenance": None,
         }
         try:
             self.store.validate_current(self.store.current)
@@ -2042,6 +2182,10 @@ class ApplicationService:
         except Exception as exc:
             result["store"] = f"error: {exc}"
             record_exception(self.store.config_home, "ZEUS DOCTOR", exc)
+        try:
+            result["databaseMaintenance"] = inspect_database(self.store)
+        except Exception as exc:
+            result["databaseMaintenance"] = {"status": "blocked", "message": str(exc)}
         for key in (
             "workbook_directory",
             "advanced_search_directory",

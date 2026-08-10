@@ -147,10 +147,10 @@ class WindowsLauncherRegressionTests(unittest.TestCase):
 
     def test_release_version_is_3_1_5_everywhere(self) -> None:
         project = tomllib.loads(PROJECT_FILE.read_text(encoding="utf-8"))
-        self.assertEqual(project["project"]["version"], "3.1.5")
+        self.assertEqual(project["project"]["version"], "3.1.6")
         self.assertEqual(project["project"]["scripts"]["zeus"], "zeus2.main:main")
-        self.assertIn('__version__ = "3.1.5"', VERSION_FILE.read_text(encoding="utf-8"))
-        self.assertIn("Zeus 3.1.5", SETUP_SCRIPT.read_text(encoding="utf-8"))
+        self.assertIn('__version__ = "3.1.6"', VERSION_FILE.read_text(encoding="utf-8"))
+        self.assertIn("Zeus 3.1.6", SETUP_SCRIPT.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

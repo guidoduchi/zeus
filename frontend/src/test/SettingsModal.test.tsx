@@ -5,11 +5,33 @@ import { SettingsModal } from "../components/SettingsModal";
 
 const api = vi.hoisted(() => ({
   browsePath: vi.fn(),
+  getDatabaseMaintenance: vi.fn(),
   getSettings: vi.fn(),
   migrateDataDirectory: vi.fn(),
   openPath: vi.fn(),
+  runDatabaseMaintenance: vi.fn(),
   saveSettings: vi.fn(),
 }));
+
+function maintenanceStatus(status: "current" | "upgrade_available" = "current") {
+  return {
+    status,
+    currentSchemaVersion: 3,
+    storedSchemaVersion: status === "current" ? 3 : 2,
+    ticketCount: 4,
+    spareRequestCount: 1,
+    outdatedTicketCount: status === "current" ? 0 : 4,
+    outdatedTicketIds: status === "current" ? [] : ["12345678", "22345678", "32345678", "42345678"],
+    repairableMarkdownCount: 0,
+    repairableMarkdown: [],
+    reviewCount: 0,
+    reviewRecords: [],
+    blockedCount: 0,
+    blockedRecords: [],
+    canApply: status !== "current",
+    backupRequired: true,
+  };
+}
 
 vi.mock("../api", () => api);
 
@@ -46,6 +68,8 @@ function settingsPayload(fontScale = "standard") {
 describe("SettingsModal data storage", () => {
   beforeEach(() => {
     api.getSettings.mockResolvedValue(settingsPayload());
+    api.getDatabaseMaintenance.mockResolvedValue(maintenanceStatus());
+    api.runDatabaseMaintenance.mockResolvedValue({ ...maintenanceStatus(), changed: true, backup: "maintenance.zip" });
     api.saveSettings.mockImplementation(async (updates) => settingsPayload(String(updates["web.font_scale"] || "standard")));
     api.browsePath.mockResolvedValue({ cancelled: false, path: "D:\\ZeusData" });
     api.migrateDataDirectory.mockResolvedValue({
@@ -95,5 +119,25 @@ describe("SettingsModal data storage", () => {
     await user.click(screen.getByRole("button", { name: "Save configuration" }));
     await waitFor(() => expect(api.saveSettings).toHaveBeenCalledWith({ "web.font_scale": "large" }));
     expect(scale).toHaveValue("large");
+  });
+
+  it("previews and explicitly confirms a backup-backed database upgrade", async () => {
+    const user = userEvent.setup();
+    api.getDatabaseMaintenance.mockResolvedValue(maintenanceStatus("upgrade_available"));
+    api.runDatabaseMaintenance.mockResolvedValue({
+      ...maintenanceStatus(),
+      changed: true,
+      backup: "20260810-database-maintenance.zip",
+    });
+    render(<SettingsModal onClose={vi.fn()} onSaved={vi.fn()} onError={vi.fn()} />);
+
+    expect(await screen.findByText("Upgrade available")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Upgrade & repair" }));
+    expect(screen.getByRole("dialog", { name: "Upgrade and repair the Zeus database?" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Back up, upgrade & repair" }));
+
+    await waitFor(() => expect(api.runDatabaseMaintenance).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("Database is current")).toBeVisible();
+    expect(screen.getByText(/20260810-database-maintenance\.zip/)).toBeVisible();
   });
 });

@@ -123,19 +123,20 @@ describe("TicketDetail", () => {
     expect(styles).toMatch(/\.edit-actions, \.edit-actions > \.inline-actions\s*\{[^}]*flex-wrap:\s*wrap/s);
   });
 
-  it("presents Maintenance Window codes with their operational meanings", async () => {
+  it("presents one Maintenance Window editor with date-first semantics", async () => {
     const user = userEvent.setup();
     render(<TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} />);
 
     expect(screen.getByText("Maintenance Window")).toBeVisible();
-    expect(screen.getByText("Pending")).toBeVisible();
+    expect(screen.getByText("Unplanned")).toBeVisible();
     await user.click(screen.getByRole("button", { name: /work fields/i }));
-    const mw = screen.getByLabelText("Maintenance Window (MW)");
-    expect(mw).toHaveValue("N");
-    expect(screen.getByRole("option", { name: "Y — Done" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "N — Pending" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /P — Uncompleted.*follow-up pending/ })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "? — N/A" })).toBeInTheDocument();
+    expect(screen.getByLabelText("MW date")).toHaveValue("");
+    const mwState = screen.getByLabelText("MW state while no date exists");
+    expect(mwState).toHaveValue("N");
+    expect(screen.getByRole("option", { name: "Unplanned" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Incomplete.*waiting for another date/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "No visibility" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Complete.*date unknown/ })).toBeInTheDocument();
   });
 
   it("renders email content as escaped plain text and toggles full history", async () => {
@@ -253,7 +254,7 @@ describe("TicketDetail", () => {
     render(<TicketDetail ticket={detail} loading={false} templates={[]} onClose={vi.fn()} onSave={onSave} onGenerateMop={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: /work fields/i }));
 
-    const planned = screen.getByLabelText("Planned Date");
+    const planned = screen.getByLabelText("MW date");
     expect(planned).toHaveAttribute("type", "date");
     expect(planned).toHaveValue("");
     expect(screen.queryByLabelText("Spare")).not.toBeInTheDocument();
@@ -265,6 +266,37 @@ describe("TicketDetail", () => {
       "Planned Date": "2026-08-21",
     });
     expect(onSave.mock.calls[0][2]).not.toHaveProperty("Spare");
+  });
+
+  it("turns an incomplete MW back into a dated plan without losing its shown history", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const incomplete: TicketDetailType = {
+      ...detail,
+      done: "P",
+      maintenanceWindow: {
+        schemaVersion: 1,
+        status: "incomplete",
+        date: null,
+        display: "Incomplete",
+        color: "yellow",
+        confirmationRequired: false,
+        attempts: [{ date: "2026-08-08", outcome: "incomplete", confirmed_at: "2026-08-09T00:00:00Z", source: "manual" }],
+        reviewRequired: false,
+      },
+      localFields: { ...detail.localFields, "Done?": "P", "Planned Date": null },
+    };
+    render(<TicketDetail ticket={incomplete} loading={false} templates={[]} onClose={vi.fn()} onSave={onSave} onGenerateMop={vi.fn()} initialTab="work" />);
+
+    expect(screen.getByText("Incomplete · waiting for another MW date")).toBeVisible();
+    expect(screen.getByText("2026-08-08 · Incomplete")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("MW date"), { target: { value: "2026-08-21" } });
+    await user.click(screen.getByRole("button", { name: /save to zeus/i }));
+
+    expect(onSave).toHaveBeenCalledWith("12345678", "revision", {
+      "Planned Date": "2026-08-21",
+      "Done?": "N",
+    });
   });
 
   it("edits multiple devices and multiple damaged parts as one hierarchy", async () => {

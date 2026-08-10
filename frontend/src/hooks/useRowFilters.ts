@@ -22,6 +22,40 @@ export interface RowFilterDefinition {
 
 type Selections = Record<string, string[]>;
 
+const MAINTENANCE_WINDOW_STATES = new Set([
+  "planned", "unplanned", "incomplete", "completed", "no_visibility",
+]);
+
+function migrateLegacyMaintenanceWindowSelections(selections: Selections): Selections {
+  const planning = selections.planning || [];
+  const maintenance = selections.mw || [];
+  const hasLegacyCodes = maintenance.some((value) => ["N", "P", "Y", "?"].includes(value));
+  if (!planning.length && !hasLegacyCodes) return selections;
+
+  const planningMode = planning.length === 1 ? planning[0] : null;
+  const mapped = new Set(
+    maintenance.filter((value) => MAINTENANCE_WINDOW_STATES.has(value)),
+  );
+  for (const code of maintenance) {
+    if (code === "N") {
+      if (planningMode !== "unplanned") mapped.add("planned");
+      if (planningMode !== "planned") mapped.add("unplanned");
+    } else if (code === "P") {
+      mapped.add("incomplete");
+    } else if (code === "Y") {
+      mapped.add("completed");
+    } else if (code === "?") {
+      if (planningMode !== "unplanned") mapped.add("planned");
+      if (planningMode !== "planned") mapped.add("no_visibility");
+    }
+  }
+  const migrated = { ...selections };
+  delete migrated.planning;
+  if (mapped.size) migrated.mw = [...mapped];
+  else delete migrated.mw;
+  return migrated;
+}
+
 function normalizedValues(value: string | string[] | null | undefined): string[] {
   const values = Array.isArray(value) ? value : value ? [value] : [];
   return [...new Set(values.map((item) => String(item).trim()).filter(Boolean))];
@@ -31,13 +65,13 @@ function readSelections(storageKey: string): Selections {
   try {
     const parsed = JSON.parse(localStorage.getItem(storageKey) || "{}") as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(
+    return migrateLegacyMaintenanceWindowSelections(Object.fromEntries(
       Object.entries(parsed as Record<string, unknown>).flatMap(([key, value]) => (
         Array.isArray(value)
           ? [[key, value.map(String).map((item) => item.trim()).filter(Boolean)]]
           : []
       )),
-    );
+    ));
   } catch {
     return {};
   }

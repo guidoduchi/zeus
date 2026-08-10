@@ -2,6 +2,7 @@ import type {
   ApiErrorShape,
   BootstrapPayload,
   DashboardPayload,
+  DatabaseMaintenanceStatus,
   BomCatalogPayload,
   GlobalReferenceData,
   Job,
@@ -265,6 +266,23 @@ export function saveTicket(
   });
 }
 
+export function confirmMaintenanceWindow(
+  ticketId: string,
+  revision: string,
+  plannedDate: string,
+  successful: boolean,
+): Promise<{
+  changed: boolean;
+  changedFields: string[];
+  ticket: TicketDetail;
+}> {
+  return request(`/api/tickets/${ticketId}/maintenance-window/confirm`, {
+    method: "POST",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision, plannedDate, successful }),
+  });
+}
+
 export function saveTicketDraftBatch(edits: Array<{
   ticketId: string;
   revision: string;
@@ -289,6 +307,17 @@ export function saveSettings(updates: Record<string, unknown>): Promise<Settings
   return request<SettingsPayload>("/api/settings", {
     method: "PATCH",
     body: JSON.stringify({ updates }),
+  });
+}
+
+export function getDatabaseMaintenance(): Promise<DatabaseMaintenanceStatus> {
+  return request<DatabaseMaintenanceStatus>("/api/database/maintenance");
+}
+
+export function runDatabaseMaintenance(): Promise<DatabaseMaintenanceStatus> {
+  return request<DatabaseMaintenanceStatus>("/api/database/maintenance", {
+    method: "POST",
+    body: JSON.stringify({ confirmed: true }),
   });
 }
 

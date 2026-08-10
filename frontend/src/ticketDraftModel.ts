@@ -178,7 +178,7 @@ export function cleanSpareParts(value: DraftDevice[] | SpareDevice[]): SpareDevi
 }
 
 export function displayDraftField(field: string): string {
-  if (field === "Done?") return "MW";
+  if (field === "Planned Date" || field === "Done?") return "Maintenance Window";
   if (field === "Spare Parts") return "Spare Parts";
   return field;
 }

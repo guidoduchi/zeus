@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import Any
 
+from .maintenance_windows import maintenance_window_for_local
 from .utils import parse_date, parse_datetime
 
 
@@ -149,11 +150,17 @@ def aging_for_ticket(
     ticket: dict[str, Any], config: dict[str, Any], *, today: date | None = None
 ) -> AgingResult:
     upstream = ticket.get("upstream", {}).get("fields", {})
-    local = ticket.get("local", {}).get("fields", {})
+    local_record = ticket.get("local", {})
+    maintenance_window = maintenance_window_for_local(local_record)
+    current_planned_date = (
+        maintenance_window.get("date")
+        if maintenance_window.get("status") == "planned"
+        else None
+    )
     email = ticket.get("email", {})
     return calculate_ticket_facts(
         report_date=upstream.get("Report Date"),
-        planned_date=local.get("Planned Date"),
+        planned_date=current_planned_date,
         resolve_by=upstream.get("ResolveBy"),
         resolve_by_suspend=upstream.get("Resolve By Suspend"),
         status=upstream.get("Status"),

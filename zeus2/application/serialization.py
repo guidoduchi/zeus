@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from ..aging import aging_for_ticket, report_sort_key
 from ..mail import strip_quoted_history
+from ..maintenance_windows import maintenance_window_summary
 from ..spare_request_excel import read_archived_items
 from ..spare_requests import (
     ECUADOR_TIMEZONE,
@@ -29,8 +30,7 @@ COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "ticketId", "label": "SR", "width": 94, "default": True},
     {"key": "risk", "label": "", "width": 18, "default": True},
     {"key": "lifecycle", "label": "Life", "width": 108, "default": True},
-    {"key": "done", "label": "MW", "width": 104, "default": True},
-    {"key": "plannedDate", "label": "Planned", "width": 116, "default": True},
+    {"key": "done", "label": "MW", "width": 128, "default": True},
     {"key": "ticketAgeDays", "label": "Age", "width": 62, "default": True},
     {"key": "emailLabel", "label": "Last Email", "width": 154, "default": True},
     {"key": "severity", "label": "Severity", "width": 92, "default": True},
@@ -48,7 +48,7 @@ COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
 SPARE_PART_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "ticketId", "label": "SR", "width": 94, "default": True},
     {"key": "risk", "label": "", "width": 18, "default": True},
-    {"key": "plannedDate", "label": "Planned", "width": 116, "default": True},
+    {"key": "done", "label": "MW", "width": 128, "default": True},
     {"key": "site", "label": "Site", "width": 110, "default": True},
     {"key": "cloud", "label": "Cloud", "width": 130, "default": True},
     {"key": "device", "label": "Device", "width": 165, "default": True},
@@ -59,7 +59,6 @@ SPARE_PART_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "faultySn", "label": "Faulty SN", "width": 155, "default": True},
     {"key": "newSn", "label": "New SN", "width": 155, "default": True},
     {"key": "lifecycle", "label": "Life", "width": 108, "default": False},
-    {"key": "done", "label": "MW", "width": 104, "default": False},
     {"key": "summary", "label": "Summary", "width": 320, "default": False, "flex": True},
 )
 
@@ -161,6 +160,12 @@ def serialize_ticket_summary(
     upstream = ticket.get("upstream", {}).get("fields", {})
     prepared_local = normalize_local(ticket.get("local"))
     local = prepared_local.get("fields", {})
+    maintenance_window = maintenance_window_summary(
+        prepared_local,
+        today=facts.evaluated_on,
+    )
+    if maintenance_window.get("date") and maintenance_window.get("status") != "completed":
+        maintenance_window["color"] = facts.planned_color
     email = ticket.get("email", {})
     email_count = int(email.get("total_received") or 0) + int(email.get("total_sent") or 0)
     devices = [
@@ -179,6 +184,7 @@ def serialize_ticket_summary(
         "revision": ticket_revision(ticket),
         "lifecycle": ticket.get("lifecycle", {}).get("status") or "unknown",
         "done": str(local.get("Done?") or "N"),
+        "maintenanceWindow": maintenance_window,
         "plannedDate": facts.planned_label,
         "plannedDays": facts.planned_days,
         "plannedState": facts.planned_state,
@@ -227,9 +233,13 @@ def serialize_archived_ticket_summary(
     """Serialize a finalized SR without applying live-ticket warning colors."""
 
     result = serialize_ticket_summary(ticket, config)
+    maintenance_window = deepcopy(result["maintenanceWindow"])
+    maintenance_window["color"] = None
+    maintenance_window["confirmationRequired"] = False
     result.update(
         {
             "lifecycle": "closed",
+            "maintenanceWindow": maintenance_window,
             "plannedColor": None,
             "ticketAgeColor": None,
             "emailInactivityDays": None,
@@ -414,13 +424,21 @@ def dashboard_payload(
         ordered = [ticket for ticket in ordered if query in _ticket_search_text(ticket)]
 
     codes = {code: 0 for code in ("Y", "N", "P", "?")}
+    mw_states = {
+        state: 0
+        for state in ("planned", "unplanned", "incomplete", "completed", "no_visibility")
+    }
     overdue = unplanned = no_email = 0
     for ticket in active:
-        code = str(ticket.get("local", {}).get("fields", {}).get("Done?") or "N")
+        prepared_local = normalize_local(ticket.get("local"))
+        code = str(prepared_local.get("fields", {}).get("Done?") or "N")
         codes[code if code in codes else "N"] += 1
         facts = aging_for_ticket(ticket, config)
-        overdue += int(facts.planned_state == "overdue")
-        unplanned += int(facts.planned_state == "unplanned")
+        mw = maintenance_window_summary(prepared_local, today=facts.evaluated_on)
+        mw_state = str(mw.get("status") or "unplanned")
+        mw_states[mw_state if mw_state in mw_states else "unplanned"] += 1
+        overdue += int(bool(mw.get("confirmationRequired")))
+        unplanned += int(mw_state == "unplanned")
         no_email += int(facts.communication_inactivity_days is None)
 
     return {
@@ -435,6 +453,11 @@ def dashboard_payload(
             "doneN": codes["N"],
             "doneP": codes["P"],
             "doneUnknown": codes["?"],
+            "mwPlanned": mw_states["planned"],
+            "mwUnplanned": mw_states["unplanned"],
+            "mwIncomplete": mw_states["incomplete"],
+            "mwCompleted": mw_states["completed"],
+            "mwNoVisibility": mw_states["no_visibility"],
             "overdue": overdue,
             "unplanned": unplanned,
             "noEmail": no_email,
@@ -490,6 +513,7 @@ def _spare_part_rows(
                     "revision": summary["revision"],
                     "lifecycle": summary["lifecycle"],
                     "done": summary["done"],
+                    "maintenanceWindow": deepcopy(summary["maintenanceWindow"]),
                     "plannedDate": summary["plannedDate"],
                     "plannedDays": summary["plannedDays"],
                     "plannedState": summary["plannedState"],

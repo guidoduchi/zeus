@@ -4,6 +4,7 @@ from copy import deepcopy
 import re
 from typing import Any
 
+from .maintenance_windows import synchronize_maintenance_window
 from .utils import iso_now, normalize_ticket_id
 
 
@@ -360,8 +361,8 @@ def normalize_local(local: dict[str, Any] | None) -> dict[str, Any]:
     )
     prepared["spare_parts"] = spare_parts
     fields.update(flat_spare_fields(spare_parts))
-    fields["Done?"] = normalize_done(fields.get("Done?"))[0]
     fields["Spare"] = spare_from_parts(spare_parts)
+    prepared = synchronize_maintenance_window(prepared)
     prepared.setdefault("presentation", {"cell_styles": {}})
     prepared.setdefault("mop_fields", {})
     return prepared
@@ -373,7 +374,7 @@ def workflow_from_code(value: Any) -> tuple[str, str]:
 
 
 def workflow_code(ticket: dict[str, Any]) -> str:
-    value = ticket.get("local", {}).get("fields", {}).get("Done?")
+    value = normalize_local(ticket.get("local")).get("fields", {}).get("Done?")
     return normalize_done(value)[0]
 
 

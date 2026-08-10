@@ -1,4 +1,4 @@
-# Zeus 3.1.5 release scope
+# Zeus 3.1.6 release scope
 
 Included:
 
@@ -53,8 +53,13 @@ Included:
   and closed-detail customer-contact context;
 - a bounded, themed SR-number-prefix autocomplete in Global data and persisted
   Compact, Standard, and Large interface typography presets;
-- severity in the default dense dashboard, MW as the UI label for `Done?`, and
-  Last Email combining age plus count without a separate count column;
+- severity in the default dense dashboard, one structured MW field with legacy
+  workbook projections, and Last Email combining age plus count without a
+  separate count column;
+- one date-first MW column and editor, with past-date outcome prompts, complete
+  and incomplete transitions, new-date rescheduling, and durable attempt history;
+- preview-first Database Maintenance with full backup, staged 3.1.6 migration,
+  readable-Markdown repair, blocked-record review, validation, and atomic swap;
 - locally persisted dark/light theme, filters, sort field, and
   ascending/descending direction;
 - page-level `S`, `M`, `R`, Ctrl+F, and navigation arrows outside editable
@@ -80,7 +85,7 @@ Included:
   and one-row-per-part compatibility output with legacy scalar migration;
 - prefetched browser workspaces and revision/date-aware server dashboard caching
   so Service Requests and Spare Requests switch without a repeated boot screen;
-- service filters for Planning/MW/Severity and Spare Request filters for Status,
+- service filters for unified MW state/Severity and Spare Request filters for Status,
   dispatch risk, Site, Cloud, conflicts, and RMA state, using OR-within/AND-across;
 - visible serialized startup, scheduled, and manual Advanced Search checks;
 - page refreshes that never trigger a source query and cannot silently discard

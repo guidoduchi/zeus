@@ -10,7 +10,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,7 +43,7 @@ from zeus2.reference_data import save_user_profile, user_profile_path
 from zeus2.startup import StartupResult, run_startup
 from zeus2.store import ZeusStore
 from zeus2.tickets import PENDING_COLUMNS
-from zeus2.utils import sha256_file
+from zeus2.utils import local_today, sha256_file
 from zeus2.web.runtime import InstanceRegistry, process_creation_marker
 from zeus2.web.server import ZeusWebServer
 
@@ -694,9 +694,10 @@ class DatabaseFirstSourceTests(WebFixture):
         self.assertEqual(mw_column, {
             "key": "done",
             "label": "MW",
-            "width": 104,
+            "width": 128,
             "default": True,
         })
+        self.assertNotIn("plannedDate", {column["key"] for column in dashboard["columns"]})
         self.assertEqual(dashboard["tickets"][0]["emailLabel"], "No email")
         self.assertEqual(dashboard["tickets"][0]["customerContact"], "Customer")
         self.assertNotIn("emailCount", {column["key"] for column in dashboard["columns"]})
@@ -1411,6 +1412,70 @@ class WebServerTests(WebFixture):
         self.assertEqual(edited["localFields"]["Notes"], "Complete API response")
         self.assertIsInstance(edited["history"], list)
         self.assertIsInstance(edited["mops"], list)
+
+    def test_overdue_maintenance_window_route_records_an_incomplete_attempt(self) -> None:
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        _, detail, _ = self.read_json("/api/tickets/12345678")
+        planned_date = (local_today() - timedelta(days=1)).isoformat()
+        plan_request = urllib.request.Request(
+            self.url + "/api/tickets/12345678/local",
+            data=json.dumps(
+                {
+                    "revision": detail["revision"],
+                    "changes": {"Planned Date": planned_date},
+                }
+            ).encode("utf-8"),
+            method="PATCH",
+            headers={
+                "Content-Type": "application/json",
+                "If-Match": str(detail["revision"]),
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(plan_request, timeout=3) as response:
+            planned = json.loads(response.read())["ticket"]
+
+        _, due_bootstrap, _ = self.read_json("/api/bootstrap")
+        self.assertEqual(
+            [ticket["ticketId"] for ticket in due_bootstrap["maintenanceWindowsDue"]],
+            ["12345678"],
+        )
+        confirm_request = urllib.request.Request(
+            self.url + "/api/tickets/12345678/maintenance-window/confirm",
+            data=json.dumps(
+                {
+                    "revision": planned["revision"],
+                    "plannedDate": planned_date,
+                    "successful": False,
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "If-Match": str(planned["revision"]),
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(confirm_request, timeout=3) as response:
+            result = json.loads(response.read())["ticket"]
+
+        self.assertEqual(result["maintenanceWindow"]["status"], "incomplete")
+        self.assertEqual(result["maintenanceWindow"]["display"], "Incomplete")
+        self.assertIsNone(result["localFields"]["Planned Date"])
+        self.assertEqual(
+            result["maintenanceWindow"]["attempts"][-1]["date"],
+            planned_date,
+        )
+
+    def test_database_maintenance_status_route_is_read_only_when_current(self) -> None:
+        audit_before = self.store.audit_file.read_text(encoding="utf-8")
+        status, maintenance, _ = self.read_json("/api/database/maintenance")
+        audit_after = self.store.audit_file.read_text(encoding="utf-8")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(maintenance["status"], "current")
+        self.assertFalse(maintenance["canApply"])
+        self.assertEqual(audit_before, audit_after)
 
     def test_bulk_draft_patch_returns_complete_saved_tickets(self) -> None:
         _, bootstrap, _ = self.read_json("/api/bootstrap")

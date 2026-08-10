@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { browsePath, getSettings, migrateDataDirectory, openPath, saveSettings } from "../api";
-import type { Setting, SettingsPayload } from "../types";
+import {
+  browsePath,
+  getDatabaseMaintenance,
+  getSettings,
+  migrateDataDirectory,
+  openPath,
+  runDatabaseMaintenance,
+  saveSettings,
+} from "../api";
+import type { DatabaseMaintenanceStatus, Setting, SettingsPayload } from "../types";
 import { ConfirmationDialog } from "./ConfirmationDialog";
 import { Modal } from "./Modal";
 
@@ -81,12 +89,17 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
   const [saving, setSaving] = useState(false);
   const [migrating, setMigrating] = useState(false);
   const [migrationTarget, setMigrationTarget] = useState<string | null>(null);
+  const [maintenance, setMaintenance] = useState<DatabaseMaintenanceStatus | null>(null);
+  const [checkingDatabase, setCheckingDatabase] = useState(false);
+  const [maintainingDatabase, setMaintainingDatabase] = useState(false);
+  const [maintenanceConfirmation, setMaintenanceConfirmation] = useState(false);
 
   useEffect(() => {
     getSettings().then((result) => {
       setPayload(result);
       setDraft(Object.fromEntries(result.settings.map((setting) => [setting.key, editValue(setting.value)])));
     }).catch(onError);
+    getDatabaseMaintenance().then(setMaintenance).catch(onError);
   }, [onError]);
 
   const categories = useMemo(() => {
@@ -149,6 +162,50 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
     }
   }
 
+  async function checkDatabase() {
+    setCheckingDatabase(true);
+    try {
+      setMaintenance(await getDatabaseMaintenance());
+    } catch (error) {
+      onError(error);
+    } finally {
+      setCheckingDatabase(false);
+    }
+  }
+
+  async function confirmDatabaseMaintenance() {
+    setMaintainingDatabase(true);
+    try {
+      const result = await runDatabaseMaintenance();
+      setMaintenance(result);
+      setMaintenanceConfirmation(false);
+      onSaved();
+    } catch (error) {
+      onError(error);
+    } finally {
+      setMaintainingDatabase(false);
+    }
+  }
+
+  const maintenanceLabel = maintenance?.status === "current"
+    ? "Database is current"
+    : maintenance?.status === "upgrade_available"
+      ? "Upgrade available"
+      : maintenance?.status === "repair_available"
+        ? "Markdown repair available"
+        : maintenance?.status === "blocked"
+          ? "Manual recovery required"
+          : maintenance?.status === "busy"
+            ? "Check paused during another operation"
+            : "Not checked";
+  const maintenanceActionLabel = maintenance?.status === "upgrade_available"
+    ? "Upgrade & repair"
+    : maintenance?.status === "repair_available"
+      ? "Repair Markdown"
+      : maintenance?.status === "blocked"
+        ? "Repair blocked"
+        : "No repair needed";
+
   return <>
     <Modal
       title="Zeus configuration"
@@ -178,6 +235,29 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
               ))}
             </section>
           ))}
+          <section className={`settings-group database-maintenance-group status-${maintenance?.status || "unknown"}`}>
+            <h3>Database maintenance</h3>
+            <div className="database-maintenance-summary">
+              <div>
+                <strong>{maintenanceLabel}</strong>
+                <span>{maintenance ? `Schema ${maintenance.storedSchemaVersion} → ${maintenance.currentSchemaVersion} · ${maintenance.ticketCount} ticket(s) · ${maintenance.spareRequestCount} Active Request(s)` : "Reading embedded Markdown records…"}</span>
+              </div>
+              <div className="database-maintenance-counts">
+                <span>Upgrade <strong>{maintenance?.outdatedTicketCount || 0}</strong></span>
+                <span>Repair <strong>{maintenance?.repairableMarkdownCount || 0}</strong></span>
+                <span>Review <strong>{maintenance?.reviewCount || 0}</strong></span>
+                <span>Blocked <strong>{maintenance?.blockedCount || 0}</strong></span>
+              </div>
+              <p>Check is read-only. Upgrade & repair creates a full backup, migrates a staging copy, regenerates readable Markdown from valid embedded records, validates the complete store, and replaces the live database only after every check passes.</p>
+              {!!maintenance?.reviewRecords.length && <ul className="database-maintenance-list review-list">{maintenance.reviewRecords.slice(0, 6).map((record, index) => <li key={`${record.ticketId || record.path}-${index}`}><strong>{record.ticketId || record.path}</strong><span>{record.message}</span></li>)}</ul>}
+              {!!maintenance?.blockedRecords.length && <ul className="database-maintenance-list blocked-list">{maintenance.blockedRecords.slice(0, 6).map((record, index) => <li key={`${record.path}-${index}`}><strong>{record.path}</strong><span>{record.message}</span></li>)}</ul>}
+              {maintenance?.changed && <small className="status-good">Maintenance completed. Backup: {maintenance.backup || "created by the transaction"}.</small>}
+              <div className="database-maintenance-actions">
+                <button type="button" className="secondary-button" disabled={checkingDatabase || maintainingDatabase} onClick={() => void checkDatabase()}>{checkingDatabase ? "Checking…" : "Check integrity"}</button>
+                <button type="button" className={maintenance?.status === "blocked" ? "danger-button" : "primary-button"} disabled={!maintenance?.canApply || maintainingDatabase} onClick={() => setMaintenanceConfirmation(true)}>{maintenanceActionLabel}</button>
+              </div>
+            </div>
+          </section>
           <div className="restart-note">{migrating ? "The verified data clone is complete. Zeus is restarting into its new location…" : "Changing the preferred port takes effect the next time Zeus starts. Moving the data folder always performs its own soft restart."}</div>
         </div>
       )}
@@ -189,6 +269,14 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
       busy={migrating}
       onCancel={() => setMigrationTarget(null)}
       onConfirm={() => void confirmMigration()}
+    />}
+    {maintenanceConfirmation && maintenance && <ConfirmationDialog
+      title="Upgrade and repair the Zeus database?"
+      message={`Zeus will back up the complete current database, upgrade ${maintenance.outdatedTicketCount} ticket record(s), repair ${maintenance.repairableMarkdownCount} readable Markdown file(s), validate the staged copy, and commit it atomically. Embedded records that cannot be decoded are never guessed.`}
+      confirmLabel="Back up, upgrade & repair"
+      busy={maintainingDatabase}
+      onCancel={() => setMaintenanceConfirmation(false)}
+      onConfirm={() => void confirmDatabaseMaintenance()}
     />}
   </>;
 }

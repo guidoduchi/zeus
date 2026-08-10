@@ -29,9 +29,10 @@ Consequences:
 2. Wheel input over the dashboard moves the dashboard; the ticket panel owns
    its own scroll position.
 3. Columns may be toggled and reordered, but not resized.
-4. The default field set preserves the original dashboard, labels `Done?` as
-   MW, and combines email age plus a compact cumulative-count badge in Last
-   Email. Zero is red; every positive total uses the same neutral badge.
+4. The default field set has one MW column. It shows the current date whenever
+   one exists; only an undated state or `Complete` is rendered as text. Last
+   Email combines age plus a compact cumulative-count badge. Zero is red;
+   every positive total uses the same neutral badge.
 5. Opening a ticket reveals full detail without requiring every detail column
    in the list.
 6. Search, category filters, sort, theme, visible columns, and column order
@@ -41,8 +42,9 @@ Consequences:
 8. Reloading the web page is a read operation, never a source operation.
    Unsaved drafts are persisted and standard reload attempts are intercepted
    until the user saves or discards them.
-9. Planned Date uses a browser calendar; users do not need to infer a text
-   format.
+9. MW uses a browser calendar. A past date produces an explicit success/failure
+   prompt: success completes it, while failure records the attempt and waits
+   for another date.
 10. `S`, `M`, `R`, Ctrl+F, and navigation arrows operate at page scope while
     focus is outside an editable control. Text entry must never become an
     application command.
@@ -89,7 +91,7 @@ Consequences:
     already open it also refreshes that panel to the newly highlighted row,
     keeps the active detail tab, preserves drafts, and informs the user when a
     draft was left protected. ←/→ changes detail tabs without wrapping.
-24. Service filters cover Planning, MW, and Severity. Spare Request filters
+24. Service filters cover unified MW state and Severity. Spare Request filters
     cover Status, dispatch risk, Site, Cloud, conflict state, and RMA state.
 25. The mouse wheel scrolls the table viewport without changing its highlighted
     row. Only click or Enter may open a closed detail panel; arrow keys may
@@ -149,6 +151,11 @@ Consequences:
     whole-device request may retain several internal-component serials without
     generating extra unit records, RMAs, or Fault Tag rows; the complete list
     stays together in each unit's Faulty SN cell.
+19. Database Maintenance is preview-first and explicitly confirmed. It creates
+    a full backup, upgrades or repairs a staging copy, validates the complete
+    transaction boundary, and swaps atomically. An invalid embedded record
+    blocks automatic repair; readable Markdown may be regenerated only from a
+    valid embedded authority record.
 
 ## Runtime invariants
 

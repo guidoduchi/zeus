@@ -15,6 +15,30 @@ function defaults(definitions: ColumnDefinition[]): StoredPreferences {
   };
 }
 
+function mergeLegacyMaintenanceWindowColumns(
+  preferences: StoredPreferences,
+  definitions: ColumnDefinition[],
+): StoredPreferences {
+  const known = new Set(definitions.map((column) => column.key));
+  if (!known.has("done") || known.has("plannedDate")) return preferences;
+  const aliases = new Set(["done", "plannedDate"]);
+  const merge = (values: string[], include: boolean) => {
+    const firstAlias = values.findIndex((key) => aliases.has(key));
+    const merged = values.filter((key) => !aliases.has(key));
+    if (include) {
+      const insertion = firstAlias < 0
+        ? merged.length
+        : values.slice(0, firstAlias).filter((key) => !aliases.has(key)).length;
+      merged.splice(insertion, 0, "done");
+    }
+    return merged;
+  };
+  return {
+    order: merge(preferences.order, preferences.order.some((key) => aliases.has(key))),
+    visible: merge(preferences.visible, preferences.visible.some((key) => aliases.has(key))),
+  };
+}
+
 function readStored(definitions: ColumnDefinition[], storageKey: string): StoredPreferences {
   const fallback = defaults(definitions);
   try {
@@ -31,9 +55,13 @@ function readStored(definitions: ColumnDefinition[], storageKey: string): Stored
     // the raw known-later keys through that render so a reload cannot replace a
     // user's saved choices with defaults.
     if (!definitions.length) return { order: storedOrder, visible: storedVisible };
+    const migrated = mergeLegacyMaintenanceWindowColumns(
+      { order: storedOrder, visible: storedVisible },
+      definitions,
+    );
     const known = new Set(definitions.map((column) => column.key));
-    const previouslyKnown = new Set(storedOrder);
-    const order = storedOrder.filter((key) => known.has(key));
+    const previouslyKnown = new Set(migrated.order);
+    const order = migrated.order.filter((key) => known.has(key));
     for (const key of fallback.order) {
       if (!order.includes(key)) order.push(key);
     }
@@ -42,7 +70,7 @@ function readStored(definitions: ColumnDefinition[], storageKey: string): Stored
       if (ticketIndex >= 0) order.splice(ticketIndex, 1);
       order.unshift("ticketId");
     }
-    const visible = storedVisible.filter((key) => known.has(key));
+    const visible = migrated.visible.filter((key) => known.has(key));
     if (!visible.length) visible.push(...fallback.visible);
     for (const column of definitions) {
       if (column.default && !previouslyKnown.has(column.key) && !visible.includes(column.key)) {
@@ -66,9 +94,10 @@ export function useColumnPreferences(definitions: ColumnDefinition[], storageKey
   useEffect(() => {
     if (!definitions.length) return;
     setPreferences((current) => {
+      const migrated = mergeLegacyMaintenanceWindowColumns(current, definitions);
       const known = new Set(definitions.map((column) => column.key));
-      const previouslyKnown = new Set(current.order);
-      const order = current.order.filter((key) => known.has(key));
+      const previouslyKnown = new Set(migrated.order);
+      const order = migrated.order.filter((key) => known.has(key));
       for (const column of definitions) {
         if (!order.includes(column.key)) order.push(column.key);
       }
@@ -77,7 +106,7 @@ export function useColumnPreferences(definitions: ColumnDefinition[], storageKey
         if (ticketIndex >= 0) order.splice(ticketIndex, 1);
         order.unshift("ticketId");
       }
-      const visible = current.visible.filter((key) => known.has(key));
+      const visible = migrated.visible.filter((key) => known.has(key));
       if (!visible.length) visible.push(...defaults(definitions).visible);
       for (const column of definitions) {
         if (column.default && !previouslyKnown.has(column.key) && !visible.includes(column.key)) {

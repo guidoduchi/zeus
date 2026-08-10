@@ -662,10 +662,10 @@ describe("workspace selection and detail focus", () => {
     render(<App />);
 
     const second = await screen.findByRole("row", { name: /20000002/ });
-    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Done 0");
-    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Pending 3");
-    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Uncompleted 0");
-    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("N/A 0");
+    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Complete 0");
+    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Scheduled 0");
+    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Incomplete 0");
+    expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("No visibility 0");
     await user.click(second);
     const detail = await screen.findByRole("complementary", { name: "SR 20000002 detail" });
     await user.click(screen.getByRole("button", { name: "Work fields" }));

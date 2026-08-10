@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   cancelJob,
+  confirmMaintenanceWindow,
   exportSpareRequest,
   getBootstrap,
   getDashboard,
@@ -22,6 +23,7 @@ import { FilterBar } from "./components/FilterBar";
 import { GlobalDataModal } from "./components/GlobalDataModal";
 import { JobBanner } from "./components/JobBanner";
 import { Modal } from "./components/Modal";
+import { MaintenanceWindowPrompt } from "./components/MaintenanceWindowPrompt";
 import { NoticeStrip } from "./components/NoticeStrip";
 import { OperationsModal } from "./components/OperationsModal";
 import { ProfileSetup } from "./components/ProfileSetup";
@@ -43,7 +45,7 @@ import {
 import { useColumnPreferences } from "./hooks/useColumnPreferences";
 import { isEditingArea, useGlobalCommands } from "./hooks/useGlobalCommands";
 import { useRowFilters, type RowFilterBlueprint } from "./hooks/useRowFilters";
-import { maintenanceWindowOptionLabel } from "./maintenanceWindow";
+import { maintenanceWindowStatusLabel } from "./maintenanceWindow";
 import type {
   BootstrapPayload,
   DashboardPayload,
@@ -76,7 +78,7 @@ const WORKSPACES: Record<WorkspaceKey, WorkspaceConfiguration> = {
     sorts: [
       { value: "report", label: "Report" },
       { value: "sr", label: "SR" },
-      { value: "planned", label: "Planned" },
+      { value: "planned", label: "MW date" },
       { value: "email", label: "Email" },
       { value: "age", label: "Age" },
       { value: "severity", label: "Severity" },
@@ -114,18 +116,11 @@ const WORKSPACES: Record<WorkspaceKey, WorkspaceConfiguration> = {
 
 const SERVICE_FILTERS: Array<RowFilterBlueprint<TicketSummary>> = [
   {
-    key: "planning",
-    label: "Planning",
-    values: (row) => row.plannedState === "unplanned" ? "unplanned" : "planned",
-    order: ["planned", "unplanned"],
-    optionLabel: (value) => value === "planned" ? "Planned" : "Unplanned",
-  },
-  {
     key: "mw",
     label: "MW",
-    values: (row) => row.done || "N",
-    order: ["N", "P", "Y", "?"],
-    optionLabel: maintenanceWindowOptionLabel,
+    values: (row) => row.maintenanceWindow?.status || (({ N: "unplanned", P: "incomplete", Y: "completed", "?": "no_visibility" } as Record<string, string>)[row.done] || "unplanned"),
+    order: ["planned", "incomplete", "unplanned", "no_visibility", "completed"],
+    optionLabel: maintenanceWindowStatusLabel,
   },
   { key: "severity", label: "Severity", values: (row) => row.severity || "—" },
 ];
@@ -169,18 +164,11 @@ const SPARE_REQUEST_FILTERS: Array<RowFilterBlueprint<SpareRequestItemSummary>> 
 
 const ELIGIBLE_PART_FILTERS: Array<RowFilterBlueprint<SparePartSummary>> = [
   {
-    key: "planning",
-    label: "Planning",
-    values: (row) => row.plannedState === "unplanned" ? "unplanned" : "planned",
-    order: ["planned", "unplanned"],
-    optionLabel: (value) => value === "planned" ? "Planned" : "Unplanned",
-  },
-  {
     key: "mw",
     label: "MW",
-    values: (row) => row.done || "N",
-    order: ["N", "P", "Y", "?"],
-    optionLabel: maintenanceWindowOptionLabel,
+    values: (row) => row.maintenanceWindow?.status || (({ N: "unplanned", P: "incomplete", Y: "completed", "?": "no_visibility" } as Record<string, string>)[row.done] || "unplanned"),
+    order: ["planned", "incomplete", "unplanned", "no_visibility", "completed"],
+    optionLabel: maintenanceWindowStatusLabel,
   },
   { key: "site", label: "Site", values: (row) => row.site || "—" },
   { key: "cloud", label: "Cloud", values: (row) => row.cloud || "—" },
@@ -263,6 +251,8 @@ export default function App() {
   const [spareExportPart, setSpareExportPart] = useState<SparePartSummary | null>(null);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [purgeConfirmationOpen, setPurgeConfirmationOpen] = useState(false);
+  const [dismissedMaintenanceWindows, setDismissedMaintenanceWindows] = useState<Set<string>>(() => new Set());
+  const [maintenanceWindowBusy, setMaintenanceWindowBusy] = useState(false);
   const [templates, setTemplates] = useState<Array<{ name: string; path: string }>>([]);
   const [toast, setToast] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(null);
   const [draftCount, setDraftCount] = useState(countUnsavedDrafts);
@@ -596,6 +586,54 @@ export default function App() {
     if (dashboard?.workspace !== "spare-requests" || dashboard.view !== "eligible") return null;
     return dashboard.eligibleParts.find((row) => row.rowId === selectedRowId) || null;
   }, [dashboard, selectedRowId]);
+  const overdueMaintenanceWindow = useMemo(() => {
+    const candidates = dashboard?.workspace === "service-requests"
+      ? dashboard.tickets
+      : bootstrap?.maintenanceWindowsDue || [];
+    return candidates.find((candidate) => {
+      const date = candidate.maintenanceWindow?.date;
+      return candidate.maintenanceWindow?.confirmationRequired
+        && Boolean(date)
+        && !draftTicketIds.has(candidate.ticketId)
+        && !dismissedMaintenanceWindows.has(`${candidate.ticketId}:${date}`);
+    }) || null;
+  }, [bootstrap?.maintenanceWindowsDue, dashboard, dismissedMaintenanceWindows, draftTicketIds]);
+
+  function dismissMaintenanceWindow(ticket: TicketSummary) {
+    const key = `${ticket.ticketId}:${ticket.maintenanceWindow?.date || ticket.plannedDate}`;
+    setDismissedMaintenanceWindows((current) => new Set([...current, key]));
+  }
+
+  async function recordMaintenanceWindowOutcome(ticket: TicketSummary, successful: boolean) {
+    const plannedDate = ticket.maintenanceWindow?.date;
+    if (!plannedDate) return;
+    setMaintenanceWindowBusy(true);
+    try {
+      const result = await confirmMaintenanceWindow(
+        ticket.ticketId,
+        ticket.revision,
+        plannedDate,
+        successful,
+      );
+      dismissMaintenanceWindow(ticket);
+      if (selectedTicketId === ticket.ticketId) setTicket(result.ticket);
+      dashboardCache.current.clear();
+      await Promise.all([loadDashboard(), loadBootstrap()]);
+      setToast({
+        tone: "success",
+        message: successful
+          ? `SR ${ticket.ticketId} MW marked Complete.`
+          : `SR ${ticket.ticketId} MW marked Incomplete. Add the next date when it is agreed.`,
+      });
+    } catch (error) {
+      reportError(error);
+      if (error instanceof ApiError && error.code.includes("conflict")) {
+        await loadDashboard().catch(reportError);
+      }
+    } finally {
+      setMaintenanceWindowBusy(false);
+    }
+  }
   const chooseSort = useCallback((next: string) => {
     updateWorkspacePreference({
       sort: next,
@@ -954,7 +992,7 @@ export default function App() {
       data-spare-view={workspace === "spare-requests" ? spareView : undefined}
     >
       <TopBar
-        version={bootstrap.version || "3.1.5"}
+        version={bootstrap.version || "3.1.6"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
@@ -1140,6 +1178,12 @@ export default function App() {
       {draftsOpen && <DraftsModal onClose={() => setDraftsOpen(false)} onReview={reviewProtectedDraft} onSaved={(tickets) => { if (selectedTicketId && tickets[selectedTicketId]) setTicket(tickets[selectedTicketId]); loadDashboard().catch(reportError); }} onError={reportError} onNotice={(message) => setToast({ tone: "success", message })} />}
       {bomCatalogOpen && <BomCatalogModal onClose={() => setBomCatalogOpen(false)} onSaved={() => setToast({ tone: "success", message: "BOM catalog saved locally." })} onError={reportError} />}
       {purgeConfirmationOpen && selectedCompletedItem && <ConfirmationDialog title={`Purge ${selectedCompletedItem.itemId}?`} message="This permanently removes the completed item and its retained email from the local archive. This action cannot be undone." confirmLabel="Permanently purge" tone="danger" onCancel={() => setPurgeConfirmationOpen(false)} onConfirm={() => void purgeSelectedCompleted()} />}
+      {overdueMaintenanceWindow && !settingsOpen && !operationsOpen && !globalDataOpen && !bomCatalogOpen && !draftsOpen && !spareExportOpen && !purgeConfirmationOpen && !spareEmailReminder && <MaintenanceWindowPrompt
+        ticket={overdueMaintenanceWindow}
+        busy={maintenanceWindowBusy}
+        onLater={() => dismissMaintenanceWindow(overdueMaintenanceWindow)}
+        onOutcome={(successful) => void recordMaintenanceWindowOutcome(overdueMaintenanceWindow, successful)}
+      />}
       {spareEmailReminder && !spareExportOpen && <Modal
         title="Spare Request created"
         subtitle="The request is now registered in Active Requests."

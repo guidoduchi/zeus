@@ -7,8 +7,7 @@ import styles from "../styles.css?raw";
 
 const columns: ColumnDefinition[] = [
   { key: "ticketId", label: "SR", width: 94, default: true },
-  { key: "done", label: "MW", width: 104, default: true },
-  { key: "plannedDate", label: "Planned", width: 116, default: true },
+  { key: "done", label: "MW", width: 128, default: true },
   { key: "ticketAgeDays", label: "Age", width: 62, default: true },
   { key: "emailLabel", label: "Last Email", width: 154, default: true },
   { key: "severity", label: "Severity", width: 92, default: true },
@@ -21,6 +20,16 @@ function ticket(ticketId: string): TicketSummary {
     revision: `revision-${ticketId}`,
     lifecycle: "active",
     done: "N",
+    maintenanceWindow: {
+      schemaVersion: 1,
+      status: "unplanned",
+      date: null,
+      display: "Unplanned",
+      color: "yellow",
+      confirmationRequired: false,
+      attempts: [],
+      reviewRequired: false,
+    },
     plannedDate: "Unplanned",
     plannedDays: null,
     plannedState: "unplanned",
@@ -133,10 +142,41 @@ describe("TicketGrid", () => {
   it("keeps the CLI warning colors on their matching facts", () => {
     renderGrid();
     expect(screen.getAllByText("Unplanned")[0]).toHaveClass("tone-yellow");
+    expect(screen.queryByRole("columnheader", { name: "Planned" })).not.toBeInTheDocument();
     expect(screen.getAllByText("10")[0]).toHaveClass("tone-none");
     expect(screen.getAllByText("No email")[0].closest('[role="gridcell"]')).toHaveClass("tone-grey");
-    expect(screen.getAllByText("Pending")[0]).toHaveClass("column-done");
+    expect(screen.getAllByText("Unplanned")[0]).toHaveClass("column-done");
     expect(screen.queryByRole("columnheader", { name: "Emails" })).not.toBeInTheDocument();
+  });
+
+  it("shows the real MW date instead of a state word whenever a date is current", () => {
+    const dated = ticket("12345678");
+    dated.done = "N";
+    dated.maintenanceWindow = {
+      schemaVersion: 1,
+      status: "planned",
+      date: "2026-08-21",
+      display: "2026-08-21",
+      color: null,
+      confirmationRequired: false,
+      attempts: [{ date: "2026-08-01", outcome: "incomplete", confirmed_at: "2026-08-02T00:00:00Z", source: "manual" }],
+      reviewRequired: false,
+    };
+    render(
+      <TicketGrid
+        tickets={[dated]}
+        columns={columns}
+        selectedRowId={null}
+        detailOpen={false}
+        onHighlight={vi.fn()}
+        onOpen={vi.fn()}
+        onCloseDetail={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("2026-08-21")).toHaveClass("column-done");
+    expect(screen.queryByText("Planned")).not.toBeInTheDocument();
+    expect(screen.queryByText("Incomplete")).not.toBeInTheDocument();
   });
 
   it("encloses email totals in semantic zero and positive badges", () => {

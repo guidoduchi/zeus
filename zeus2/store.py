@@ -21,6 +21,11 @@ from .config import (
     resolve_path_setting,
     save_config,
 )
+from .maintenance_windows import (
+    LOCAL_SCHEMA_VERSION,
+    maintenance_window_summary,
+    validate_maintenance_window_record,
+)
 from .reference_data import ensure_reference_layout
 from .spare_requests import (
     decode_request_record,
@@ -121,6 +126,7 @@ def render_ticket_markdown(ticket: dict[str, Any]) -> str:
     upstream = ticket.get("upstream", {}).get("fields", {})
     prepared_local = normalize_local(ticket.get("local"))
     local = prepared_local.get("fields", {})
+    maintenance_window = maintenance_window_summary(prepared_local)
     email = ticket.get("email", {})
     lines = [
         f"{RECORD_MARKER}{_encode_record(ticket)} -->",
@@ -138,6 +144,31 @@ def render_ticket_markdown(ticket: dict[str, Any]) -> str:
     ]
     for column in UPSTREAM_COLUMNS:
         lines.append(f"| {_display(column)} | {_display(upstream.get(column))} |")
+    lines.extend(
+        [
+            "",
+            "## Maintenance Window",
+            "",
+            f"- Current: **{_display(maintenance_window.get('display'))}**",
+            f"- State: {_display(maintenance_window.get('status'))}",
+            "",
+            "| Date | Outcome | Confirmed at | Source |",
+            "|---|---|---|---|",
+        ]
+    )
+    attempts = maintenance_window.get("attempts") or []
+    if attempts:
+        for attempt in attempts:
+            lines.append(
+                "| "
+                + " | ".join(
+                    _display(attempt.get(key))
+                    for key in ("date", "outcome", "confirmed_at", "source")
+                )
+                + " |"
+            )
+    else:
+        lines.append("| — | — | — | — |")
     lines.extend(["", "## Pendings fields", "", "| Field | Value |", "|---|---|"])
     for column in LOCAL_COLUMNS:
         lines.append(f"| {_display(column)} | {_display(local.get(column))} |")
@@ -262,6 +293,7 @@ class ZeusStore:
     def _empty_state() -> dict[str, Any]:
         return {
             "schema_version": 2,
+            "database_schema_version": 3,
             "created_at": iso_now(),
             "updated_at": iso_now(),
             "advanced_search_state": None,
@@ -496,6 +528,29 @@ class ZeusStore:
             raise StoreError(f"Ticket {ticket_id} has invalid retained email data")
         if not isinstance(ticket.get("local", {}).get("spare_parts", []), list):
             raise StoreError(f"Ticket {ticket_id} has invalid spare-parts data")
+        local = ticket.get("local", {})
+        raw_local_schema = local.get("schema_version")
+        try:
+            local_schema = int(
+                1 if raw_local_schema is None else raw_local_schema
+            )
+        except (TypeError, ValueError) as exc:
+            raise StoreError(f"Ticket {ticket_id} has an invalid local schema") from exc
+        if (
+            isinstance(raw_local_schema, bool)
+            or (
+                isinstance(raw_local_schema, float)
+                and not raw_local_schema.is_integer()
+            )
+            or local_schema < 1
+            or local_schema > LOCAL_SCHEMA_VERSION
+        ):
+            raise StoreError(f"Ticket {ticket_id} has an unsupported local schema")
+        if "maintenance_window" in local:
+            try:
+                validate_maintenance_window_record(local.get("maintenance_window"))
+            except ValueError as exc:
+                raise StoreError(f"Ticket {ticket_id}: {exc}") from exc
 
     def validate_current(self, current_path: Path) -> None:
         state = self.state(current_path)

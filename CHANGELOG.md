@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.1.6 - 2026-08-10
+
+- Replaces the separate dashboard MW and Planned columns with one date-first
+  Maintenance Window field backed by a structured status and attempt history.
+  A real current date is always shown; undated states remain Unplanned,
+  Incomplete, No visibility, or Complete.
+- Prompts for the result of every past scheduled MW. Success completes the
+  work, while failure records the attempt, clears the current date, and waits
+  for a new plan without losing history.
+- Adds Configuration → Database maintenance with read-only integrity preview,
+  explicit confirmation, complete backup, staged schema migration, canonical
+  Markdown regeneration, full validation, and atomic replacement.
+- Refuses automatic repair when an embedded Markdown record is missing or
+  invalid, directing recovery to a known-good backup instead of guessing.
+- Keeps `Planned Date` and `Done?` as generated workbook compatibility
+  projections while the 3.1.6 database and web interface use the unified MW
+  record.
+
 ## 3.1.5 - 2026-08-08
 
 - Removes organization-specific names, sender addresses, domains, and worksheet

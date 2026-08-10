@@ -140,6 +140,32 @@ and recalculates `Spare` in one database transaction. Flat compatibility cells
 are generated on export. Planned dates cross the browser boundary as
 `YYYY-MM-DD` and are exported as date cells rather than free-form display text.
 
+### Maintenance Window schema
+
+Zeus 3.1.6 stores MW truth under `local.maintenance_window`:
+
+```json
+{
+  "schema_version": 1,
+  "status": "planned",
+  "date": "2026-08-21",
+  "attempts": [],
+  "review_required": false
+}
+```
+
+`status` is `planned`, `unplanned`, `incomplete`, `completed`, or
+`no_visibility`. A past planned date requires an outcome. A failed outcome is
+appended to `attempts`, changes status to `incomplete`, and clears `date`; a
+later plan sets a new date without deleting the old attempt. A successful
+outcome preserves its date in history and changes the visible value to
+`Complete`.
+
+`local.fields["Planned Date"]` and `local.fields["Done?"]` remain generated
+compatibility projections for Pendings/Closed export and older scripts. They
+are synchronized during every normalized write and do not form two independent
+sources of MW truth.
+
 ## State markers
 
 `state.json` contains system-owned markers:
@@ -149,6 +175,7 @@ are generated on export. Planned dates cross the browser boundary as
 - successful publication hashes, protected-field snapshot, and closed index;
 - successful email fetch and synchronization times;
 - full-scan, staged-message, publication, and recovery status.
+- database format version and last successful Database Maintenance timestamp.
 
 Configuration contains user choices only. Runtime markers are never accepted
 from the configuration API.

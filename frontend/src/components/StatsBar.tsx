@@ -25,13 +25,13 @@ export function StatsBar({ dashboard }: { dashboard: DashboardPayload | null }) 
     <div className="stats-bar" aria-label="Service Requests summary">
       <span>Active <strong>{stats.active}</strong></span>
       <span className="stat-separator">|</span>
-      <span>Done {stats.doneY}</span>
-      <span>Pending {stats.doneN}</span>
-      <span>Uncompleted {stats.doneP}</span>
-      <span>N/A {stats.doneUnknown}</span>
+      <span>Complete {stats.mwCompleted ?? stats.doneY}</span>
+      <span>Scheduled {stats.mwPlanned ?? 0}</span>
+      <span>Incomplete {stats.mwIncomplete ?? stats.doneP}</span>
+      <span>No visibility {stats.mwNoVisibility ?? stats.doneUnknown}</span>
       <span className="stat-separator">|</span>
       <span>Overdue <strong className={stats.overdue ? "red-text" : ""}>{stats.overdue}</strong></span>
-      <span>Unplanned <strong className={stats.unplanned ? "yellow-text" : ""}>{stats.unplanned}</strong></span>
+      <span>Unplanned <strong className={stats.unplanned ? "yellow-text" : ""}>{stats.mwUnplanned ?? stats.unplanned}</strong></span>
       <span>No email {stats.noEmail}</span>
       <span>Pending closure {stats.pendingClosure}</span>
     </div>

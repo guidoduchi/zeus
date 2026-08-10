@@ -1,4 +1,4 @@
-# Zeus 3.1.5
+# Zeus 3.1.6
 
 Zeus is a strictly local ticket workstation. Its Python backend runs in the
 background, serves a bundled React interface on `127.0.0.1`, and opens that
@@ -82,7 +82,7 @@ port. The server cannot bind to another machine or network interface.
 The blue title rail switches seamlessly between two management workspaces:
 
 - **Service Requests** keeps the original dense ticket dashboard: SR,
-  lifecycle, MW, planned state, age, Last Email, severity, and summary;
+  lifecycle, the unified date-first MW, age, Last Email, severity, and summary;
 - **Spare Requests** manages independent replacement requests and their
   per-unit RMA lifecycle. It contains **Active Requests**, reusable **Eligible
   SR Parts**, and read-only **Completed** archive views.
@@ -161,11 +161,20 @@ for review; it never implies that the values have already been saved.
 Browser-editable database-owned fields are:
 
 ```text
-Planned Date, Site, Cloud, RelatedSR, Notes, Done?
+Maintenance Window, Site, Cloud, RelatedSR, Notes
 ```
 
-`Planned Date` uses the browser's calendar control and is written as a real
-database date and exported as a real Excel date.
+Maintenance Window uses one date-first editor and one dashboard column. When a
+current date exists, Zeus shows that date instead of a generic state label.
+After the date passes, Zeus asks whether the MW succeeded. Success changes the
+display to `Complete`; failure records an `Incomplete` attempt, clears the
+current date, and waits for another date. `Unplanned` and `No visibility`
+remain distinct undated states. Every completed or failed attempt remains in
+the structured local history.
+
+For operational-workbook compatibility, Zeus still generates `Planned Date`
+as a real Excel date plus `Done?` (`Y`, `N`, `P`, or `?`). Those columns are
+projections of the structured MW record, not independent database authorities.
 
 Hardware replacement data has its own **Spare Parts** section. A ticket may
 contain zero or more damaged devices; every device has its own model and zero
@@ -229,10 +238,14 @@ SRNo, Problem Summary, Report Date, Customer Contact, Customer Severity,
 Product, Current Handler, Status, ResolveBy, Resolve By Suspend
 ```
 
-The UI calls this field **MW**; its internal/export column remains `Done?` and
-accepts `Y`, `N`, `P`, and `?`. It does not close a ticket. Only the
-Advanced Search lifecycle plus verified workbook publication can finalize a
-closure.
+MW completion does not close a ticket. Only the Advanced Search lifecycle plus
+verified workbook publication can finalize a closure.
+
+Configuration includes **Database maintenance**. Its integrity check is
+read-only. An upgrade/repair requires explicit confirmation, creates a complete
+backup, migrates a staging copy, regenerates readable Markdown only from valid
+embedded records, validates the full store, and swaps it atomically. Missing or
+invalid embedded records block automatic repair so Zeus never invents data.
 
 ## Local files and privacy
 

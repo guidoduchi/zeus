@@ -10,12 +10,33 @@ export interface ColumnDefinition {
   flex?: boolean;
 }
 
+export type MaintenanceWindowStatus = "planned" | "unplanned" | "incomplete" | "completed" | "no_visibility";
+
+export interface MaintenanceWindowAttempt {
+  date: string;
+  outcome: "completed" | "incomplete";
+  confirmed_at: string | null;
+  source: string;
+}
+
+export interface MaintenanceWindowSummary {
+  schemaVersion: number;
+  status: MaintenanceWindowStatus;
+  date: string | null;
+  display: string;
+  color: Risk | "green" | null;
+  confirmationRequired: boolean;
+  attempts: MaintenanceWindowAttempt[];
+  reviewRequired: boolean;
+}
+
 export interface TicketSummary {
   rowId?: string;
   ticketId: string;
   revision: string;
   lifecycle: string;
   done: string;
+  maintenanceWindow?: MaintenanceWindowSummary;
   plannedDate: string;
   plannedDays: number | null;
   plannedState: string;
@@ -50,6 +71,11 @@ export interface DashboardStats {
   doneN: number;
   doneP: number;
   doneUnknown: number;
+  mwPlanned?: number;
+  mwUnplanned?: number;
+  mwIncomplete?: number;
+  mwCompleted?: number;
+  mwNoVisibility?: number;
   overdue: number;
   unplanned: number;
   noEmail: number;
@@ -76,6 +102,7 @@ export interface SparePartSummary {
   revision: string;
   lifecycle: string;
   done: string;
+  maintenanceWindow?: MaintenanceWindowSummary;
   plannedDate: string;
   plannedDays: number | null;
   plannedState: string;
@@ -504,6 +531,8 @@ export interface BootstrapPayload {
     lowSpace: boolean;
     migrationPending: boolean;
   };
+  databaseMaintenance?: DatabaseMaintenanceStatus;
+  maintenanceWindowsDue?: TicketSummary[];
   spareRequestExport: SpareExportSetup;
   outlook: {
     enabled: boolean;
@@ -532,6 +561,35 @@ export interface SettingsPayload {
   schemaVersion: number;
   settings: Setting[];
   changed?: string[];
+}
+
+export interface DatabaseMaintenanceRecord {
+  path?: string;
+  ticketId?: string;
+  message: string;
+}
+
+export interface DatabaseMaintenanceStatus {
+  status: "current" | "upgrade_available" | "repair_available" | "blocked" | "busy";
+  currentSchemaVersion: number;
+  storedSchemaVersion: number;
+  ticketCount: number;
+  spareRequestCount: number;
+  outdatedTicketCount: number;
+  outdatedTicketIds: string[];
+  repairableMarkdownCount: number;
+  repairableMarkdown: string[];
+  reviewCount: number;
+  reviewRecords: DatabaseMaintenanceRecord[];
+  blockedCount: number;
+  blockedRecords: DatabaseMaintenanceRecord[];
+  canApply: boolean;
+  backupRequired: boolean;
+  changed?: boolean;
+  backup?: string | null;
+  upgradedTickets?: number;
+  message?: string;
+  repairedMarkdown?: number;
 }
 
 export interface ApiErrorShape {

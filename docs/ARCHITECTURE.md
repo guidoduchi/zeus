@@ -34,6 +34,8 @@ publication, mail, and MOP generation.
 | `zeus2/application/service.py` | use cases, scheduler, operation serialization, data events |
 | `zeus2/application/jobs.py` | one mutation lane, progress snapshots, cancellation, SSE events |
 | `zeus2/application/edits.py` | revision-safe, validated database-first browser edits |
+| `zeus2/maintenance_windows.py` | unified MW state, legacy projections, attempt history, and outcome transitions |
+| `zeus2/database_maintenance.py` | preview, backup-backed schema migration, Markdown repair, and atomic validation |
 | `zeus2/excel_export.py` | explicit verified Pendings/Closed generation and legacy recovery |
 | `zeus2/application/serialization.py` | stable dashboard/detail API shapes and sorting |
 | `zeus2/application/settings.py` | typed configuration payload and validation |

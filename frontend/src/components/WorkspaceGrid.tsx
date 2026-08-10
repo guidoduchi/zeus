@@ -29,14 +29,27 @@ interface Props<Row extends WorkspaceGridRow> {
 function displayValue(row: WorkspaceGridRow, key: string): string {
   if (key === "risk") return "";
   const value = row[key];
-  if (key === "done") return maintenanceWindowLabel(value);
+  if (key === "done") {
+    const window = row.maintenanceWindow;
+    if (window && typeof window === "object" && "display" in window) {
+      return String((window as { display?: unknown }).display || maintenanceWindowLabel(value));
+    }
+    return maintenanceWindowLabel(value);
+  }
   if (value === null || value === undefined || value === "") return "—";
   return String(value);
 }
 
 function displayTone(row: WorkspaceGridRow, key: string): string {
   if (key === "trackingId" && row.trackingIdProvisional) return "red";
+  if (key === "done" && row.maintenanceWindow && typeof row.maintenanceWindow === "object") {
+    const color = (row.maintenanceWindow as { color?: unknown }).color;
+    return color === "red" || color === "yellow" || color === "grey" || color === "green"
+      ? color
+      : "none";
+  }
   const establishedKeys: Record<string, string> = {
+    done: "plannedColor",
     plannedDate: "plannedColor",
     ticketAgeDays: "ticketAgeColor",
     emailLabel: "emailColor",

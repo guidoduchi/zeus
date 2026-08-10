@@ -51,4 +51,31 @@ describe("useRowFilters", () => {
       count: 0,
     });
   });
+
+  it("migrates the old Planning and MW filters into one structured MW filter", () => {
+    const mwRows = [
+      { id: "planned", mw: "planned" },
+      { id: "unplanned", mw: "unplanned" },
+      { id: "incomplete", mw: "incomplete" },
+    ];
+    const mwBlueprints: Array<RowFilterBlueprint<(typeof mwRows)[number]>> = [{
+      key: "mw",
+      label: "MW",
+      values: (row) => row.mw,
+    }];
+    localStorage.setItem("filters.mw-migration", JSON.stringify({
+      planning: ["planned"],
+      mw: ["N"],
+    }));
+
+    const { result } = renderHook(() => useRowFilters(
+      mwRows,
+      mwBlueprints,
+      "filters.mw-migration",
+    ));
+
+    expect(result.current.selections).toEqual({ mw: ["planned"] });
+    expect(result.current.filteredRows.map((row) => row.id)).toEqual(["planned"]);
+    expect(result.current.activeCount).toBe(1);
+  });
 });

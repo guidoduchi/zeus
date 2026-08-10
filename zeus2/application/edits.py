@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from ..maintenance_windows import confirm_maintenance_window
 from ..store import ZeusStore
 from ..tickets import (
     EDITABLE_LOCAL_COLUMNS,
@@ -63,7 +64,7 @@ def _normalize_local_changes(changes: dict[str, Any]) -> dict[str, Any]:
         if key == "Planned Date" and text.strip():
             planned = parse_date(text)
             if planned is None:
-                raise ValidationError("Planned Date must be a recognizable calendar date")
+                raise ValidationError("MW date must be a recognizable calendar date")
             prepared[key] = planned
         else:
             prepared[key] = text if text else None
@@ -349,6 +350,11 @@ def _prepare_local_edit(
             )
         else:
             proposed_fields[key] = value
+    # A real date is itself the planning decision. When an earlier attempt was
+    # incomplete (P) or visibility was unknown (?), adding a new date starts a
+    # fresh pending MW without requiring the caller to remember a second field.
+    if prepared.get("Planned Date") is not None and "Done?" not in prepared:
+        proposed_fields["Done?"] = "N"
     proposed_local = normalize_local(proposed_local)
 
     changed_fields = [
@@ -367,7 +373,74 @@ def _prepare_local_edit(
         != proposed_local["fields"].get("Spare")
     ):
         changed_fields.append("Spare")
+    if (
+        "Planned Date" in prepared
+        and existing_local["fields"].get("Done?")
+        != proposed_local["fields"].get("Done?")
+        and "Done?" not in changed_fields
+    ):
+        changed_fields.append("Done?")
     return proposed_local, changed_fields
+
+
+def confirm_maintenance_window_in_database(
+    store: ZeusStore,
+    ticket_id: str,
+    *,
+    planned_date: Any,
+    successful: bool,
+    expected_revision: str,
+) -> dict[str, Any]:
+    """Commit one overdue MW outcome with revision and date protection."""
+
+    if not expected_revision:
+        raise ValidationError("A ticket revision is required for safe MW confirmation")
+    ticket = store.read_ticket(ticket_id)
+    actual_revision = ticket_revision(ticket)
+    if actual_revision != expected_revision:
+        raise TicketRevisionConflictError(
+            "This ticket changed after the MW prompt opened. Reload it before confirming.",
+            details={
+                "expectedRevision": expected_revision,
+                "actualRevision": actual_revision,
+            },
+        )
+    try:
+        proposed_local = confirm_maintenance_window(
+            normalize_local(ticket.get("local")),
+            expected_date=planned_date,
+            successful=bool(successful),
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+
+    summary: dict[str, Any] = {
+        "ticket_id": ticket_id,
+        "planned_date": str(planned_date),
+        "outcome": "completed" if successful else "incomplete",
+        "authority": "markdown_database",
+    }
+    with store.transaction("maintenance-window-confirmation", summary) as staging:
+        current = store.read_ticket(ticket_id, staging)
+        current_revision = ticket_revision(current)
+        if current_revision != expected_revision:
+            raise TicketRevisionConflictError(
+                "This ticket changed while the MW confirmation was starting. Reload it.",
+                details={
+                    "expectedRevision": expected_revision,
+                    "actualRevision": current_revision,
+                },
+            )
+        current["local"] = proposed_local
+        store.write_ticket_bundle(staging, current)
+
+    updated = store.read_ticket(ticket_id)
+    return {
+        "changed": True,
+        "ticket": updated,
+        "revision": ticket_revision(updated),
+        "changedFields": ["Maintenance Window"],
+    }
 
 
 def edit_ticket_in_database(

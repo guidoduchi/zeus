@@ -56,6 +56,29 @@ describe("dashboard field preferences", () => {
     expect(result.current.visibleKeys).not.toContain("severity");
   });
 
+  it("merges saved MW and Planned preferences into the unified MW column", () => {
+    const spareKey = "zeus3.spare-parts.columns";
+    localStorage.setItem(spareKey, JSON.stringify({
+      order: ["ticketId", "risk", "plannedDate", "site", "done"],
+      visible: ["ticketId", "plannedDate", "site"],
+    }));
+    const mergedDefinitions: ColumnDefinition[] = [
+      { key: "ticketId", label: "SR", width: 94, default: true },
+      { key: "risk", label: "", width: 18, default: true },
+      { key: "done", label: "MW", width: 128, default: true },
+      { key: "site", label: "Site", width: 110, default: true },
+    ];
+    const { result } = renderHook(
+      () => useColumnPreferences(mergedDefinitions, spareKey),
+    );
+
+    expect(result.current.orderedColumns.map((column) => column.key)).toEqual([
+      "ticketId", "risk", "done", "site",
+    ]);
+    expect(result.current.visibleKeys).toContain("done");
+    expect(result.current.visibleKeys).not.toContain("plannedDate");
+  });
+
   it("keeps Spare Parts field choices separate from Service Requests", () => {
     const spareKey = "zeus3.spare-parts.columns";
     const { result } = renderHook(() => useColumnPreferences(definitions, spareKey));

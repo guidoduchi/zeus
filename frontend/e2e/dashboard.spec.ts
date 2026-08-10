@@ -5,8 +5,8 @@ test("the dashboard wheel scrolls the table while activation remains click or En
   const rows = page.locator("[data-ticket-id]");
   await expect(rows.first()).toBeVisible();
   expect(await rows.count()).toBeGreaterThan(25);
-  await expect(page.getByLabel("Service Requests summary")).toContainText("Pending");
-  await expect(rows.first().locator(".column-done")).toHaveText("Pending");
+  await expect(page.getByLabel("Service Requests summary")).toContainText("Unplanned");
+  await expect(rows.first().locator(".column-done")).toHaveText("Unplanned");
   await expect(page.locator('[data-ticket-id="39400001"] .email-count-badge')).toHaveText("1");
   await expect(page.locator('[data-ticket-id="39400001"] .email-count-badge')).toHaveClass(/email-count-positive/);
   await expect(page.locator('[data-ticket-id="39400002"] .email-count-badge')).toHaveText("0");
@@ -314,7 +314,7 @@ test("saving to Zeus keeps the workstation mounted", async ({ page }, testInfo) 
 
   await page.locator("[data-ticket-id]").first().click();
   await page.getByRole("button", { name: "Work fields" }).click();
-  const planned = page.getByLabel("Planned Date");
+  const planned = page.getByLabel("MW date");
   await expect(planned).toHaveAttribute("type", "date");
   await expect(page.getByLabel("Spare")).toHaveCount(0);
   await planned.fill(plannedDate);
@@ -325,7 +325,7 @@ test("saving to Zeus keeps the workstation mounted", async ({ page }, testInfo) 
   await expect(page.locator(".app-shell")).toBeVisible();
   await expect(page.getByRole("button", { name: "History" })).toBeVisible();
   await expect(page.getByLabel("Notes")).toHaveValue(note);
-  await expect(page.getByLabel("Planned Date")).toHaveValue(plannedDate);
+  await expect(page.getByLabel("MW date")).toHaveValue(plannedDate);
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("zeus3.ticket-draft.")).length)).toBe(0);
   await expect(page.getByRole("button", { name: /protected draft/i })).toHaveCount(0);
   await expect(page.getByText("No unsaved changes")).toBeVisible();

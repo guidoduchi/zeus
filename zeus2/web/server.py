@@ -24,6 +24,7 @@ from .dialogs import choose_directory, choose_file, open_folder
 MAX_JSON_BODY = 1_000_000
 TICKET_ROUTE = re.compile(r"^/api/tickets/(\d{8})$")
 TICKET_LOCAL_ROUTE = re.compile(r"^/api/tickets/(\d{8})/local$")
+TICKET_MW_CONFIRM_ROUTE = re.compile(r"^/api/tickets/(\d{8})/maintenance-window/confirm$")
 JOB_CANCEL_ROUTE = re.compile(r"^/api/jobs/([a-f0-9]{32})/cancel$")
 MOP_DOWNLOAD_ROUTE = re.compile(r"^/api/tickets/(\d{8})/mops/([^/]+)$")
 SPARE_REQUEST_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})$")
@@ -234,6 +235,12 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/settings":
             self._send_json(HTTPStatus.OK, self.server.service.get_settings())
             return
+        if path == "/api/database/maintenance":
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.database_maintenance_status(),
+            )
+            return
         if path == "/api/jobs":
             self._send_json(HTTPStatus.OK, {"jobs": self.server.service.jobs.snapshots()})
             return
@@ -278,6 +285,32 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             threading.Timer(0.15, self.server.request_restart).start()
             return
         self.server.service.require_setup()
+        if path == "/api/database/maintenance":
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.run_database_maintenance(
+                    confirmed=payload.get("confirmed") is True
+                ),
+            )
+            return
+        maintenance_window_match = TICKET_MW_CONFIRM_ROUTE.fullmatch(path)
+        if maintenance_window_match:
+            successful = payload.get("successful")
+            if not isinstance(successful, bool):
+                raise ValidationError("MW outcome must be successful or incomplete")
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.confirm_maintenance_window(
+                    maintenance_window_match.group(1),
+                    planned_date=str(payload.get("plannedDate") or ""),
+                    successful=successful,
+                    expected_revision=expected_revision,
+                ),
+            )
+            return
         if path.startswith("/api/jobs/"):
             cancel_match = JOB_CANCEL_ROUTE.fullmatch(path)
             if cancel_match:
