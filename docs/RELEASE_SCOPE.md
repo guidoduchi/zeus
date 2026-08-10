@@ -9,10 +9,12 @@ Included:
   requesters, with BOM catalog management retained in Spare Requests;
 - selectable data storage with a full-clone-plus-20-MiB capacity gate,
   verified restart handoff, safe rollback, and post-restart original deletion;
-- autocomplete Spare Request inputs, automatically derived customer initials,
-  one unified customer-contact name, and an explicit configuration redirect
-  only when export is attempted while destinations or templates are absent;
-  the in-progress request form remains mounted while Configuration is corrected;
+- bounded Zeus-themed Spare Request autocomplete inputs, automatically derived
+  customer initials, required customer email/phone, one unified customer-contact
+  name, one automatically loaded TT-level report date, and an explicit red
+  configuration action when export is attempted without destinations or
+  templates; the in-progress request form remains mounted while Configuration
+  is corrected;
 - slot-derived physical-unit, future-RMA, and Fault Tag expansion, with a manual
   multiplier for slotless groups and every unit retaining the damaged device's
   newline-delimited faulty serial evidence together in one cell;

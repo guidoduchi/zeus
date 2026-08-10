@@ -300,10 +300,14 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             threading.Timer(0.2, self.server.request_restart).start()
             return
         if path == "/api/global-data/import-customer":
+            profile = payload.get("profile")
+            if profile is not None and not isinstance(profile, dict):
+                raise ValidationError("Customer profile must be an object")
             self._send_json(
                 HTTPStatus.OK,
                 self.server.service.import_customer_from_ticket(
-                    str(payload.get("ticketId") or "")
+                    str(payload.get("ticketId") or ""),
+                    profile_override=profile,
                 ),
             )
             return

@@ -171,6 +171,7 @@ function spareDetail(row: SpareRequestItemSummary): SpareRequestDetail {
     requestId: row.requestId,
     revision: `revision-${row.requestId}`,
     ticketId: row.ticketId,
+    reportDate: null,
     ttEditable: false,
     source: "ticket",
     spareSr: row.spareSr,

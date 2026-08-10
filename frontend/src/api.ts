@@ -77,7 +77,7 @@ export function saveGlobalReferenceData(value: GlobalReferenceData): Promise<Glo
   });
 }
 
-export function importCustomerFromTicket(ticketId: string): Promise<{
+export function importCustomerFromTicket(ticketId: string, profile?: Record<string, unknown>): Promise<{
   data: GlobalReferenceData;
   organizationId: string;
   customerId: string;
@@ -86,7 +86,7 @@ export function importCustomerFromTicket(ticketId: string): Promise<{
 }> {
   return request("/api/global-data/import-customer", {
     method: "POST",
-    body: JSON.stringify({ ticketId }),
+    body: JSON.stringify({ ticketId, ...(profile ? { profile } : {}) }),
   });
 }
 

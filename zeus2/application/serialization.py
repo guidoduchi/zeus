@@ -820,6 +820,14 @@ def serialize_spare_request_detail(request: dict[str, Any]) -> dict[str, Any]:
         "requestId": request.get("request_id"),
         "revision": spare_request_revision(request),
         "ticketId": request.get("tt"),
+        "reportDate": request.get("report_date") or next(
+            (
+                line.get("report_date")
+                for line in request.get("request_lines", [])
+                if line.get("report_date")
+            ),
+            None,
+        ),
         "ttEditable": bool(request.get("tt_editable")),
         "source": request.get("source"),
         "spareSr": request.get("spare_sr"),

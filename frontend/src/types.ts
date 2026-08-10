@@ -241,6 +241,7 @@ export interface SpareRequestDetail {
   requestId: string;
   revision: string;
   ticketId: string;
+  reportDate: string | null;
   ttEditable: boolean;
   source: "ticket" | "manual" | "recovered";
   spareSr: string | null;
@@ -356,6 +357,7 @@ export interface SpareReferenceData extends GlobalReferenceData {
 export interface SpareRequestPrefill {
   ticketId: string;
   ticketExists: boolean;
+  reportDate: string | null;
   profile: Record<string, unknown>;
   lines: Array<Record<string, unknown>>;
   warning: string | null;

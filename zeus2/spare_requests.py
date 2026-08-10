@@ -37,6 +37,17 @@ def normalize_tt(value: Any) -> str:
     return text
 
 
+def normalize_report_date(value: Any, *, required: bool = False) -> str | None:
+    if value is None or not str(value).strip():
+        if required:
+            raise SpareRequestError("Original TT report date is required")
+        return None
+    parsed = parse_datetime(value)
+    if parsed is None:
+        raise SpareRequestError("Original TT report date must be a valid date")
+    return parsed.date().isoformat()
+
+
 def normalize_request_id(value: Any) -> str:
     text = str(value or "").strip()
     if not re.fullmatch(r"\d{12}", text):
@@ -91,18 +102,35 @@ def _safe_filename_component(value: Any, *, fallback: str = "NA") -> str:
     return text or fallback
 
 
-def _profile_contact(value: Any, label: str) -> dict[str, str | None]:
+def _profile_contact(
+    value: Any,
+    label: str,
+    *,
+    require_email_phone: bool = False,
+) -> dict[str, str | None]:
     candidate = value if isinstance(value, dict) else {}
     return {
         "name": _required_text(candidate.get("name"), f"{label} name"),
-        "email": _optional_text(candidate.get("email"), maximum=320),
-        "phone": _optional_text(candidate.get("phone"), maximum=80),
+        "email": (
+            _required_text(candidate.get("email"), f"{label} email", maximum=320)
+            if require_email_phone
+            else _optional_text(candidate.get("email"), maximum=320)
+        ),
+        "phone": (
+            _required_text(candidate.get("phone"), f"{label} phone", maximum=80)
+            if require_email_phone
+            else _optional_text(candidate.get("phone"), maximum=80)
+        ),
     }
 
 
 def normalize_profile(value: Any) -> dict[str, Any]:
     candidate = value if isinstance(value, dict) else {}
-    contact = _profile_contact(candidate.get("contact"), "Customer contact")
+    contact = _profile_contact(
+        candidate.get("contact"),
+        "Customer contact",
+        require_email_phone=True,
+    )
     supplied_initials = candidate.get("clientInitials", candidate.get("client_initials"))
     try:
         guessed_initials = derive_client_initials(contact["name"])
@@ -220,7 +248,9 @@ def normalize_request_lines(value: Any) -> list[dict[str, Any]]:
                 "faulty_sns": faulty_sns,
                 "faulty_sn": "\n".join(faulty_sns) or None,
                 "notes": _optional_text(raw.get("notes"), maximum=2000),
-                "report_date": _optional_text(raw.get("reportDate") or raw.get("report_date"), maximum=100),
+                "report_date": normalize_report_date(
+                    raw.get("reportDate") or raw.get("report_date")
+                ),
                 "source_device_number": raw.get("deviceNumber"),
                 "source_part_number": raw.get("partNumber"),
             }
@@ -352,6 +382,12 @@ def create_request_record(
     if normalized_source not in {"ticket", "manual", "recovered"}:
         raise SpareRequestError("Request source must be ticket, manual, or recovered")
     timestamp = created_at or iso_now()
+    report_dates = {
+        line.get("report_date") for line in lines if line.get("report_date")
+    }
+    if len(report_dates) > 1:
+        raise SpareRequestError("Every BOM in one TT must use the same original report date")
+    report_date = next(iter(report_dates), None)
     items: list[dict[str, Any]] = []
     ordinal = 1
     for line in lines:
@@ -362,6 +398,7 @@ def create_request_record(
         "schema_version": SPARE_REQUEST_SCHEMA_VERSION,
         "request_id": identifier,
         "tt": ticket_id,
+        "report_date": report_date,
         "source": normalized_source,
         "tt_editable": normalized_source == "manual",
         "spare_sr": None,

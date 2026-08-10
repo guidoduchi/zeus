@@ -204,7 +204,11 @@ def prepare_fixture(root: Path) -> Path:
             "siteAddress": "Quito operations center",
             "cloud": "FusionSphere",
             "requester": {"name": "Zeus User", "email": "user@example.com"},
-            "contact": {"name": "Customer", "email": "customer@example.com"},
+            "contact": {
+                "name": "Customer",
+                "email": "customer@example.com",
+                "phone": "+593 98 000 0000",
+            },
         }
     )
     lines = normalize_request_lines(

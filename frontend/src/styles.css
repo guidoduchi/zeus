@@ -406,9 +406,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-contract { display: grid; gap: 3px; padding: 8px 9px; margin-bottom: 10px; border-left: 3px solid var(--cyan); background: rgb(66 231 235 / 7%); font-size: var(--font-body); }
 .source-contract span { color: var(--muted); line-height: 1.4; }
 .work-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.form-field { display: grid; gap: 4px; min-width: 0; }
+.form-field { display: grid; align-content: start; gap: 4px; min-width: 0; }
 .form-field.full { grid-column: 1 / -1; }
-.form-field > span { color: var(--cyan); font-size: var(--font-small); }
+.form-field > span, .form-field > label { color: var(--cyan); font-size: var(--font-small); }
 .form-field input, .form-field select, .form-field textarea, .setting-control input, .setting-control select, .restore-row select {
   width: 100%;
   min-width: 0;
@@ -418,6 +418,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   padding: 6px 7px;
 }
 .form-field input, .form-field select { height: 31px; }
+.form-field input[readonly] { background: var(--surface-soft); color: var(--muted); }
 .form-field textarea { resize: vertical; line-height: 1.45; }
 .inline-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: var(--font-body); }
 .bounded-edit-tab { height: 100%; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
@@ -435,7 +436,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .primary-button:hover:not(:disabled) { background: var(--blue-hover); }
 .secondary-button:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); }
 .danger-button { border-color: var(--red); color: var(--red); }
-.danger-button:hover { background: var(--red); color: white; }
+.danger-button:hover:not(:disabled) { background: var(--red); color: white; }
+.export-setup-button { border-color: var(--red); background: var(--red); color: white; }
+.export-setup-button:hover:not(:disabled) { filter: brightness(1.12); }
 .danger-text { color: var(--red); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 
@@ -564,6 +567,42 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .form-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .form-grid .wide { grid-column: span 2; }
 .field-button { align-self: end; height: 31px; }
+.themed-autocomplete { position: relative; min-width: 0; }
+.themed-autocomplete-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  z-index: 24;
+  max-height: 198px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line-bright);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  scrollbar-color: var(--line-bright) var(--surface);
+}
+.themed-autocomplete-menu > button {
+  width: 100%;
+  min-height: 39px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  padding: 5px 7px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.themed-autocomplete-menu > button:last-child { border-bottom: 0; }
+.themed-autocomplete-menu > button:hover, .themed-autocomplete-menu > button.active { background: var(--selected-bg); color: var(--selected-text); }
+.themed-autocomplete-menu strong { overflow: hidden; color: var(--cyan); font-size: var(--font-body); text-overflow: ellipsis; white-space: nowrap; }
+.themed-autocomplete-menu > button:hover strong, .themed-autocomplete-menu > button.active strong { color: inherit; }
+.themed-autocomplete-menu span { overflow: hidden; color: var(--muted); font-size: var(--font-caption); text-overflow: ellipsis; white-space: nowrap; }
+.themed-autocomplete-menu > button:hover span, .themed-autocomplete-menu > button.active span { color: inherit; opacity: .78; }
+.themed-autocomplete-status { display: block; padding: 9px 7px; color: var(--muted); font-size: var(--font-small); }
 .inline-warning { margin: 8px 0 0; padding: 7px 9px; border-left: 3px solid var(--yellow); background: rgb(255 217 26 / 7%); color: var(--yellow); font-size: var(--font-small); line-height: 1.4; }
 .request-line-list { display: grid; gap: 8px; margin-bottom: 8px; }
 .request-line { border: 1px solid var(--line); background: var(--surface); }

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SpareRequestModal } from "../components/SpareRequestModal";
 import type { SparePartSummary } from "../types";
+import styles from "../styles.css?raw";
 
 const api = vi.hoisted(() => ({
   getSpareReferenceData: vi.fn(),
@@ -70,6 +71,7 @@ describe("SpareRequestModal", () => {
     api.getSpareRequestPrefill.mockResolvedValue({
       ticketId: "39416095",
       ticketExists: true,
+      reportDate: null,
       profile: {},
       lines: [],
       warning: null,
@@ -104,6 +106,52 @@ describe("SpareRequestModal", () => {
     expect(screen.getByLabelText("TT · 8 digits")).toBeEnabled();
   });
 
+  it("saves the validated customer currently shown in the form", async () => {
+    const user = userEvent.setup();
+    api.getSpareRequestPrefill.mockResolvedValue({
+      ticketId: "39416095",
+      ticketExists: true,
+      reportDate: "2026-07-01 10:00:00",
+      profile: {
+        customerName: "Angel Guerrero",
+        customerOrganization: "Consorcio Ecuatoriano de Telecomunicaciones",
+        contact: {
+          name: "Angel Guerrero",
+          email: "angel@example.com",
+          phone: "+593980000001",
+        },
+      },
+      lines: [],
+      warning: null,
+    });
+    api.importCustomerFromTicket.mockResolvedValue({});
+
+    render(
+      <SpareRequestModal
+        initialPart={part}
+        onClose={vi.fn()}
+        onExport={vi.fn()}
+        onExportSetupRequired={vi.fn()}
+        onError={vi.fn()}
+      />,
+    );
+
+    const saveCustomer = await screen.findByRole("button", { name: "Save customer globally" });
+    expect(screen.getByLabelText("Original TT report date *")).toHaveValue("2026-07-01");
+    expect(screen.getByLabelText("Original TT report date *")).toHaveAttribute("readonly");
+    await user.click(saveCustomer);
+
+    expect(api.importCustomerFromTicket).toHaveBeenCalledWith("39416095", {
+      customerOrganization: "Consorcio Ecuatoriano de Telecomunicaciones",
+      customerName: "Angel Guerrero",
+      contact: {
+        name: "Angel Guerrero",
+        email: "angel@example.com",
+        phone: "+593980000001",
+      },
+    });
+  });
+
   it("defers missing export configuration until the explicit export attempt", async () => {
     const user = userEvent.setup();
     const onExport = vi.fn().mockResolvedValue(undefined);
@@ -134,7 +182,13 @@ describe("SpareRequestModal", () => {
         siteCode: "UIO1",
         siteAddress: "Av. Example 123",
         cloud: "FusionSphere",
+        contact: {
+          name: "Juan Piguave",
+          email: "juan@example.com",
+          phone: "+593981111111",
+        },
       },
+      reportDate: "2026-07-01 10:00:00",
       lines: [],
       warning: null,
     });
@@ -156,7 +210,10 @@ describe("SpareRequestModal", () => {
     expect(screen.queryByText("Export configuration required")).not.toBeInTheDocument();
     expect(onExportSetupRequired).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "Export XLSX & create request" }));
+    const setupButton = screen.getByRole("button", { name: "Export XLSX & create request" });
+    expect(setupButton).toBeEnabled();
+    expect(setupButton).toHaveClass("export-setup-button");
+    await user.click(setupButton);
     expect(onExportSetupRequired).toHaveBeenCalledWith([
       "Spare Request export folder",
       "Spare Request template",
@@ -206,12 +263,24 @@ describe("SpareRequestModal", () => {
     );
 
     await waitFor(() => expect(screen.getByLabelText("Requester *")).toHaveValue("Nebby Operator"));
-    await user.type(screen.getByLabelText("Customer name *"), "Juan Piguave");
+    await user.click(screen.getByLabelText("Customer name *"));
+    const customerSuggestions = screen.getByRole("listbox", { name: "Customer name suggestions" });
+    expect(customerSuggestions).toHaveClass("themed-autocomplete-menu");
+    expect(document.querySelector("datalist")).not.toBeInTheDocument();
+    expect(styles).toMatch(/\.themed-autocomplete-menu\s*\{[^}]*max-height:\s*198px[^}]*overflow-y:\s*auto/s);
+    expect(styles).toMatch(/\.form-field\s*\{[^}]*align-content:\s*start/s);
+    await user.click(screen.getByRole("option", { name: /Juan Piguave/ }));
     expect(screen.getByLabelText("Customer organization *")).toHaveValue("Claro Ecuador");
+    expect(screen.getByLabelText("Customer email *")).toHaveValue("juan@example.com");
+    expect(screen.getByLabelText("Customer phone *")).toHaveValue("+593981111111");
     await user.type(screen.getByLabelText("TT · 8 digits"), "39416095");
-    await user.type(screen.getByLabelText("Site *"), "UIO1");
+    await user.type(screen.getByLabelText("Original TT report date *"), "2026-07-01");
+    expect(screen.getAllByLabelText("Original TT report date *")).toHaveLength(1);
+    await user.click(screen.getByLabelText("Site *"));
+    await user.click(screen.getByRole("option", { name: /UIO1/ }));
     expect(screen.getByLabelText("Site address *")).toHaveValue("Av. Example 123");
-    await user.type(screen.getByLabelText("BOM *"), "SERVER-001");
+    await user.click(screen.getByLabelText("BOM *"));
+    await user.click(screen.getByRole("option", { name: /SERVER-001/ }));
     await user.type(
       screen.getByLabelText(/^Slots · one per line/),
       "DIMM101{enter}DIMM203{enter}DIMM103",
@@ -227,6 +296,7 @@ describe("SpareRequestModal", () => {
     const payload = onExport.mock.calls[0][0];
     expect(payload.profile.customerName).toBe("Juan Piguave");
     expect(payload.profile.customerOrganization).toBe("Claro Ecuador");
+    expect(payload.reportDate).toBe("2026-07-01");
     expect(payload.lines).toHaveLength(1);
     expect(payload.lines[0]).toMatchObject({
       bom: "SERVER-001",

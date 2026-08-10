@@ -393,6 +393,7 @@ test("Global data protects dirty forms and stays open after save", async ({ page
   await srImport.fill("394");
   const suggestions = modal.getByRole("listbox", { name: "Matching Service Requests" });
   await expect(suggestions).toBeVisible();
+  await expect(suggestions.getByRole("option")).toHaveCount(30);
   expect(await suggestions.getByRole("option").evaluateAll((options) => options.every((option) => option.textContent?.includes("SR 394")))).toBe(true);
   const suggestionGeometry = await suggestions.evaluate((element) => ({
     bounded: element.clientHeight < element.scrollHeight,

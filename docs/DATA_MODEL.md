@@ -64,10 +64,12 @@ tabs in validated Closed.xlsx. An eligible source part is never consumed and
 may seed multiple independent requests.
 
 The request ID is a unique Ecuador `YYMMDDHHmmss` allocated at initial XLSX
-export. One request carries one eight-digit TT, at most one `SR` plus seven-digit
-Spare SR, a profile snapshot, original BOM groups, and quantity-expanded unit
-items. Each group stores exactly one requested BOM, zero or more unique slots,
-notes, and the damaged device's faulty-serial evidence. When slots exist, their
+export. One request carries one eight-digit TT, one original TT report date, at
+most one `SR` plus seven-digit Spare SR, a profile snapshot, original BOM groups,
+and quantity-expanded unit items. The report date is captured once at TT level
+and propagated to unit/Fault Tag output; it is not independently edited per BOM.
+Each group stores exactly one requested BOM, zero or more unique slots, notes,
+and the damaged device's faulty-serial evidence. When slots exist, their
 unique newline count determines quantity and each unit receives one slot; a
 slotless manual group retains an explicit multiplier. Those serials are
 device-level evidence, not positional unit
@@ -88,7 +90,8 @@ inside `reference_data.json`.
 
 `global/reference_data.json` contains customer organizations, customer
 contacts, independent sites, and additional requesters. Every contact stores a
-required organization ID. Requesters store their own contact details and a
+required organization ID. A new Spare Request snapshot also requires the chosen
+customer contact's email and phone. Requesters store their own contact details and a
 favorite/pinned flag. `global/spare_request_boms.json` is deliberately separate
 because it is managed from the Spare Requests workspace. Saved requests always
 retain a complete profile snapshot, so later manager edits cannot rewrite old

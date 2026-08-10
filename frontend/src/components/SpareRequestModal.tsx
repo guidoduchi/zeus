@@ -6,14 +6,12 @@ import {
   importCustomerFromTicket,
 } from "../api";
 import type {
-  BomCatalogEntry,
-  CustomerContact,
-  ManagedSite,
   RequesterProfile,
   SparePartSummary,
   SpareReferenceData,
 } from "../types";
 import { requestedQuantity } from "../ticketDraftModel";
+import { AutocompleteField } from "./AutocompleteField";
 import { Modal } from "./Modal";
 
 interface LineDraft {
@@ -26,7 +24,6 @@ interface LineDraft {
   slot: string;
   faultySn: string;
   notes: string;
-  reportDate: string;
   deviceNumber?: number;
   partNumber?: number | null;
 }
@@ -44,7 +41,7 @@ interface Props {
 
 const EMPTY_LINE: LineDraft = {
   bom: "", amount: "1", description: "", part: "", model: "", device: "",
-  slot: "", faultySn: "", notes: "", reportDate: "",
+  slot: "", faultySn: "", notes: "",
 };
 
 function normalized(value: unknown): string {
@@ -56,6 +53,7 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
   const [ticketId, setTicketId] = useState(initialTicketId || initialPart?.ticketId || "");
   const [source, setSource] = useState<"ticket" | "manual">(inheritedTicket ? "ticket" : "manual");
   const [ttLocked, setTtLocked] = useState(inheritedTicket);
+  const [reportDate, setReportDate] = useState("");
   const [profile, setProfile] = useState({
     customerName: "", customerOrganization: "",
     siteCode: initialPart?.site === "—" ? "" : initialPart?.site || "",
@@ -73,7 +71,6 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
     slot: initialPart.slot === "—" ? "" : initialPart.slot,
     faultySn: initialPart.faultySn === "—" ? "" : initialPart.faultySn,
     notes: "",
-    reportDate: "",
     deviceNumber: initialPart.deviceNumber,
     partNumber: initialPart.partNumber,
   }] : [{ ...EMPTY_LINE }]);
@@ -88,11 +85,40 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
     Boolean(references)
     && /^\d{8}$/.test(ticketId)
     && Boolean(profile.customerName.trim() && profile.customerOrganization.trim())
+    && Boolean(profile.contactEmail.trim() && profile.contactPhone.trim())
     && Boolean(profile.siteCode.trim() && profile.siteAddress.trim() && profile.cloud.trim())
     && Boolean(profile.requesterName.trim())
+    && Boolean(reportDate)
     && lines.length > 0
     && lines.every((line) => line.bom.trim() && line.description.trim() && Number(line.amount) >= 1)
-  ), [lines, profile, references, ticketId]);
+  ), [lines, profile, references, reportDate, ticketId]);
+
+  const customerOptions = useMemo(() => references?.customers.map((row) => ({
+    key: row.id,
+    value: row.name,
+    detail: references.organizations.find((organization) => organization.id === row.organizationId)?.name || "Customer contact",
+  })) || [], [references]);
+  const organizationOptions = useMemo(() => references?.organizations.map((row) => ({
+    key: row.id,
+    value: row.name,
+  })) || [], [references]);
+  const siteOptions = useMemo(() => references?.sites.map((row) => ({
+    key: row.id,
+    value: row.code,
+    detail: [row.name, row.address].filter(Boolean).join(" · "),
+    searchText: row.name,
+  })) || [], [references]);
+  const requesterOptions = useMemo(() => references?.requesters.map((row) => ({
+    key: row.id,
+    value: row.name,
+    detail: [row.email, row.phone].filter(Boolean).join(" · "),
+  })) || [], [references]);
+  const bomOptions = useMemo(() => references?.boms.map((row) => ({
+    key: row.id,
+    value: row.bom,
+    detail: row.description,
+    searchText: [row.part, row.model, row.device].filter(Boolean).join(" "),
+  })) || [], [references]);
 
   useEffect(() => {
     getSpareReferenceData().then((result) => {
@@ -128,6 +154,19 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
       updateProfile("customerName", value);
       return;
     }
+    const organization = references?.organizations.find((row) => row.id === customer.organizationId);
+    setProfile((current) => ({
+      ...current,
+      customerName: customer.name,
+      customerOrganization: organization?.name || current.customerOrganization,
+      contactEmail: customer.email || "",
+      contactPhone: customer.phone || "",
+    }));
+  }
+
+  function chooseCustomerById(id: string) {
+    const customer = references?.customers.find((row) => row.id === id);
+    if (!customer) return;
     const organization = references?.organizations.find((row) => row.id === customer.organizationId);
     setProfile((current) => ({
       ...current,
@@ -206,13 +245,14 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
         contactEmail: String(contact.email || current.contactEmail || ""),
         contactPhone: String(contact.phone || current.contactPhone || ""),
       }));
+      setReportDate(String(result.reportDate || "").slice(0, 10));
       if (replaceLines && result.lines.length) {
         setLines(result.lines.map((raw) => ({
           bom: String(raw.bom || ""), amount: String(raw.amount || 1),
           description: String(raw.description || raw.part || raw.bom || ""),
           part: String(raw.part || ""), model: String(raw.model || ""),
           device: String(raw.device || ""), slot: String(raw.slot || ""),
-          faultySn: String(raw.faultySn || ""), reportDate: String(raw.reportDate || "").slice(0, 10),
+          faultySn: String(raw.faultySn || ""),
           notes: String(raw.notes || ""),
           deviceNumber: Number(raw.deviceNumber || 0) || undefined,
           partNumber: Number(raw.partNumber || 0) || null,
@@ -240,7 +280,15 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
   async function importCustomer() {
     setImporting(true);
     try {
-      await importCustomerFromTicket(ticketId);
+      await importCustomerFromTicket(ticketId, {
+        customerOrganization: profile.customerOrganization,
+        customerName: profile.customerName,
+        contact: {
+          name: profile.customerName,
+          email: profile.contactEmail,
+          phone: profile.contactPhone,
+        },
+      });
       setReferences(await getSpareReferenceData());
       setWarning("Customer organization and contact imported into Global data.");
     } catch (error) {
@@ -251,16 +299,18 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
   }
 
   async function submit() {
-    if (!canAttemptExport) return;
+    if (!references || saving) return;
     if (!requestReady) {
       onExportSetupRequired(references?.exportSetup.requestMissing.map((item) => item.label) || []);
       return;
     }
+    if (!canAttemptExport) return;
     setSaving(true);
     try {
       await onExport({
         source,
         ticketId,
+        reportDate,
         profile: {
           customerOrganization: profile.customerOrganization,
           customerName: profile.customerName,
@@ -287,50 +337,57 @@ export function SpareRequestModal({ initialTicketId, initialPart, configurationR
 
   if (suspended) return null;
 
+  const setupRequired = Boolean(references && !requestReady);
+
   return <Modal title="Export Spare Request" subtitle="Choose the customer, site, requester, and one BOM per group. Newline-separated slots set quantity automatically; slotless groups keep a manual multiplier." onClose={onClose} wide actions={<>
     <span className="modal-action-note">{source === "ticket" ? "TT inherited from active SR" : "Manual TT · warning allowed"}</span>
     <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
-    <button type="button" className="primary-button" disabled={!canAttemptExport || saving} onClick={() => void submit()}>{saving ? "Exporting…" : "Export XLSX & create request"}</button>
+    <button
+      type="button"
+      className={setupRequired ? "danger-button export-setup-button" : "primary-button"}
+      disabled={!references || saving || (!setupRequired && !canAttemptExport)}
+      title={setupRequired ? `Configure ${references?.exportSetup.requestMissing.map((item) => item.label).join(" and ") || "the Spare Request export paths"}` : undefined}
+      onClick={() => void submit()}
+    >{saving ? "Exporting…" : "Export XLSX & create request"}</button>
   </>}>
     <div className="spare-request-form">
       <section className="form-section">
         <div className="section-heading"><strong>Customer and ticket</strong><span>{source}</span></div>
         <div className="form-grid three">
-          <label className="form-field"><span>Customer name *</span><input list="zeus-customer-options" value={profile.customerName} onChange={(event) => chooseCustomer(event.target.value)} autoFocus /><datalist id="zeus-customer-options">{references?.customers.map((row: CustomerContact) => <option value={row.name} key={row.id} />)}</datalist></label>
-          <label className="form-field"><span>Customer organization *</span><input list="zeus-organization-options" value={profile.customerOrganization} onChange={(event) => updateProfile("customerOrganization", event.target.value)} /><datalist id="zeus-organization-options">{references?.organizations.map((row) => <option value={row.name} key={row.id} />)}</datalist></label>
-          <label className="form-field"><span>TT · 8 digits</span><input value={ticketId} disabled={ttLocked} maxLength={8} onChange={(event) => { setTicketId(event.target.value.replace(/\D/g, "")); setSource("manual"); }} /></label>
+          <AutocompleteField label="Customer name" required value={profile.customerName} options={customerOptions} onChange={chooseCustomer} onSelect={(option) => chooseCustomerById(option.key)} autoFocus />
+          <AutocompleteField label="Customer organization" required value={profile.customerOrganization} options={organizationOptions} onChange={(value) => updateProfile("customerOrganization", value)} />
+          <label className="form-field"><span>TT · 8 digits</span><input value={ticketId} disabled={ttLocked} maxLength={8} onChange={(event) => { setTicketId(event.target.value.replace(/\D/g, "")); setSource("manual"); setReportDate(""); }} /></label>
+          <label className="form-field"><span>Customer email *</span><input type="email" required value={profile.contactEmail} onChange={(event) => updateProfile("contactEmail", event.target.value)} /></label>
+          <label className="form-field"><span>Customer phone *</span><input type="tel" required value={profile.contactPhone} onChange={(event) => updateProfile("contactPhone", event.target.value)} /></label>
+          <label className="form-field"><span>Original TT report date *</span><input type="date" required value={reportDate} readOnly={source === "ticket" && Boolean(reportDate)} onChange={(event) => setReportDate(event.target.value)} /></label>
           <button type="button" className="secondary-button field-button" disabled={loading || !/^\d{8}$/.test(ticketId)} onClick={() => void loadTicket(true)}>{loading ? "Loading…" : "Load active SR"}</button>
-          {source === "ticket" && profile.customerName && profile.customerOrganization && <button type="button" className="secondary-button field-button" disabled={importing} onClick={() => void importCustomer()}>{importing ? "Importing…" : "Save customer globally"}</button>}
+          {source === "ticket" && profile.customerName && profile.customerOrganization && <button type="button" className="secondary-button field-button" disabled={importing || !profile.contactEmail.trim() || !profile.contactPhone.trim()} title={!profile.contactEmail.trim() || !profile.contactPhone.trim() ? "Customer email and phone are required before saving globally" : undefined} onClick={() => void importCustomer()}>{importing ? "Importing…" : "Save customer globally"}</button>}
         </div>
         {warning && <p className="inline-warning">{warning}</p>}
       </section>
       <section className="form-section">
         <div className="section-heading"><strong>Site and requester</strong><span>autocomplete from Global data</span></div>
         <div className="form-grid three">
-          <label className="form-field"><span>Site *</span><input list="zeus-site-options" value={profile.siteCode} onChange={(event) => chooseSite(event.target.value)} /><datalist id="zeus-site-options">{references?.sites.map((row: ManagedSite) => <option value={row.code} label={row.name || row.address} key={row.id} />)}</datalist></label>
+          <AutocompleteField label="Site" required value={profile.siteCode} options={siteOptions} onChange={chooseSite} />
           <label className="form-field"><span>Cloud *</span><input value={profile.cloud} onChange={(event) => updateProfile("cloud", event.target.value)} /></label>
-          <label className="form-field"><span>Requester *</span><input list="zeus-requester-options" value={profile.requesterName} onChange={(event) => chooseRequester(event.target.value)} /><datalist id="zeus-requester-options">{references?.requesters.map((row: RequesterProfile) => <option value={row.name} key={row.id} />)}</datalist></label>
+          <AutocompleteField label="Requester" required value={profile.requesterName} options={requesterOptions} onChange={chooseRequester} />
           <label className="form-field full"><span>Site address *</span><input value={profile.siteAddress} onChange={(event) => updateProfile("siteAddress", event.target.value)} /></label>
           <label className="form-field"><span>Requester email</span><input value={profile.requesterEmail} onChange={(event) => updateProfile("requesterEmail", event.target.value)} /></label>
           <label className="form-field"><span>Requester phone</span><input value={profile.requesterPhone} onChange={(event) => updateProfile("requesterPhone", event.target.value)} /></label>
-          <label className="form-field"><span>Customer email</span><input value={profile.contactEmail} onChange={(event) => updateProfile("contactEmail", event.target.value)} /></label>
-          <label className="form-field"><span>Customer phone</span><input value={profile.contactPhone} onChange={(event) => updateProfile("contactPhone", event.target.value)} /></label>
         </div>
       </section>
       <section className="form-section">
         <div className="section-heading"><strong>Requested BOM groups</strong><span>{lines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0)} requested unit(s)</span></div>
-        <datalist id="zeus-bom-options">{references?.boms.map((row: BomCatalogEntry) => <option value={row.bom} label={row.description} key={row.id} />)}</datalist>
         <div className="request-line-list">{lines.map((line, index) => <article className="request-line" key={index}>
           <header><strong>BOM group {index + 1}</strong>{lines.length > 1 && <button type="button" className="text-button danger-text" onClick={() => setLines((current) => current.filter((_, position) => position !== index))}>Remove</button>}</header>
           <div className="form-grid four">
-            <label className="form-field"><span>BOM *</span><input list="zeus-bom-options" value={line.bom} onChange={(event) => chooseBom(index, event.target.value)} /></label>
-            <label className="form-field"><span>{line.slot.trim() ? "Quantity · from slots" : "Quantity multiplier *"}</span><input type="number" min="1" max="1000" value={line.amount} readOnly={Boolean(line.slot.trim())} onChange={(event) => updateLine(index, "amount", event.target.value)} />{line.slot.trim() && <small>Automatically derived from {requestedQuantity(line.slot)} unique slot line(s).</small>}</label>
+            <AutocompleteField label="BOM" required value={line.bom} options={bomOptions} onChange={(value) => chooseBom(index, value)} />
             <label className="form-field wide"><span>Description / part *</span><input value={line.description} onChange={(event) => updateLine(index, "description", event.target.value)} /></label>
+            <label className="form-field"><span>{line.slot.trim() ? "Quantity · from slots" : "Quantity multiplier *"}</span><input type="number" min="1" max="1000" value={line.amount} readOnly={Boolean(line.slot.trim())} onChange={(event) => updateLine(index, "amount", event.target.value)} />{line.slot.trim() && <small>Automatically derived from {requestedQuantity(line.slot)} unique slot line(s).</small>}</label>
             {(["model", "device"] as const).map((key) => <label className="form-field" key={key}><span>{key[0].toUpperCase() + key.slice(1)}</span><input value={line[key]} onChange={(event) => updateLine(index, key, event.target.value)} /></label>)}
             <label className="form-field full slot-list-field"><span>Slots · one per line</span><textarea value={line.slot} onChange={(event) => updateLine(index, "slot", event.target.value)} placeholder={"DIMM101\nDIMM203\nDIMM103"} /><small>Each unique slot becomes one requested physical unit for this BOM.</small></label>
             <label className="form-field full faulty-serials-field"><span>Damaged-device serial evidence · one per line</span><textarea value={line.faultySn} onChange={(event) => updateLine(index, "faultySn", event.target.value)} placeholder={"CPU-SN-001\nMEMORY-SN-002\nMEZZ-SN-003"} /><small>The complete evidence list stays attached to every physical unit without changing quantity.</small></label>
             <label className="form-field full"><span>Notes</span><textarea value={line.notes} onChange={(event) => updateLine(index, "notes", event.target.value)} placeholder="Why this BOM is requested, tests already performed, or anything easy to forget." /></label>
-            <label className="form-field"><span>Original TT report date</span><input type="date" value={line.reportDate} onChange={(event) => updateLine(index, "reportDate", event.target.value)} /></label>
           </div>
         </article>)}</div>
         <button type="button" className="secondary-button" onClick={() => setLines((current) => [...current, { ...EMPTY_LINE }])}>+ Add another BOM</button>

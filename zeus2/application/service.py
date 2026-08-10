@@ -47,6 +47,7 @@ from ..spare_requests import (
     create_request_record,
     next_request_id,
     normalize_profile,
+    normalize_report_date,
     normalize_request_lines,
     normalize_rma,
     normalize_spare_sr,
@@ -619,6 +620,8 @@ class ApplicationService:
                 None,
             )
 
+        report_date = first("Report Date", "ReportDate", "Created Date")
+
         lines: list[dict[str, Any]] = []
         for device_number, device in enumerate(
             ticket.get("local", {}).get("spare_parts", []), start=1
@@ -639,7 +642,6 @@ class ApplicationService:
                         "slots": slots,
                         "faultySn": "\n".join(device.get("faulty_sns") or []) or None,
                         "notes": part.get("notes"),
-                        "reportDate": first("Report Date", "ReportDate", "Created Date"),
                         "deviceNumber": device_number,
                         "partNumber": part_number,
                     }
@@ -647,6 +649,7 @@ class ApplicationService:
         return {
             "ticketId": normalized,
             "ticketExists": True,
+            "reportDate": report_date,
             "profile": {
                 "customerOrganization": first(
                     "Customer Organization",
@@ -681,9 +684,13 @@ class ApplicationService:
             "warning": None if lines else "This SR has no damaged part with a BOM yet.",
         }
 
-    def import_customer_from_ticket(self, ticket_id: str) -> dict[str, Any]:
+    def import_customer_from_ticket(
+        self,
+        ticket_id: str,
+        profile_override: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         prefill = self.spare_request_prefill(ticket_id)
-        profile = prefill.get("profile", {})
+        profile = profile_override if profile_override is not None else prefill.get("profile", {})
         organization_name = str(profile.get("customerOrganization") or "").strip()
         contact = profile.get("contact") if isinstance(profile.get("contact"), dict) else {}
         contact_name = str(contact.get("name") or profile.get("customerName") or "").strip()
@@ -691,6 +698,10 @@ class ApplicationService:
             raise ValidationError(
                 "This SR does not contain both a customer organization and customer contact"
             )
+        contact_email = str(contact.get("email") or "").strip()
+        contact_phone = str(contact.get("phone") or "").strip()
+        if not contact_email or not contact_phone:
+            raise ValidationError("Customer email and phone are required before saving globally")
         data = self.global_reference_data()
         organizations = list(data.get("organizations") or [])
         customers = list(data.get("customers") or [])
@@ -723,15 +734,13 @@ class ApplicationService:
                 "id": f"customer-{uuid.uuid4().hex}",
                 "organizationId": organization_id,
                 "name": contact_name,
-                "email": contact.get("email"),
-                "phone": contact.get("phone"),
+                "email": contact_email,
+                "phone": contact_phone,
             }
             customers.append(customer)
         else:
-            if contact.get("email"):
-                customer["email"] = contact.get("email")
-            if contact.get("phone"):
-                customer["phone"] = contact.get("phone")
+            customer["email"] = contact_email
+            customer["phone"] = contact_phone
         saved = self.save_global_reference_data(
             {
                 "organizations": organizations,
@@ -758,7 +767,35 @@ class ApplicationService:
             try:
                 tt = normalize_tt(payload.get("ticketId"))
                 profile = normalize_profile(payload.get("profile"))
-                lines = normalize_request_lines(payload.get("lines"))
+                raw_lines = payload.get("lines")
+                raw_report_date = payload.get("reportDate")
+                if not raw_report_date and isinstance(raw_lines, list):
+                    legacy_dates = {
+                        normalize_report_date(
+                            raw.get("reportDate") or raw.get("report_date"),
+                            required=True,
+                        )
+                        for raw in raw_lines
+                        if isinstance(raw, dict)
+                        and (raw.get("reportDate") or raw.get("report_date"))
+                    }
+                    if len(legacy_dates) > 1:
+                        raise SpareRequestError(
+                            "Every BOM in one TT must use the same original report date"
+                        )
+                    raw_report_date = next(iter(legacy_dates), None)
+                report_date = normalize_report_date(raw_report_date, required=True)
+                prepared_lines = (
+                    [
+                        {**raw, "reportDate": report_date}
+                        if isinstance(raw, dict)
+                        else raw
+                        for raw in raw_lines
+                    ]
+                    if isinstance(raw_lines, list)
+                    else raw_lines
+                )
+                lines = normalize_request_lines(prepared_lines)
             except SpareRequestError as exc:
                 raise ValidationError(str(exc)) from exc
             ticket_exists = self.store.ticket_file(tt).is_file()

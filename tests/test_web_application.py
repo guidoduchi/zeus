@@ -936,6 +936,7 @@ class ApplicationServiceContractTests(WebFixture):
         self.assertEqual(profile["customerOrganization"], "Customer Org from Advanced Search")
         self.assertEqual(profile["customerName"], "Customer Contact from Advanced Search")
         self.assertEqual(profile["contact"]["email"], "customer@example.com")
+        self.assertEqual(prefill["reportDate"], "2026-07-01 10:00:00")
         self.assertEqual(
             prefill["lines"],
             [
@@ -950,12 +951,47 @@ class ApplicationServiceContractTests(WebFixture):
                     "slots": ["DIMM101", "DIMM203", "DIMM103"],
                     "faultySn": "SERVER-SN-01\nMEMORY-SN-02",
                     "notes": "Memory diagnostics completed.",
-                    "reportDate": "2026-07-01 10:00:00",
                     "deviceNumber": 1,
                     "partNumber": 1,
                 }
             ],
         )
+
+    def test_customer_import_uses_the_validated_form_values(self) -> None:
+        self.seed_database()
+        service = ApplicationService(self.store)
+        profile = {
+            "customerOrganization": "Consorcio Ecuatoriano de Telecomunicaciones",
+            "customerName": "Angel Guerrero",
+            "contact": {
+                "name": "Angel Guerrero",
+                "email": "angel@example.com",
+                "phone": "+593980000001",
+            },
+        }
+        try:
+            with self.assertRaisesRegex(ValidationError, "email and phone"):
+                service.import_customer_from_ticket(
+                    "12345678",
+                    {**profile, "contact": {**profile["contact"], "phone": ""}},
+                )
+            imported = service.import_customer_from_ticket("12345678", profile)
+        finally:
+            service.stop()
+
+        organization = next(
+            row
+            for row in imported["data"]["organizations"]
+            if row["name"] == profile["customerOrganization"]
+        )
+        customer = next(
+            row
+            for row in imported["data"]["customers"]
+            if row["name"] == profile["customerName"]
+        )
+        self.assertEqual(customer["organizationId"], organization["id"])
+        self.assertEqual(customer["email"], "angel@example.com")
+        self.assertEqual(customer["phone"], "+593980000001")
 
     def test_legacy_email_threads_are_compacted_without_resynchronizing(self) -> None:
         self.seed_database()

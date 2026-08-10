@@ -116,6 +116,16 @@ def create_return_template(path: Path) -> None:
 
 
 class SpareRequestDomainTests(unittest.TestCase):
+    def test_customer_email_and_phone_are_required_for_new_requests(self) -> None:
+        for missing in ("email", "phone"):
+            profile = profile_input()
+            profile["contact"][missing] = ""
+            with self.subTest(missing=missing), self.assertRaisesRegex(
+                SpareRequestError,
+                f"Customer contact {missing}",
+            ):
+                normalize_profile(profile)
+
     def test_request_quantity_rejects_non_whole_json_values(self) -> None:
         for amount in (True, 1.5, "1.5", "1e2"):
             with self.subTest(amount=amount):
@@ -480,16 +490,26 @@ class SpareRequestApplicationTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_manual_export_persists_and_reexports_as_revision(self) -> None:
+        lines = lines_input(2)
+        lines[0].pop("reportDate")
         payload = {
             "source": "manual",
             "ticketId": "39416095",
+            "reportDate": "2026-07-01",
             "profile": profile_input(),
-            "lines": lines_input(2),
+            "lines": lines,
         }
         result = self.service.export_spare_request(payload)
         request_id = result["request"]["requestId"]
         self.assertTrue(Path(result["path"]).is_file())
         self.assertEqual(len(result["request"]["items"]), 2)
+        self.assertEqual(result["request"]["reportDate"], "2026-07-01")
+        self.assertTrue(
+            all(
+                line["report_date"] == "2026-07-01"
+                for line in result["request"]["requestLines"]
+            )
+        )
         self.assertTrue(result["warnings"])
         revised = self.service.reexport_spare_request(request_id)
         self.assertRegex(revised["filename"], r"-r2\.xlsx$")

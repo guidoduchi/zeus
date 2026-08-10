@@ -69,9 +69,12 @@ Consequences:
 19. Global data uses ordinary record forms, never raw JSON. Customer contacts
     must select an organization; sites do not. The current profile is the
     default requester and additional favorite requesters may be pinned.
-20. Spare export chooses customer, site, requester, and BOM through autocomplete.
-    Customer initials are derived, and missing export paths redirect the user
-    to Configuration before any workbook write begins.
+20. Spare export chooses customer, site, requester, and BOM through bounded,
+    Zeus-themed autocomplete controls. Customer email and phone are required,
+    customer initials are derived, and one TT-level original report date is
+    loaded automatically for active SRs (or entered once for an unknown manual
+    TT). Missing export paths turn the export action into an explicit red
+    Configuration gate before any workbook write begins.
 21. One request group contains one BOM and a quantity multiplier. Quantity
     alone creates the physical unit records, future RMAs, and Fault Tag rows.
 22. Newline-only faulty component serials are group evidence, not extra units.

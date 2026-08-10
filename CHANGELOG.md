@@ -22,6 +22,9 @@
 - Defers missing Spare Request export-configuration redirection until an
   explicit export attempt, so manual and eligible-SR request forms open freely
   and remain intact while Configuration is corrected.
+- Themes every Spare Request autocomplete, moves required customer email/phone
+  and the automatically loaded original TT date into the ticket-level section,
+  and makes missing export configuration an explicit red action.
 - Replaces the browser-native Global data SR picker with a bounded Zeus-themed
   prefix autocomplete, fixes the two-row narrow Spare Request toolbar, and adds
   persisted Compact, Standard, and Large semantic typography presets.
