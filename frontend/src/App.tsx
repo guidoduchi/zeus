@@ -94,6 +94,7 @@ const WORKSPACES: Record<WorkspaceKey, WorkspaceConfiguration> = {
     defaultSort: "tt",
     sorts: [
       { value: "tt", label: "TT" },
+      { value: "tracking", label: "Tracking ID" },
       { value: "rma", label: "RMA" },
       { value: "email", label: "Email inactivity" },
       { value: "status", label: "Status" },
@@ -103,10 +104,10 @@ const WORKSPACES: Record<WorkspaceKey, WorkspaceConfiguration> = {
       { value: "bom", label: "BOM" },
     ],
     defaultDirections: {
-      tt: "desc", rma: "asc", email: "desc", status: "asc",
+      tt: "desc", tracking: "desc", rma: "asc", email: "desc", status: "asc",
       age: "desc", site: "asc", cloud: "asc", bom: "asc",
     },
-    searchPlaceholder: "Search TT, RMA, Spare SR, BOM, serial, site…",
+    searchPlaceholder: "Search TT, tracking ID, RMA, BOM, serial, site…",
     columnsStorageKey: "zeus3.spare-requests.columns",
   },
 };

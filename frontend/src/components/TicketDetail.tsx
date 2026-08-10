@@ -48,6 +48,24 @@ function display(value: unknown): string {
   return String(value);
 }
 
+function nextDeviceNumber(devices: DraftDevice[]): number {
+  return Math.max(0, ...devices.map((device) => device.device_number)) + 1;
+}
+
+function emptyDevice(deviceNumber: number): DraftDevice {
+  return {
+    device_number: deviceNumber,
+    device: "",
+    model: "",
+    notes: "",
+    faulty_sns: "",
+    next_part_number: 1,
+    active_request_ids: [],
+    has_submitted_parts: false,
+    parts: [],
+  };
+}
+
 function FieldList({ fields }: { fields: Record<string, unknown> }) {
   return (
     <dl className="field-list">
@@ -66,6 +84,10 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
   const [draftRevision, setDraftRevision] = useState(ticket.revision);
   const [baseValue, setBaseValue] = useState<Record<string, string>>(() => workFieldValues(ticket));
   const [stale, setStale] = useState(false);
+  const [devices, setDevices] = useState<DraftDevice[]>(() => spareDraft(ticket.spareParts));
+  const [deviceDraftRevision, setDeviceDraftRevision] = useState(ticket.revision);
+  const [deviceBaseValue, setDeviceBaseValue] = useState<SpareDevice[]>(() => cleanSpareParts(ticket.spareParts));
+  const [deviceStale, setDeviceStale] = useState(false);
   const [saving, setSaving] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
 
@@ -103,8 +125,44 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
     }
   }, [saving, ticket.ticketId, ticket.revision]);
 
+  useEffect(() => {
+    if (saving) return;
+    const current = cleanSpareParts(ticket.spareParts);
+    const stored = readTicketDraft<DraftDevice[], SpareDevice[]>(ticket.ticketId, "spares");
+    if (!stored || !Array.isArray(stored.value) || !Array.isArray(stored.baseValue)) {
+      setDevices(spareDraft(ticket.spareParts));
+      setDeviceDraftRevision(ticket.revision);
+      setDeviceBaseValue(current);
+      setDeviceStale(false);
+      return;
+    }
+    const analysis = analyzeTicketDraft(ticket, "spares", stored);
+    if (!analysis) {
+      clearTicketDraft(ticket.ticketId, "spares");
+      setDevices(spareDraft(ticket.spareParts));
+      setDeviceDraftRevision(ticket.revision);
+      setDeviceBaseValue(current);
+      setDeviceStale(false);
+      return;
+    }
+    const rebased = analysis.rebased as typeof stored;
+    setDevices(rebased.value);
+    if (analysis.conflictFields.length) {
+      setDeviceDraftRevision(stored.revision);
+      setDeviceBaseValue(stored.baseValue);
+      setDeviceStale(true);
+    } else {
+      setDeviceDraftRevision(ticket.revision);
+      setDeviceBaseValue(current);
+      setDeviceStale(false);
+      if (stored.revision !== ticket.revision) writeTicketDraft(ticket.ticketId, "spares", rebased);
+    }
+  }, [saving, ticket.ticketId, ticket.revision]);
+
   const changes = useMemo(() => changedWorkFields(ticket, draft), [draft, ticket]);
-  const changedCount = Object.keys(changes).length;
+  const cleanedDevices = useMemo(() => cleanSpareParts(devices), [devices]);
+  const devicesChanged = JSON.stringify(cleanedDevices) !== JSON.stringify(cleanSpareParts(ticket.spareParts));
+  const changedCount = Object.keys(changes).length + (devicesChanged ? 1 : 0);
 
   function setField(field: string, value: string) {
     setDraft((current) => {
@@ -122,6 +180,22 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
     });
   }
 
+  function updateDevices(update: (current: DraftDevice[]) => DraftDevice[]) {
+    setDevices((current) => {
+      const next = update(current);
+      if (JSON.stringify(cleanSpareParts(next)) !== JSON.stringify(cleanSpareParts(ticket.spareParts))) {
+        writeTicketDraft(ticket.ticketId, "spares", {
+          revision: deviceDraftRevision,
+          baseValue: deviceBaseValue,
+          value: next,
+        });
+      } else {
+        clearTicketDraft(ticket.ticketId, "spares");
+      }
+      return next;
+    });
+  }
+
   function discardDraft() {
     const current = workFieldValues(ticket);
     clearTicketDraft(ticket.ticketId, "work");
@@ -129,6 +203,11 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
     setDraftRevision(ticket.revision);
     setBaseValue(current);
     setStale(false);
+    clearTicketDraft(ticket.ticketId, "spares");
+    setDevices(spareDraft(ticket.spareParts));
+    setDeviceDraftRevision(ticket.revision);
+    setDeviceBaseValue(cleanSpareParts(ticket.spareParts));
+    setDeviceStale(false);
   }
 
   function restoreDraft() {
@@ -148,12 +227,34 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
     setRestoreOpen(false);
   }
 
+  function restoreDeviceDraft() {
+    const stored = readTicketDraft<DraftDevice[], SpareDevice[]>(ticket.ticketId, "spares");
+    if (!stored) return;
+    const analysis = analyzeTicketDraft(ticket, "spares", stored);
+    if (!analysis) {
+      clearTicketDraft(ticket.ticketId, "spares");
+      setDevices(spareDraft(ticket.spareParts));
+      setDeviceStale(false);
+      return;
+    }
+    const rebased = analysis.rebased as typeof stored;
+    setDevices(rebased.value);
+    setDeviceDraftRevision(ticket.revision);
+    setDeviceBaseValue(cleanSpareParts(ticket.spareParts));
+    setDeviceStale(false);
+    writeTicketDraft(ticket.ticketId, "spares", rebased);
+  }
+
   async function save() {
-    if (!changedCount || stale) return;
+    if (!changedCount || stale || deviceStale) return;
     setSaving(true);
     try {
-      await onSave(ticket.ticketId, draftRevision, changes);
+      await onSave(ticket.ticketId, draftRevision, {
+        ...changes,
+        ...(devicesChanged ? { "Spare Parts": cleanedDevices } : {}),
+      });
       clearTicketDraft(ticket.ticketId, "work");
+      clearTicketDraft(ticket.ticketId, "spares");
     } catch {
       // App owns the conflict/error toast and reloads the authoritative value.
     } finally {
@@ -170,6 +271,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
             <span>{ticket.readOnly ? "These values are preserved from Closed.xlsx and cannot be changed from the site." : "Save writes these validated work fields directly to the local database. Workbooks change only when you export them."}</span>
           </div>
           {stale && <div className="inline-warning">The same database work fields changed after this draft began. Restore the protected changes over the latest values for review, or discard this draft. Restoring does not save.</div>}
+          {deviceStale && <div className="inline-warning">The affected-device record changed after this draft began. Restore the protected device changes over the latest values for review, or discard the draft.</div>}
           <div className="work-form">
             {WORK_FIELDS.map((field) => {
               const label = field === "Done?" ? "MW" : field;
@@ -210,6 +312,38 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
               );
             })}
           </div>
+          <section className="affected-devices-section">
+            <header className="section-heading">
+              <strong>Affected / intervened devices</strong>
+              <span>Device work does not require a spare part.</span>
+            </header>
+            {!devices.length && <div className="empty-spares"><strong>No affected devices registered.</strong><span>Add the equipment being investigated or intervened; a BOM is optional.</span></div>}
+            <div className="affected-device-list">
+              {devices.map((device, deviceIndex) => {
+                const spareInvolved = device.parts.length > 0 || device.has_submitted_parts || device.active_request_ids.length > 0;
+                const removalBlocked = device.parts.length > 0 || device.active_request_ids.length > 0;
+                return <article className="affected-device" key={device.device_number}>
+                  <header>
+                    <strong>Device {deviceIndex + 1}</strong>
+                    {spareInvolved && <span className="spare-involved-tag">Spare parts involved</span>}
+                    {!ticket.readOnly && <button
+                      type="button"
+                      className="text-button danger-text"
+                      disabled={removalBlocked}
+                      title={removalBlocked ? "Remove its BOM records in Spare Parts first; Active Request ownership must also be cleared." : "Remove this affected device from both views"}
+                      onClick={() => updateDevices((current) => current.filter((candidate) => candidate.device_number !== device.device_number))}
+                    >Remove device</button>}
+                  </header>
+                  <div className="device-fields">
+                    <label className="form-field"><span>Device</span><input value={device.device} disabled={ticket.readOnly} onChange={(event) => updateDevices((current) => current.map((candidate) => candidate.device_number === device.device_number ? { ...candidate, device: event.target.value } : candidate))} placeholder="Hostname or equipment ID" /></label>
+                    <label className="form-field"><span>Model</span><input value={device.model} disabled={ticket.readOnly} onChange={(event) => updateDevices((current) => current.map((candidate) => candidate.device_number === device.device_number ? { ...candidate, model: event.target.value } : candidate))} placeholder="Equipment model" /></label>
+                    <label className="form-field full"><span>Intervention notes</span><textarea rows={3} value={device.notes} disabled={ticket.readOnly} onChange={(event) => updateDevices((current) => current.map((candidate) => candidate.device_number === device.device_number ? { ...candidate, notes: event.target.value } : candidate))} placeholder="Checks, intervention scope, or device-specific context." /></label>
+                  </div>
+                </article>;
+              })}
+            </div>
+            {!ticket.readOnly && <button type="button" className="secondary-button add-device" onClick={() => updateDevices((current) => [...current, emptyDevice(nextDeviceNumber(current))])}>+ Add affected device</button>}
+          </section>
         </div>
       </div>
       <div className="inline-actions edit-actions">
@@ -217,8 +351,9 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
         {!ticket.readOnly && (
           <div className="inline-actions">
             {changedCount > 0 && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}
-            {stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore changes</button>}
-            <button type="button" className="primary-button" disabled={!changedCount || saving || stale} onClick={save}>
+            {stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore work changes</button>}
+            {deviceStale && <button type="button" className="secondary-button" disabled={saving} onClick={restoreDeviceDraft}>Restore device changes</button>}
+            <button type="button" className="primary-button" disabled={!changedCount || saving || stale || deviceStale} onClick={save}>
               {saving ? "Saving…" : "Save to Zeus"}
             </button>
           </div>
@@ -227,6 +362,49 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
     </div>
     {restoreOpen && <ConfirmationDialog title={`Restore protected SR ${ticket.ticketId} changes?`} message="The protected Work Fields will be reapplied over the latest Zeus values for review. This action does not save anything to the database." confirmLabel="Restore for review" onCancel={() => setRestoreOpen(false)} onConfirm={restoreDraft} />}
   </>;
+}
+
+function SparePartEditor({
+  deviceIndex,
+  part,
+  readOnly,
+  onUpdate,
+  onRemove,
+}: {
+  deviceIndex: number;
+  part: DraftPart;
+  readOnly: boolean;
+  onUpdate: (field: "slot" | "part" | "bom" | "notes", value: string) => void;
+  onRemove: () => void;
+}) {
+  const locked = part.submitted;
+  return <section className={`spare-part ${locked ? "submitted-part" : "new-part"}`}>
+    <header>
+      <strong>{locked ? "Submitted" : "New"} part {part.part_number}</strong>
+      {locked && <span className="submitted-part-tag">Locked · already submitted</span>}
+      {!readOnly && <button type="button" className="text-button danger-text" onClick={onRemove}>{locked ? "Delete submitted part" : "Remove part"}</button>}
+    </header>
+    <div className="part-fields">
+      <label className="form-field full slot-list-field">
+        <span>Slots · one per line</span>
+        <textarea aria-label={`Device ${deviceIndex + 1} part ${part.part_number} Slots`} value={part.slot} disabled={readOnly || locked} onChange={(event) => onUpdate("slot", event.target.value)} placeholder={"DIMM101\nDIMM203\nDIMM103"} />
+        <small>{requestedQuantity(part.slot)} requested unit{requestedQuantity(part.slot) === 1 ? "" : "s"} for this BOM</small>
+      </label>
+      <label className="form-field">
+        <span>Part</span>
+        <input aria-label={`Device ${deviceIndex + 1} part ${part.part_number} Part`} value={part.part} disabled={readOnly || locked} onChange={(event) => onUpdate("part", event.target.value)} placeholder="DIMM" />
+      </label>
+      <label className="form-field">
+        <span>BOM (part number)</span>
+        <input aria-label={`Device ${deviceIndex + 1} part ${part.part_number} BOM (part number)`} value={part.bom} disabled={readOnly || locked} onChange={(event) => onUpdate("bom", event.target.value)} placeholder="—" />
+      </label>
+      <label className="form-field full">
+        <span>Notes</span>
+        <textarea aria-label={`Device ${deviceIndex + 1} part ${part.part_number} Notes`} value={part.notes} disabled={readOnly || locked} onChange={(event) => onUpdate("notes", event.target.value)} placeholder="Why this BOM is requested, checks already performed, or anything easy to forget." />
+      </label>
+    </div>
+    {locked && <footer>This exact BOM/slot record has already been submitted. Delete it and add a new record for another replacement.</footer>}
+  </section>;
 }
 
 function SparePartsTab({ ticket, onSave, onExportSpareRequest, onRegisterSpareRequest }: Pick<Props, "ticket" | "onSave" | "onExportSpareRequest" | "onRegisterSpareRequest"> & { ticket: TicketDetailType }) {
@@ -273,6 +451,12 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest, onRegisterSpareRe
   const cleaned = useMemo(() => cleanSpareParts(devices), [devices]);
   const changed = JSON.stringify(cleaned) !== JSON.stringify(cleanSpareParts(ticket.spareParts));
   const partCount = cleaned.reduce((total, device) => total + device.parts.length, 0);
+  const eligiblePartCount = devices.reduce(
+    (total, device) => total + device.parts.filter(
+      (part) => !part.submitted && Boolean(part.bom.trim()),
+    ).length,
+    0,
+  );
   const requestedUnits = cleaned.reduce(
     (total, device) => total + device.parts.reduce(
       (subtotal, part) => subtotal + requestedQuantity(part.slot),
@@ -303,10 +487,10 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest, onRegisterSpareRe
     )));
   }
 
-  function updatePart(deviceIndex: number, partIndex: number, field: keyof DraftPart, value: string) {
+  function updatePart(deviceIndex: number, partNumber: number, field: "slot" | "part" | "bom" | "notes", value: string) {
     updateDevices((current) => current.map((device, position) => position !== deviceIndex ? device : ({
       ...device,
-      parts: device.parts.map((part, candidate) => candidate === partIndex ? { ...part, [field]: value } : part),
+      parts: device.parts.map((part) => part.part_number === partNumber ? { ...part, [field]: value } : part),
     })));
   }
 
@@ -361,15 +545,18 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest, onRegisterSpareRe
           {!devices.length && (
             <div className="empty-spares">
               <strong>This ticket has no spare-parts record.</strong>
-              <span>Add a device only when hardware replacement work is required.</span>
+              <span>Affected devices are shared with Work Fields; add a BOM only when replacement hardware is required.</span>
             </div>
           )}
           <div className="spare-device-list">
-            {devices.map((device, deviceIndex) => (
-              <article className="spare-device" key={`device-${deviceIndex}`}>
+            {devices.map((device, deviceIndex) => {
+              const submitted = device.parts.filter((part) => part.submitted);
+              const editable = device.parts.filter((part) => !part.submitted);
+              const removalBlocked = device.parts.length > 0 || device.active_request_ids.length > 0;
+              return <article className="spare-device" key={`device-${device.device_number}`}>
                 <header>
-                  <strong>Damaged device {deviceIndex + 1}</strong>
-                  {!ticket.readOnly && <button type="button" className="text-button danger-text" onClick={() => updateDevices((current) => current.filter((_, index) => index !== deviceIndex))}>Remove device</button>}
+                  <strong>Affected device {deviceIndex + 1}</strong>
+                  {!ticket.readOnly && <button type="button" className="text-button danger-text" disabled={removalBlocked} title={removalBlocked ? "Delete this device's part records first. An Active Request must be deleted or completed before removing its device." : "Remove this device from Spare Parts and Work Fields"} onClick={() => updateDevices((current) => current.filter((candidate) => candidate.device_number !== device.device_number))}>Remove device</button>}
                 </header>
                 <div className="device-fields">
                   <label className="form-field">
@@ -383,48 +570,27 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest, onRegisterSpareRe
                   <label className="form-field full faulty-serials-field">
                     <span>Faulty serial numbers · one per line</span>
                     <textarea aria-label={`Device ${deviceIndex + 1} faulty serial numbers`} value={device.faulty_sns} disabled={ticket.readOnly} onChange={(event) => updateDevice(deviceIndex, "faulty_sns", event.target.value)} placeholder={"CPU-SN-001\nMEMORY-SN-002\nMEZZ-SN-003"} />
-                    <small>Diagnostic evidence for this damaged device; these serials do not multiply the requested BOM.</small>
+                    <small>Diagnostic evidence for this device; these serials do not multiply the requested BOM.</small>
                   </label>
                 </div>
-                <div className="part-list">
-                  {device.parts.map((part, partIndex) => (
-                    <section className="spare-part" key={`part-${partIndex}`}>
-                      <header>
-                        <strong>Part {partIndex + 1}</strong>
-                        {!ticket.readOnly && <button type="button" className="text-button danger-text" onClick={() => updateDevices((current) => current.map((candidate, index) => index !== deviceIndex ? candidate : ({ ...candidate, parts: candidate.parts.filter((_, position) => position !== partIndex) })))}>Remove part</button>}
-                      </header>
-                      <div className="part-fields">
-                        <label className="form-field full slot-list-field">
-                          <span>Slots · one per line</span>
-                          <textarea aria-label={`Device ${deviceIndex + 1} part ${partIndex + 1} Slots`} value={part.slot} disabled={ticket.readOnly} onChange={(event) => updatePart(deviceIndex, partIndex, "slot", event.target.value)} placeholder={"DIMM101\nDIMM203\nDIMM103"} />
-                          <small>{requestedQuantity(part.slot)} requested unit{requestedQuantity(part.slot) === 1 ? "" : "s"} for this BOM</small>
-                        </label>
-                        <label className="form-field">
-                          <span>Part</span>
-                          <input aria-label={`Device ${deviceIndex + 1} part ${partIndex + 1} Part`} value={part.part} disabled={ticket.readOnly} onChange={(event) => updatePart(deviceIndex, partIndex, "part", event.target.value)} placeholder="DIMM" />
-                        </label>
-                        <label className="form-field">
-                          <span>BOM (part number)</span>
-                          <input aria-label={`Device ${deviceIndex + 1} part ${partIndex + 1} BOM (part number)`} value={part.bom} disabled={ticket.readOnly} onChange={(event) => updatePart(deviceIndex, partIndex, "bom", event.target.value)} placeholder="—" />
-                        </label>
-                        <label className="form-field full">
-                          <span>Notes</span>
-                          <textarea aria-label={`Device ${deviceIndex + 1} part ${partIndex + 1} Notes`} value={part.notes} disabled={ticket.readOnly} onChange={(event) => updatePart(deviceIndex, partIndex, "notes", event.target.value)} placeholder="Why this BOM is requested, checks already performed, or anything easy to forget." />
-                        </label>
-                      </div>
-                    </section>
-                  ))}
-                </div>
-                {!ticket.readOnly && <button type="button" className="secondary-button add-part" onClick={() => updateDevices((current) => current.map((candidate, index) => index === deviceIndex ? ({ ...candidate, parts: [...candidate.parts, emptyPart()] }) : candidate))}>+ Add damaged part</button>}
-              </article>
-            ))}
+                {submitted.length > 0 && <section className="submitted-parts-group">
+                  <header><strong>Submitted parts</strong><span>Delete allowed · editing locked</span></header>
+                  <div className="part-list">{submitted.map((part) => <SparePartEditor key={part.part_number} deviceIndex={deviceIndex} part={part} readOnly={ticket.readOnly} onUpdate={(field, value) => updatePart(deviceIndex, part.part_number, field, value)} onRemove={() => updateDevices((current) => current.map((candidate) => candidate.device_number !== device.device_number ? candidate : ({ ...candidate, parts: candidate.parts.filter((entry) => entry.part_number !== part.part_number) })))} />)}</div>
+                </section>}
+                <section className="new-parts-group">
+                  <header><strong>New eligible parts</strong><span>{editable.length} unsent BOM record(s)</span></header>
+                  <div className="part-list">{editable.map((part) => <SparePartEditor key={part.part_number} deviceIndex={deviceIndex} part={part} readOnly={ticket.readOnly} onUpdate={(field, value) => updatePart(deviceIndex, part.part_number, field, value)} onRemove={() => updateDevices((current) => current.map((candidate) => candidate.device_number !== device.device_number ? candidate : ({ ...candidate, parts: candidate.parts.filter((entry) => entry.part_number !== part.part_number) })))} />)}</div>
+                </section>
+                {!ticket.readOnly && <button type="button" className="secondary-button add-part" onClick={() => updateDevices((current) => current.map((candidate) => candidate.device_number === device.device_number ? ({ ...candidate, next_part_number: candidate.next_part_number + 1, parts: [...candidate.parts, emptyPart(candidate.next_part_number)] }) : candidate))}>+ Add new spare part</button>}
+              </article>;
+            })}
           </div>
-          {!ticket.readOnly && <button type="button" className="secondary-button add-device" onClick={() => updateDevices((current) => [...current, { device: "", model: "", faulty_sns: "", parts: [emptyPart()] }])}>+ Add damaged device</button>}
+          {!ticket.readOnly && <button type="button" className="secondary-button add-device" onClick={() => updateDevices((current) => [...current, emptyDevice(nextDeviceNumber(current))])}>+ Add affected device</button>}
         </div>
       </div>
       <div className="inline-actions edit-actions">
         <span>{ticket.readOnly ? `${cleaned.length} device(s), ${partCount} BOM group(s), ${requestedUnits} unit(s) · closed SR archive` : changed ? `${cleaned.length} device(s), ${partCount} BOM group(s), ${requestedUnits} unit(s) · unsaved draft protected` : `${cleaned.length} device(s), ${partCount} BOM group(s), ${requestedUnits} unit(s)`}</span>
-        {!ticket.readOnly && <div className="inline-actions">{changed && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}{stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore changes</button>}{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!partCount || changed} title={changed ? "Save Spare Parts before exporting" : "Create an independent request from this TT"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Spare Request</button>}{onRegisterSpareRequest && <button type="button" className="secondary-button" disabled={!partCount || changed} title={changed ? "Save Spare Parts before registering the request" : "Register a Spare Request that was already sent outside Zeus"} onClick={() => onRegisterSpareRequest(ticket.ticketId)}>Already sent manually</button>}<button type="button" className="primary-button" disabled={!changed || saving || stale} onClick={save}>{saving ? "Saving…" : "Save to Zeus"}</button></div>}
+        {!ticket.readOnly && <div className="inline-actions">{changed && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}{stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore changes</button>}{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!eligiblePartCount || changed} title={changed ? "Save Spare Parts before exporting" : eligiblePartCount ? "Create an independent request from a new BOM/slot record" : "Add a new unsent BOM/slot record first"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Spare Request</button>}{onRegisterSpareRequest && <button type="button" className="secondary-button" disabled={!eligiblePartCount || changed} title={changed ? "Save Spare Parts before registering the request" : eligiblePartCount ? "Register a Spare Request that was already sent outside Zeus" : "Add a new unsent BOM/slot record first"} onClick={() => onRegisterSpareRequest(ticket.ticketId)}>Already sent manually</button>}<button type="button" className="primary-button" disabled={!changed || saving || stale} onClick={save}>{saving ? "Saving…" : "Save to Zeus"}</button></div>}
       </div>
     </div>
     {restoreOpen && <ConfirmationDialog title={`Restore protected SR ${ticket.ticketId} Spare Parts?`} message="The protected device, serial, slot, BOM, and notes changes will be reapplied over the latest Zeus record for review. This action does not save to the database." confirmLabel="Restore for review" onCancel={() => setRestoreOpen(false)} onConfirm={restoreDraft} />}

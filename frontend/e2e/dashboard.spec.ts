@@ -135,7 +135,7 @@ test("Service Requests and Spare Requests switch as independent management views
   await expect(page.getByLabel("Spare Requests summary")).toContainText("Active requests 1");
   await expect(page.getByLabel("Spare Requests summary")).toContainText("Unit items 2");
   await expect(page.getByRole("columnheader", { name: "RMA" })).toBeVisible();
-  await expect(page.getByPlaceholder("Search TT, RMA, Spare SR, BOM, serial, site…")).toBeVisible();
+  await expect(page.getByPlaceholder("Search TT, tracking ID, RMA, BOM, serial, site…")).toBeVisible();
 
   const spareRows = page.locator("[data-row-id]");
   await expect(spareRows.first()).toBeVisible();
@@ -163,7 +163,7 @@ test("eligible SR parts seed exports and completed items stay read-only", async 
   const headers = page.locator(".grid-header [role=columnheader]");
   await expect(headers.first()).toHaveText("TT");
 
-  const search = page.getByPlaceholder("Search TT, RMA, Spare SR, BOM, serial, site…");
+  const search = page.getByPlaceholder("Search TT, tracking ID, RMA, BOM, serial, site…");
   await search.fill("39400001");
   const eligible = page.locator('[data-row-id="39400001:1:1"]');
   await expect(eligible).toBeVisible();
@@ -198,7 +198,7 @@ test("Escape on blank table space never outlines the entire work area", async ({
   await page.goto("/");
   await page.getByRole("button", { name: "Spare Requests" }).click();
   await page.getByRole("tab", { name: "Completed" }).click();
-  await page.getByPlaceholder("Search TT, RMA, Spare SR, BOM, serial, site…").fill("no-such-record");
+  await page.getByPlaceholder("Search TT, tracking ID, RMA, BOM, serial, site…").fill("no-such-record");
   await expect(page.getByText("No matching Spare Request items.")).toBeVisible();
 
   const grid = page.getByTestId("dashboard-scroll");
@@ -214,7 +214,7 @@ test("Spare Request controls form two clean rows and collapse to icons", async (
   await page.getByRole("button", { name: "Spare Requests" }).click();
 
   const tabs = page.getByRole("tablist", { name: "Spare Request view" });
-  const search = page.getByPlaceholder("Search TT, RMA, Spare SR, BOM, serial, site…");
+  const search = page.getByPlaceholder("Search TT, tracking ID, RMA, BOM, serial, site…");
   const geometry = await page.locator(".dashboard-toolbar").evaluate((toolbar) => {
     const tabsBox = toolbar.querySelector(".spare-view-switcher")?.getBoundingClientRect();
     const searchBox = toolbar.querySelector(".search-box")?.getBoundingClientRect();

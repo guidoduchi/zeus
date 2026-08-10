@@ -35,6 +35,7 @@ function displayValue(row: WorkspaceGridRow, key: string): string {
 }
 
 function displayTone(row: WorkspaceGridRow, key: string): string {
+  if (key === "trackingId" && row.trackingIdProvisional) return "red";
   const establishedKeys: Record<string, string> = {
     plannedDate: "plannedColor",
     ticketAgeDays: "ticketAgeColor",
@@ -45,6 +46,11 @@ function displayTone(row: WorkspaceGridRow, key: string): string {
   };
   const value = row[establishedKeys[key] || `${key}Color`];
   return value === "red" || value === "yellow" || value === "grey" || value === "green" || value === "black" ? String(value) : "none";
+}
+
+function lifecycleStage(row: WorkspaceGridRow): number {
+  const value = Number(row.lifecycleStage);
+  return Number.isFinite(value) ? Math.max(0, Math.min(6, Math.floor(value))) : 0;
 }
 
 function emailCount(row: WorkspaceGridRow): number {
@@ -106,9 +112,6 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
 
   return (
     <section className="ticket-grid" aria-label={ariaLabel}>
-      <div className="grid-header" style={{ gridTemplateColumns: gridTemplate }} role="row">
-        {columns.map((column) => <div role="columnheader" key={column.key}>{column.label}</div>)}
-      </div>
       <div
         className="ticket-scroll"
         data-testid="dashboard-scroll"
@@ -117,6 +120,9 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
         tabIndex={0}
         onKeyDown={onKeyDown}
       >
+        <div className="grid-header" style={{ gridTemplateColumns: gridTemplate }} role="row">
+          {columns.map((column) => <div role="columnheader" key={column.key}>{column.label}</div>)}
+        </div>
         {rows.length === 0 ? (
           <div className="empty-grid">
             <strong>{emptyTitle}</strong>
@@ -160,6 +166,18 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
                         className={`email-count-badge ${emailCount(row) === 0 ? "email-count-zero" : "email-count-positive"}`}
                         aria-label={`${emailCount(row)} total email${emailCount(row) === 1 ? "" : "s"}`}
                       >{emailCount(row)}</i>
+                    </span>
+                  ) : column.key === "trackingId" ? (
+                    <span className={`tracking-identity ${row.trackingIdProvisional ? "provisional" : "confirmed"}`}>
+                      {displayValue(row, column.key)}
+                    </span>
+                  ) : column.key === "lifecycleStage" ? (
+                    <span className="lifecycle-meter" aria-label={`Stage ${lifecycleStage(row)} of 6: ${String(row.lifecycleStageLabel || "Added to Zeus")}`}>
+                      <span className="lifecycle-pips" aria-hidden="true">
+                        {Array.from({ length: 7 }, (_, index) => <i className={index <= lifecycleStage(row) ? "reached" : ""} key={index} />)}
+                      </span>
+                      <strong>S{lifecycleStage(row)}</strong>
+                      <span>{String(row.lifecycleStageLabel || "Added to Zeus")}</span>
                     </span>
                   ) : <>{displayValue(row, column.key)}{column.key === "ticketId" && hasDraft && <i className="draft-mark" aria-label="Protected draft" title="This SR has protected unsaved changes">✎</i>}</>}
                 </span>

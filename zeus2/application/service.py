@@ -46,6 +46,8 @@ from ..spare_requests import (
     SpareRequestError,
     active_source_part_keys,
     create_request_record,
+    LIFECYCLE_STAGE_LABELS,
+    lifecycle_stage,
     next_request_id,
     normalize_profile,
     normalize_report_date,
@@ -65,7 +67,7 @@ from ..storage_migration import (
 )
 from ..startup import StartupResult, reconcile_advanced_and_new_mail, run_startup
 from ..store import StoreError, ZeusStore
-from ..tickets import empty_email, newline_values
+from ..tickets import empty_email, newline_values, normalize_local
 from ..utils import iso_now, local_today, normalize_ticket_id
 from .edits import edit_ticket_in_database, edit_tickets_in_database
 from .errors import (
@@ -499,7 +501,11 @@ class ApplicationService:
             detail["history"] = []
             detail["mops"] = []
             return detail
-        detail = serialize_ticket_detail(ticket, self.store.config)
+        detail = serialize_ticket_detail(
+            ticket,
+            self.store.config,
+            active_requests=self.store.iter_spare_requests(),
+        )
         detail["history"] = self.ticket_history(normalized_ticket_id)
         detail["mops"] = self.list_mops(normalized_ticket_id)
         return detail
@@ -625,11 +631,20 @@ class ApplicationService:
         report_date = first("Report Date", "ReportDate", "Created Date")
 
         lines: list[dict[str, Any]] = []
-        for device_number, device in enumerate(
+        occupied = active_source_part_keys(self.store.iter_spare_requests())
+        for device_index, device in enumerate(
             ticket.get("local", {}).get("spare_parts", []), start=1
         ):
-            for part_number, part in enumerate(device.get("parts") or [], start=1):
+            device_number = int(device.get("device_number") or device_index)
+            for part_index, part in enumerate(device.get("parts") or [], start=1):
+                part_number = int(part.get("part_number") or part_index)
                 if not part.get("bom"):
+                    continue
+                if part.get("submitted_request_ids") or (
+                    normalized,
+                    device_number,
+                    part_number,
+                ) in occupied:
                     continue
                 slots = newline_values(part.get("slot"))
                 lines.append(
@@ -846,9 +861,25 @@ class ApplicationService:
             for line in lines
             if (key := source_part_key(tt, line)) is not None
         }
-        conflicts = sorted(
-            requested & active_source_part_keys(self.store.iter_spare_requests())
-        )
+        occupied = active_source_part_keys(self.store.iter_spare_requests())
+        try:
+            ticket = self.store.read_ticket(tt)
+        except StoreError:
+            ticket = None
+        if ticket is not None:
+            local = normalize_local(ticket.get("local"))
+            for device_index, device in enumerate(local.get("spare_parts", []), start=1):
+                device_number = int(device.get("device_number") or device_index)
+                for part_index, part in enumerate(device.get("parts") or [], start=1):
+                    if part.get("submitted_request_ids"):
+                        occupied.add(
+                            (
+                                tt,
+                                device_number,
+                                int(part.get("part_number") or part_index),
+                            )
+                        )
+        conflicts = sorted(requested & occupied)
         if not conflicts:
             return
         positions = ", ".join(
@@ -856,8 +887,47 @@ class ApplicationService:
             for _, device_number, part_number in conflicts
         )
         raise ValidationError(
-            f"TT {tt} already has an Active Request for {positions}"
+            f"TT {tt} already submitted {positions}. Add a new BOM/slot record for another replacement."
         )
+
+    def _mark_source_parts(
+        self,
+        staging: Path,
+        *,
+        tt: str,
+        lines: list[dict[str, Any]],
+        request_id: str,
+        submitted: bool,
+    ) -> None:
+        """Add or remove the permanent request marker on exact source records."""
+
+        try:
+            ticket = self.store.read_ticket(tt, staging)
+        except StoreError:
+            return
+        local = normalize_local(ticket.get("local"))
+        requested = {
+            key for line in lines if (key := source_part_key(tt, line)) is not None
+        }
+        changed = False
+        for device_index, device in enumerate(local.get("spare_parts", []), start=1):
+            device_number = int(device.get("device_number") or device_index)
+            for part_index, part in enumerate(device.get("parts") or [], start=1):
+                key = (
+                    tt,
+                    device_number,
+                    int(part.get("part_number") or part_index),
+                )
+                if key not in requested:
+                    continue
+                current = set(part.get("submitted_request_ids") or [])
+                updated = current | {request_id} if submitted else current - {request_id}
+                if updated != current:
+                    part["submitted_request_ids"] = sorted(updated)
+                    changed = True
+        if changed:
+            ticket["local"] = local
+            self.store.write_ticket_bundle(staging, ticket)
 
     def export_spare_request(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self._operation_lock.acquire(blocking=False):
@@ -914,6 +984,13 @@ class ApplicationService:
                 {"request_id": request_id, "tt": tt, "items": len(request["items"])},
             ) as staging:
                 self.store.write_spare_request(staging, request)
+                self._mark_source_parts(
+                    staging,
+                    tt=tt,
+                    lines=lines,
+                    request_id=request_id,
+                    submitted=True,
+                )
             persisted = True
             self._touch_data("spare-request-export")
             warnings = []
@@ -966,6 +1043,8 @@ class ApplicationService:
                 subject=subject,
             )
             request["creation_method"] = "manual_confirmation"
+            request["request_sent_at"] = request.get("created_at") or iso_now()
+            request["request_sent_source"] = "manual"
             request["history"][0]["action"] = "request-registered-manually"
             request["history"][0]["summary"]["sent_outside_zeus"] = True
             with self.store.transaction(
@@ -973,6 +1052,13 @@ class ApplicationService:
                 {"request_id": request_id, "tt": tt, "items": len(request["items"])},
             ) as staging:
                 self.store.write_spare_request(staging, request)
+                self._mark_source_parts(
+                    staging,
+                    tt=tt,
+                    lines=lines,
+                    request_id=request_id,
+                    submitted=True,
+                )
             self._touch_data("spare-request-register-manual")
             warnings = []
             if source == "manual" and not ticket_exists:
@@ -1027,6 +1113,132 @@ class ApplicationService:
             if exported is not None and not persisted:
                 exported.unlink(missing_ok=True)
             raise
+        finally:
+            self._operation_lock.release()
+
+    def advance_spare_request_stage(
+        self,
+        request_id: str,
+        *,
+        item_id: str,
+        target_stage: int,
+        expected_revision: str,
+    ) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        try:
+            current = self.store.read_spare_request(request_id)
+            if not expected_revision or spare_request_revision(current) != expected_revision:
+                raise ConflictError("This Spare Request changed. Reload before advancing it.")
+            current_item = self._find_request_item(current, item_id)
+            reached = lifecycle_stage(current_item, current)
+            if target_stage != reached + 1 or not 1 <= target_stage < len(LIFECYCLE_STAGE_LABELS):
+                raise ValidationError(
+                    f"Advance one lifecycle stage at a time from stage {reached}"
+                )
+            timestamp = iso_now()
+            with self.store.transaction(
+                "spare-request-lifecycle-advance",
+                {
+                    "request_id": request_id,
+                    "item_id": item_id,
+                    "stage": target_stage,
+                },
+            ) as staging:
+                request = self.store.read_spare_request(request_id, staging)
+                item = self._find_request_item(request, item_id)
+                if lifecycle_stage(item, request) != reached:
+                    raise ConflictError("This lifecycle changed. Reload before advancing it.")
+                if target_stage == 1:
+                    request["request_sent_at"] = request.get("request_sent_at") or timestamp
+                    request["request_sent_source"] = request.get("request_sent_source") or "manual"
+                elif target_stage == 2:
+                    if not request.get("spare_sr") or not item.get("rma"):
+                        raise ValidationError(
+                            "Stage 2 requires both the confirmed 7-digit Spare SR and this unit's RMA. Save them first."
+                        )
+                    item["attendance_confirmed_at"] = (
+                        item.get("attendance_confirmed_at") or timestamp
+                    )
+                    item["attendance_source"] = item.get("attendance_source") or "manual"
+                elif target_stage == 3:
+                    item["dispatch_at"] = item.get("dispatch_at") or timestamp
+                    item["dispatch_source"] = item.get("dispatch_source") or "manual"
+                elif target_stage == 4:
+                    item["fault_tag_generated_at"] = (
+                        item.get("fault_tag_generated_at") or timestamp
+                    )
+                    item["fault_tag_generated_source"] = (
+                        item.get("fault_tag_generated_source") or "manual"
+                    )
+                elif target_stage == 5:
+                    item["fault_tag_sent_at"] = item.get("fault_tag_sent_at") or timestamp
+                    item["fault_tag_sent_source"] = item.get("fault_tag_sent_source") or "manual"
+                elif target_stage == 6:
+                    item["warehouse_confirmed_at"] = (
+                        item.get("warehouse_confirmed_at") or timestamp
+                    )
+                    item["warehouse_confirmation_source"] = (
+                        item.get("warehouse_confirmation_source") or "manual"
+                    )
+                request_history(
+                    request,
+                    "lifecycle-stage-confirmed",
+                    {
+                        "itemId": item_id,
+                        "stage": target_stage,
+                        "label": LIFECYCLE_STAGE_LABELS[target_stage],
+                        "source": "manual",
+                    },
+                )
+                self.store.write_spare_request(staging, request)
+            self._touch_data("spare-request-lifecycle-advance")
+            return {"request": self.spare_request(request_id)}
+        finally:
+            self._operation_lock.release()
+
+    def delete_unconfirmed_spare_request(
+        self,
+        request_id: str,
+        *,
+        expected_revision: str,
+    ) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        try:
+            request = self.store.read_spare_request(request_id)
+            if not expected_revision or spare_request_revision(request) != expected_revision:
+                raise ConflictError("This Spare Request changed. Reload before deleting it.")
+            if request.get("spare_sr") or any(
+                item.get("rma") or item.get("attendance_confirmed_at")
+                for item in request.get("items", [])
+            ):
+                raise ValidationError(
+                    "A confirmed Spare Request cannot be deleted. Complete or cancel its items instead."
+                )
+            with self.store.transaction(
+                "spare-request-delete-unconfirmed",
+                {"request_id": request_id, "tt": request.get("tt")},
+            ) as staging:
+                staged = self.store.read_spare_request(request_id, staging)
+                if spare_request_revision(staged) != expected_revision:
+                    raise ConflictError("This Spare Request changed. Reload before deleting it.")
+                self._mark_source_parts(
+                    staging,
+                    tt=str(staged.get("tt") or ""),
+                    lines=[
+                        *list(staged.get("request_lines") or []),
+                        *list(staged.get("items") or []),
+                    ],
+                    request_id=request_id,
+                    submitted=False,
+                )
+                self.store.delete_spare_request(request_id, staging)
+            self._touch_data("spare-request-delete-unconfirmed")
+            return {
+                "deleted": request_id,
+                "exportPreserved": request.get("export", {}).get("request_path"),
+            }
         finally:
             self._operation_lock.release()
 
@@ -1096,6 +1308,8 @@ class ApplicationService:
                     request["spare_sr"] = incoming_sr
                     if incoming_sr:
                         timestamp = iso_now()
+                        request["request_sent_at"] = request.get("request_sent_at") or timestamp
+                        request["request_sent_source"] = request.get("request_sent_source") or "manual-inferred"
                         for item in request.get("items", []):
                             item["attendance_confirmed_at"] = item.get("attendance_confirmed_at") or timestamp
                             item["attendance_source"] = item.get("attendance_source") or "manual"
@@ -1125,7 +1339,10 @@ class ApplicationService:
                             raise ValidationError(f"RMA {incoming_rma} already belongs to a completed item")
                         item["rma"] = incoming_rma
                         if incoming_rma:
-                            item["attendance_confirmed_at"] = item.get("attendance_confirmed_at") or iso_now()
+                            timestamp = iso_now()
+                            request["request_sent_at"] = request.get("request_sent_at") or timestamp
+                            request["request_sent_source"] = request.get("request_sent_source") or "manual-inferred"
+                            item["attendance_confirmed_at"] = item.get("attendance_confirmed_at") or timestamp
                             item["attendance_source"] = item.get("attendance_source") or "manual"
                     if "deliveredBom" in update:
                         incoming_bom = str(update.get("deliveredBom") or "").strip() or None
@@ -1299,6 +1516,12 @@ class ApplicationService:
                         item["return_exported_at"] = timestamp
                         item["return_export_filename"] = result["filename"]
                         item["return_batch_id"] = result["filename"]
+                        item["fault_tag_generated_at"] = (
+                            item.get("fault_tag_generated_at") or timestamp
+                        )
+                        item["fault_tag_generated_source"] = (
+                            item.get("fault_tag_generated_source") or "zeus_export"
+                        )
                         affected.append(item["item_id"])
                     request["export"].setdefault("returns", []).append(
                         {
@@ -1360,7 +1583,10 @@ class ApplicationService:
                 raise ValidationError("Active items were not found: " + ", ".join(missing))
             if normalized_reason == "returned":
                 for item_id, (_, item) in pairs.items():
-                    if not item.get("warehouse_candidate_at") and not manual_override:
+                    if not (
+                        item.get("warehouse_confirmed_at")
+                        or item.get("warehouse_candidate_at")
+                    ) and not manual_override:
                         raise ValidationError(
                             f"{item_id} has no exact warehouse email candidate. Use manual override with a note if verified independently."
                         )
@@ -1387,6 +1613,16 @@ class ApplicationService:
             ) as staging:
                 for request_id in {request["request_id"] for request, _ in pairs.values()}:
                     request = self.store.read_spare_request(request_id, staging)
+                    self._mark_source_parts(
+                        staging,
+                        tt=str(request.get("tt") or ""),
+                        lines=[
+                            *list(request.get("request_lines") or []),
+                            *list(request.get("items") or []),
+                        ],
+                        request_id=request_id,
+                        submitted=True,
+                    )
                     request["items"] = [
                         item for item in request.get("items", []) if item.get("item_id") not in clean_ids
                     ]

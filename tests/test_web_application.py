@@ -292,37 +292,49 @@ class DatabaseFirstSourceTests(WebFixture):
             updated["local"]["spare_parts"],
             [
                 {
+                    "device_number": 1,
                     "device": "server-a",
                     "model": "2288H V5",
+                    "notes": None,
                     "faulty_sns": ["FAULTY-1", "FAULTY-2"],
+                    "next_part_number": 3,
                     "parts": [
                         {
+                            "part_number": 1,
                             "slot": "Slot 1",
                             "part": "Disk",
                             "bom": "BOM-9000",
                             "new_sn": "NEW-1",
                             "notes": None,
+                            "submitted_request_ids": [],
                         },
                         {
+                            "part_number": 2,
                             "slot": "Slot 2",
                             "part": "Disk",
                             "bom": "BOM-9001",
                             "new_sn": None,
                             "notes": None,
+                            "submitted_request_ids": [],
                         },
                     ],
                 },
                 {
+                    "device_number": 2,
                     "device": "server-b",
                     "model": "CH121 V5",
+                    "notes": None,
                     "faulty_sns": ["FAULTY-3"],
+                    "next_part_number": 2,
                     "parts": [
                         {
+                            "part_number": 1,
                             "slot": "DIMM 3",
                             "part": "Memory",
                             "bom": "BOM-9002",
                             "new_sn": "NEW-3",
                             "notes": None,
+                            "submitted_request_ids": [],
                         }
                     ],
                 },
@@ -1355,6 +1367,23 @@ class WebServerTests(WebFixture):
             registered["request"]["history"][0]["action"],
             "request-registered-manually",
         )
+        request_id = registered["request"]["requestId"]
+        revision = registered["request"]["revision"]
+        delete_request = urllib.request.Request(
+            self.url + f"/api/spare-requests/{request_id}/delete",
+            data=json.dumps({"revision": revision}).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "If-Match": revision,
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(delete_request, timeout=3) as response:
+            deleted = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+        self.assertEqual(deleted["deleted"], request_id)
+        self.assertIsNone(deleted["exportPreserved"])
 
     def test_ticket_patch_returns_the_complete_detail_contract(self) -> None:
         _, bootstrap, _ = self.read_json("/api/bootstrap")

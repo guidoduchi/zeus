@@ -12,6 +12,7 @@ from ..tickets import (
     normalize_spare_parts,
     newline_values,
 )
+from ..spare_requests import source_part_key
 from ..utils import normalize_ticket_id, parse_date
 from .errors import ConflictError, ValidationError
 from .serialization import ticket_revision
@@ -74,12 +75,32 @@ def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
         raise ValidationError("Spare Parts must be a list of devices")
     if len(value) > 200:
         raise ValidationError("A ticket cannot contain more than 200 damaged devices")
-    device_keys = {"device", "model", "faulty_sns", "faulty_sn", "parts"}
+    device_keys = {
+        "device_number",
+        "device",
+        "model",
+        "notes",
+        "faulty_sns",
+        "faulty_sn",
+        "next_part_number",
+        "parts",
+    }
     # Legacy faulty_sn/new_sn values remain accepted so protected 3.1.4
     # drafts can be upgraded safely. New UI records use device faulty_sns and
     # part slot/part/bom/notes.
-    part_keys = {"slot", "slots", "part", "bom", "faulty_sn", "new_sn", "notes"}
+    part_keys = {
+        "part_number",
+        "slot",
+        "slots",
+        "part",
+        "bom",
+        "faulty_sn",
+        "new_sn",
+        "notes",
+        "submitted_request_ids",
+    }
     total_parts = 0
+    device_numbers: set[int] = set()
     for device_index, device in enumerate(value, start=1):
         if not isinstance(device, dict):
             raise ValidationError(f"Spare Parts device {device_index} must be an object")
@@ -89,7 +110,26 @@ def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
                 f"Spare Parts device {device_index} has unknown fields: "
                 + ", ".join(unknown_device)
             )
-        for key in ("device", "model"):
+        try:
+            device_number = int(device.get("device_number", device_index))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"Spare Parts device {device_index} number must be a positive whole number"
+            ) from exc
+        if device_number < 1 or device_number in device_numbers:
+            raise ValidationError("Spare Parts device numbers must be unique positive values")
+        device_numbers.add(device_number)
+        try:
+            next_part_number = int(device.get("next_part_number", 1))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"Spare Parts device {device_index} next part number must be positive"
+            ) from exc
+        if next_part_number < 1:
+            raise ValidationError(
+                f"Spare Parts device {device_index} next part number must be positive"
+            )
+        for key in ("device", "model", "notes"):
             field = device.get(key)
             if field is not None and isinstance(field, (dict, list, tuple, set)):
                 raise ValidationError(
@@ -123,6 +163,7 @@ def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
         total_parts += len(parts)
         if total_parts > 2_000:
             raise ValidationError("A ticket cannot contain more than 2,000 damaged parts")
+        part_numbers: set[int] = set()
         for part_index, part in enumerate(parts, start=1):
             if not isinstance(part, dict):
                 raise ValidationError(
@@ -134,6 +175,31 @@ def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
                     f"Spare Parts device {device_index}, part {part_index} has unknown fields: "
                     + ", ".join(unknown_part)
                 )
+            try:
+                part_number = int(part.get("part_number", part_index))
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    f"Spare Parts device {device_index}, part {part_index} number must be positive"
+                ) from exc
+            if part_number < 1 or part_number in part_numbers:
+                raise ValidationError(
+                    f"Spare Parts device {device_index} part numbers must be unique positive values"
+                )
+            part_numbers.add(part_number)
+            submitted = part.get("submitted_request_ids", [])
+            if submitted is not None and not isinstance(submitted, list):
+                raise ValidationError(
+                    f"Spare Parts device {device_index}, part {part_index} submission history must be a list"
+                )
+            if isinstance(submitted, list) and any(
+                not isinstance(request_id, str)
+                or not request_id.isdigit()
+                or len(request_id) != 12
+                for request_id in submitted
+            ):
+                raise ValidationError(
+                    f"Spare Parts device {device_index}, part {part_index} submission history is invalid"
+                )
             slots = newline_values(part.get("slots", part.get("slot")))
             if len(slots) > 1000:
                 raise ValidationError(
@@ -144,7 +210,10 @@ def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
                     f"Spare Parts device {device_index}, part {part_index} slots cannot exceed 120 characters each"
                 )
             for key, field in part.items():
-                collection_allowed = key in {"slot", "slots"} and isinstance(field, list)
+                collection_allowed = (
+                    key in {"slot", "slots", "submitted_request_ids"}
+                    and isinstance(field, list)
+                )
                 if field is not None and isinstance(field, (dict, list, tuple, set)) and not collection_allowed:
                     raise ValidationError(
                         f"Spare Parts device {device_index}, part {part_index} {key} "
@@ -157,9 +226,109 @@ def _normalize_spare_parts_change(value: Any) -> list[dict[str, Any]]:
     return normalize_spare_parts(value)
 
 
+def _submitted_source_requests(
+    store: ZeusStore,
+    ticket_id: str,
+) -> dict[tuple[str, int, int], set[str]]:
+    references: dict[tuple[str, int, int], set[str]] = {}
+    for request in store.iter_spare_requests():
+        if str(request.get("tt") or "") != ticket_id:
+            continue
+        request_id = str(request.get("request_id") or "")
+        for item in request.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            key = source_part_key(ticket_id, item)
+            if key is not None:
+                references.setdefault(key, set()).add(request_id)
+    return references
+
+
+def _protect_submitted_parts(
+    ticket_id: str,
+    existing: list[dict[str, Any]],
+    proposed: list[dict[str, Any]],
+    active_sources: dict[tuple[str, int, int], set[str]],
+) -> list[dict[str, Any]]:
+    """Keep submitted BOM records immutable while allowing explicit deletion."""
+
+    existing_devices = {
+        int(device.get("device_number") or index): device
+        for index, device in enumerate(existing, start=1)
+    }
+    proposed_devices = {
+        int(device.get("device_number") or index): device
+        for index, device in enumerate(proposed, start=1)
+    }
+    for device_number, old_device in existing_devices.items():
+        active_numbers = {
+            part_number
+            for (tt, source_device, part_number), _request_ids in active_sources.items()
+            if tt == ticket_id and source_device == device_number
+        }
+        new_device = proposed_devices.get(device_number)
+        if new_device is None:
+            if old_device.get("parts"):
+                raise ValidationError(
+                    f"Device {device_number} still has Spare Parts records. "
+                    "Delete those records and save before removing the device."
+                )
+            if active_numbers:
+                raise ValidationError(
+                    f"Device {device_number} still belongs to an Active Request. "
+                    "Delete or complete that request before removing the device."
+                )
+            continue
+        old_parts = {
+            int(part.get("part_number") or index): part
+            for index, part in enumerate(old_device.get("parts") or [], start=1)
+        }
+        new_parts = {
+            int(part.get("part_number") or index): part
+            for index, part in enumerate(new_device.get("parts") or [], start=1)
+        }
+        reserved_numbers = set(active_numbers)
+        for part_number, old_part in old_parts.items():
+            request_ids = set(old_part.get("submitted_request_ids") or [])
+            request_ids.update(
+                active_sources.get((ticket_id, device_number, part_number), set())
+            )
+            if request_ids:
+                reserved_numbers.add(part_number)
+            new_part = new_parts.get(part_number)
+            if new_part is None:
+                continue
+            if request_ids:
+                immutable_fields = ("slot", "part", "bom", "new_sn", "notes")
+                if any(old_part.get(key) != new_part.get(key) for key in immutable_fields):
+                    raise ValidationError(
+                        f"Device {device_number}, submitted part {part_number} is immutable. "
+                        "Delete it and add a new BOM/slot record instead."
+                    )
+                new_part["submitted_request_ids"] = sorted(request_ids)
+            elif new_part.get("submitted_request_ids"):
+                raise ValidationError("Submission history is managed by Zeus")
+        for part_number, new_part in new_parts.items():
+            if part_number not in old_parts:
+                if new_part.get("submitted_request_ids"):
+                    raise ValidationError("New spare parts cannot contain submission history")
+                if part_number < int(old_device.get("next_part_number") or 1):
+                    raise ValidationError(
+                        f"Device {device_number}, new part {part_number} reuses an earlier record number. "
+                        "Add it as a fresh BOM/slot record instead."
+                    )
+        new_device["next_part_number"] = max(
+            int(new_device.get("next_part_number") or 1),
+            max([*new_parts, *reserved_numbers], default=0) + 1,
+        )
+    return proposed
+
+
 def _prepare_local_edit(
     ticket: dict[str, Any],
     changes: dict[str, Any],
+    *,
+    store: ZeusStore | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     prepared = _normalize_local_changes(changes)
     existing_local = normalize_local(ticket.get("local"))
@@ -167,7 +336,17 @@ def _prepare_local_edit(
     proposed_fields = proposed_local["fields"]
     for key, value in prepared.items():
         if key == SPARE_PARTS_CHANGE_KEY:
-            proposed_local["spare_parts"] = value
+            active_sources = (
+                _submitted_source_requests(store, str(ticket.get("ticket_id") or ""))
+                if store is not None
+                else {}
+            )
+            proposed_local["spare_parts"] = _protect_submitted_parts(
+                str(ticket.get("ticket_id") or ""),
+                existing_local.get("spare_parts", []),
+                value,
+                active_sources,
+            )
         else:
             proposed_fields[key] = value
     proposed_local = normalize_local(proposed_local)
@@ -217,7 +396,7 @@ def edit_ticket_in_database(
             },
         )
 
-    proposed_local, changed_fields = _prepare_local_edit(ticket, changes)
+    proposed_local, changed_fields = _prepare_local_edit(ticket, changes, store=store)
     if not changed_fields:
         return {
             "changed": False,

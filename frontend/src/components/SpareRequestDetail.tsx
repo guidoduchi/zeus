@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  advanceSpareRequestStage,
   archiveSpareItems,
+  deleteSpareRequest,
   exportSpareReturn,
   getSpareRequest,
   reexportSpareRequest,
@@ -58,6 +60,8 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
   const [working, setWorking] = useState(false);
   const [pendingResolution, setPendingResolution] = useState<PendingResolution | null>(null);
   const [resolutionNote, setResolutionNote] = useState("");
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [advancingItemId, setAdvancingItemId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!request) return;
@@ -174,6 +178,66 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
     } catch (error) { onError(error); } finally { setWorking(false); }
   }
 
+  async function advanceLifecycle(item: SpareRequestItem) {
+    const targetStage = item.lifecycle.stage + 1;
+    if (targetStage > 6) return;
+    const draft = drafts[item.item_id];
+    if (
+      targetStage === 2
+      && (!/^(?:SR)?\d{7}$/i.test(spareSr.trim()) || !/^C\d{10}$/i.test(draft?.rma.trim() || ""))
+    ) {
+      onError(new Error("Stage 2 requires a seven-digit Spare SR and this unit's C-prefixed RMA."));
+      return;
+    }
+    setWorking(true);
+    setAdvancingItemId(item.item_id);
+    try {
+      const result = targetStage === 2
+        ? await saveSpareRequest(
+          currentRequest.requestId,
+          currentRequest.revision,
+          { note, spareSr: spareSr.trim().toUpperCase() },
+          [{ itemId: item.item_id, rma: draft.rma.trim().toUpperCase(), attended: true }],
+        )
+        : await advanceSpareRequestStage(
+          currentRequest.requestId,
+          currentRequest.revision,
+          item.item_id,
+          targetStage,
+        );
+      const reached = result.request.items.find((candidate) => candidate.item_id === item.item_id)?.lifecycle;
+      if (!reached || reached.stage < targetStage) {
+        throw new Error(`Zeus did not confirm lifecycle stage ${targetStage}. Reload and try again.`);
+      }
+      onChanged(result.request);
+      await onRefresh();
+      onNotice(`Stage ${targetStage} confirmed: ${reached.label}.`);
+    } catch (error) {
+      onError(error);
+    } finally {
+      setAdvancingItemId(null);
+      setWorking(false);
+    }
+  }
+
+  async function removeUnconfirmedRequest() {
+    setWorking(true);
+    try {
+      const result = await deleteSpareRequest(
+        currentRequest.requestId,
+        currentRequest.revision,
+      );
+      setDeleteOpen(false);
+      onChanged(null);
+      await onRefresh();
+      onNotice(`Deleted unconfirmed request ${result.deleted}. Its source BOM/slot is eligible again.${result.exportPreserved ? " The exported XLSX was preserved on disk." : ""}`);
+    } catch (error) {
+      onError(error);
+    } finally {
+      setWorking(false);
+    }
+  }
+
   function beginResolution(itemId: string | undefined, index: number, resolution: "keep-existing" | "accept-incoming") {
     setPendingResolution({ itemId, index, resolution });
     setResolutionNote(note);
@@ -209,7 +273,7 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
   return <>
     <aside className="detail-panel spare-request-detail" aria-label={`Spare Request ${request.requestId} detail`}>
       <header className="detail-header">
-        <div><span>REQUEST {request.requestId}</span><h2>TT {request.ticketId} · {request.spareSr || "Spare SR pending"}</h2></div>
+        <div><span className={request.trackingIdProvisional ? "provisional-tracking" : ""}>TRACKING {request.trackingId}</span><h2>TT {request.ticketId} · {request.spareSr || "7-digit SR pending"}</h2></div>
         <button type="button" className="icon-button" onClick={onClose} aria-label="Close Spare Request detail">×</button>
       </header>
       <nav className="detail-tabs" aria-label="Spare Request sections">
@@ -228,6 +292,7 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
           </div>
           <div className="request-identity-form">
             <label className="form-field"><span>Original TT</span><input value={ticketId} disabled={!request.ttEditable} maxLength={8} onChange={(event) => setTicketId(event.target.value.replace(/\D/g, ""))} /></label>
+            <label className="form-field"><span>Tracking ID</span><input className={request.trackingIdProvisional ? "provisional-tracking-input" : ""} value={request.trackingId} readOnly /></label>
             <label className="form-field"><span>Spare SR</span><input value={spareSr} placeholder="SR1234567" onChange={(event) => setSpareSr(event.target.value.toUpperCase())} /></label>
             <button type="button" className="secondary-button field-button" disabled={working} onClick={reexport}>Re-export request XLSX</button>
             <button type="button" className="secondary-button field-button" onClick={() => copySubject(request.export.subject)}>Copy request subject</button>
@@ -239,6 +304,13 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
               if (!draft) return null;
               return <article className="request-item-card" data-lifecycle={item.lifecycleColor} key={item.item_id}>
                 <header><label className="item-selector"><input type="checkbox" checked={draft.selected} onChange={(event) => updateItem(item.item_id, { selected: event.target.checked })} /><strong>Unit {item.ordinal}</strong></label><span className={`status-chip lifecycle-${item.lifecycleColor}`}>{item.statusLabel}</span><span>{item.dispatchAgeDays === null ? "Timer not started" : `${item.dispatchAgeDays} day(s)`}</span></header>
+                <div className="lifecycle-quest">
+                  <div className="lifecycle-quest-heading"><strong>Lifecycle · Stage {item.lifecycle.stage}/6</strong><span>{item.lifecycle.label}{item.lifecycle.source ? ` · ${item.lifecycle.source}` : ""}</span></div>
+                  <ol aria-label={`Unit ${item.ordinal} lifecycle`}>
+                    {item.lifecycle.stages.map((stage) => <li className={stage.reached ? "reached" : ""} aria-current={stage.stage === item.lifecycle.stage ? "step" : undefined} title={`${stage.label}${stage.timestamp ? ` · ${stage.timestamp}` : ""}`} key={stage.stage}><i>{stage.stage}</i><span>{stage.label}</span></li>)}
+                  </ol>
+                  {item.lifecycle.stage < 6 && <button type="button" className="secondary-button lifecycle-advance" disabled={working} onClick={() => void advanceLifecycle(item)}>{advancingItemId === item.item_id ? "Confirming…" : `Confirm next · S${item.lifecycle.stage + 1}`}</button>}
+                </div>
                 <div className="item-bom-pair"><div><span>Requested BOM</span><strong>{item.requested_bom}</strong></div><div><span>Delivered / substitute BOM</span><strong>{item.delivered_bom || "—"}</strong></div></div>
                 <div className="form-grid four">
                   <label className="form-field"><span>RMA · immutable once set</span><input value={draft.rma} maxLength={11} placeholder="C1234567890" onChange={(event) => updateItem(item.item_id, { rma: event.target.value.toUpperCase() })} /></label>
@@ -249,13 +321,13 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
                   <label className="form-field"><span>Return condition</span><select value={draft.condition} onChange={(event) => updateItem(item.item_id, { condition: event.target.value as "Faulty" | "New" })}><option>Faulty</option><option>New</option></select></label>
                   <label className="form-field wide"><span>Item notes</span><input value={draft.notes} onChange={(event) => updateItem(item.item_id, { notes: event.target.value })} /></label>
                 </div>
-                <footer><span>{item.rma || "RMA pending"} · {item.new_sn || "New SN pending"}</span>{item.warehouse_candidate_at && <strong className="green-text">Exact warehouse candidate found · user confirmation required</strong>}</footer>
+                <footer><span>{item.rma || "RMA pending"} · {item.new_sn || "New SN pending"}</span>{(item.warehouse_confirmed_at || item.warehouse_candidate_at) && <strong className="green-text">Warehouse confirmed · {item.warehouse_confirmation_source || "email"}</strong>}</footer>
               </article>;
             })}
           </div>
           <section className="archive-controls">
             <label className="form-field full"><span>Audit / cancellation / override note</span><textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} /></label>
-            <div><button type="button" className="primary-button" disabled={working} onClick={save}>{working ? "Working…" : "Save manual facts"}</button><button type="button" className="secondary-button" disabled={!selected.length || working} onClick={exportReturn}>Export return XLSX</button><select value={archiveReason} onChange={(event) => setArchiveReason(event.target.value as "returned" | "cancelled")}><option value="returned">Returned</option><option value="cancelled">Cancelled</option></select><label className="check-field"><input type="checkbox" checked={manualOverride} onChange={(event) => setManualOverride(event.target.checked)} /><span>Manual warehouse override</span></label><button type="button" className="danger-button" disabled={!selected.length || working} onClick={archive}>Confirm & archive selected</button></div>
+            <div><button type="button" className="primary-button" disabled={working} onClick={save}>{working ? "Working…" : "Save manual facts"}</button><button type="button" className="secondary-button" disabled={!selected.length || working} onClick={exportReturn}>Export return XLSX</button><select value={archiveReason} onChange={(event) => setArchiveReason(event.target.value as "returned" | "cancelled")}><option value="returned">Returned</option><option value="cancelled">Cancelled</option></select><label className="check-field"><input type="checkbox" checked={manualOverride} onChange={(event) => setManualOverride(event.target.checked)} /><span>Manual warehouse override</span></label><button type="button" className="danger-button" disabled={!selected.length || working} onClick={archive}>Confirm & archive selected</button>{request.canDelete && <button type="button" className="danger-button delete-request-button" disabled={working} onClick={() => setDeleteOpen(true)}>Delete unconfirmed request</button>}</div>
           </section>
         </div>}
         {tab === "emails" && <div className="tab-content spare-email-list">{request.email.messages.length ? request.email.messages.map((message, index) => <article key={String(message.message_key || index)}><header><strong>{String(message.subject || "(no subject)")}</strong><span>{String(message.timestamp || "")}</span></header><small>{String(message.direction || "")} · {String(message.sender || "")}</small><pre>{String(message.latest_reply_body || message.body || "Body purged or unavailable.")}</pre></article>) : <div className="empty-panel">No spare-related email retained for this request.</div>}</div>}
@@ -273,5 +345,14 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
     >
       <label className="form-field"><span>Resolution note *</span><textarea value={resolutionNote} onChange={(event) => setResolutionNote(event.target.value)} autoFocus /></label>
     </ConfirmationDialog>}
+    {deleteOpen && <ConfirmationDialog
+      title={`Delete unconfirmed request ${request.requestId}?`}
+      message="This removes the Active Request and releases its exact BOM/slot record for editing and eligibility. Any XLSX already exported to disk is preserved."
+      confirmLabel="Delete active request"
+      tone="danger"
+      busy={working}
+      onCancel={() => setDeleteOpen(false)}
+      onConfirm={() => void removeUnconfirmedRequest()}
+    />}
   </>;
 }

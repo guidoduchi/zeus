@@ -3,11 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SpareRequestsGrid } from "../components/SpareRequestsGrid";
 import type { ColumnDefinition, SpareRequestItemSummary } from "../types";
+import styles from "../styles.css?raw";
 
 const columns: ColumnDefinition[] = [
   { key: "ticketId", label: "TT", width: 94, default: true },
   { key: "rma", label: "RMA", width: 132, default: true },
   { key: "emailLabel", label: "Last Email", width: 154, default: true },
+  { key: "trackingId", label: "Tracking ID", width: 128, default: true },
+  { key: "lifecycleStage", label: "Lifecycle", width: 220, default: true },
   { key: "statusLabel", label: "Status", width: 170, default: true },
   { key: "dispatchAgeDays", label: "Days", width: 62, default: true },
 ];
@@ -20,6 +23,11 @@ function row(overrides: Partial<SpareRequestItemSummary> = {}): SpareRequestItem
     ticketId: "39416095",
     rma: "C3209937826",
     spareSr: "SR4956964",
+    trackingId: "SR4956964",
+    trackingIdProvisional: false,
+    lifecycleStage: 2,
+    lifecycleStageLabel: "SR and RMA confirmed",
+    lifecycleStageSource: "email",
     status: "awaiting_dispatch",
     statusLabel: "Awaiting dispatch",
     lifecycleColor: "grey",
@@ -110,5 +118,44 @@ describe("SpareRequestsGrid", () => {
 
     expect(screen.getByLabelText("3 total emails")).toHaveClass("email-count-positive");
     expect(screen.getByLabelText("0 total emails")).toHaveClass("email-count-zero");
+  });
+
+  it("shows the provisional Zeus tracking ID in red and a seven-step lifecycle meter", () => {
+    render(
+      <SpareRequestsGrid
+        rows={[row({ spareSr: "—", trackingId: "260808123456", trackingIdProvisional: true, lifecycleStage: 1, lifecycleStageLabel: "Request email sent" })]}
+        columns={columns}
+        selectedRowId={null}
+        detailOpen={false}
+        onHighlight={vi.fn()}
+        onOpen={vi.fn()}
+        onCloseDetail={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("260808123456")).toHaveClass("provisional");
+    expect(screen.getByLabelText("Stage 1 of 6: Request email sent").querySelectorAll("i.reached")).toHaveLength(2);
+    expect(styles).not.toMatch(/\.ticket-row\.selected \.tracking-identity\s*\{[^}]*color:\s*inherit/s);
+  });
+
+  it("keeps the header in the horizontal scroller and centers an empty Completed view in the visible pane", () => {
+    render(
+      <SpareRequestsGrid
+        rows={[]}
+        columns={columns}
+        selectedRowId={null}
+        detailOpen={false}
+        onHighlight={vi.fn()}
+        onOpen={vi.fn()}
+        onCloseDetail={vi.fn()}
+      />,
+    );
+
+    const scroll = screen.getByTestId("dashboard-scroll");
+    expect(screen.getByRole("row", { name: /TT RMA Last Email Tracking ID Lifecycle/ }).parentElement).toBe(scroll);
+    expect(scroll).toContainElement(screen.getByText("No matching Spare Request items."));
+    expect(styles).toMatch(/\.ticket-grid\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidden/s);
+    expect(styles).toMatch(/\.ticket-scroll\s*\{[^}]*overflow:\s*auto/s);
+    expect(styles).toMatch(/\.empty-grid\s*\{[^}]*position:\s*sticky[^}]*left:\s*0[^}]*width:\s*100%/s);
   });
 });

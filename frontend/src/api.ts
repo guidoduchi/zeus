@@ -167,6 +167,30 @@ export function reexportSpareRequest(requestId: string): Promise<{
   });
 }
 
+export function advanceSpareRequestStage(
+  requestId: string,
+  revision: string,
+  itemId: string,
+  targetStage: number,
+): Promise<{ request: SpareRequestDetail }> {
+  return request(`/api/spare-requests/${requestId}/lifecycle/advance`, {
+    method: "POST",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision, itemId, targetStage }),
+  });
+}
+
+export function deleteSpareRequest(
+  requestId: string,
+  revision: string,
+): Promise<{ deleted: string; exportPreserved: string | null }> {
+  return request(`/api/spare-requests/${requestId}/delete`, {
+    method: "POST",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision }),
+  });
+}
+
 export function saveSpareRequest(
   requestId: string,
   revision: string,

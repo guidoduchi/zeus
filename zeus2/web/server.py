@@ -30,6 +30,8 @@ SPARE_REQUEST_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})$")
 SPARE_REQUEST_PREFILL_ROUTE = re.compile(r"^/api/spare-requests/prefill/(\d{8})$")
 SPARE_REQUEST_REEXPORT_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/re-export$")
 SPARE_REQUEST_RESOLVE_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/conflicts/resolve$")
+SPARE_REQUEST_ADVANCE_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/lifecycle/advance$")
+SPARE_REQUEST_DELETE_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/delete$")
 
 
 class ZeusWebServer(ThreadingHTTPServer):
@@ -355,6 +357,34 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                     conflict_index=int(payload.get("conflictIndex", -1)),
                     resolution=str(payload.get("resolution") or ""),
                     note=str(payload.get("note") or ""),
+                ),
+            )
+            return
+        advance_match = SPARE_REQUEST_ADVANCE_ROUTE.fullmatch(path)
+        if advance_match:
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.advance_spare_request_stage(
+                    advance_match.group(1),
+                    item_id=str(payload.get("itemId") or ""),
+                    target_stage=int(payload.get("targetStage", -1)),
+                    expected_revision=expected_revision,
+                ),
+            )
+            return
+        delete_match = SPARE_REQUEST_DELETE_ROUTE.fullmatch(path)
+        if delete_match:
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.delete_unconfirmed_spare_request(
+                    delete_match.group(1),
+                    expected_revision=expected_revision,
                 ),
             )
             return

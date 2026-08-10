@@ -181,10 +181,17 @@ def spare_parts_from_legacy(fields: dict[str, Any] | None) -> list[dict[str, Any
     if device is None and model is None and not faulty_sns and not has_part:
         return []
     return [{
+        "device_number": 1,
         "device": device,
         "model": model,
+        "notes": None,
         "faulty_sns": faulty_sns,
-        "parts": [part] if has_part else [],
+        "next_part_number": 2 if has_part else 1,
+        "parts": ([{
+            "part_number": 1,
+            "submitted_request_ids": [],
+            **part,
+        }] if has_part else []),
     }]
 
 
@@ -201,21 +208,40 @@ def normalize_spare_parts(
         return []
 
     devices: list[dict[str, Any]] = []
-    for candidate in value:
+    used_device_numbers: set[int] = set()
+    for device_index, candidate in enumerate(value, start=1):
         if not isinstance(candidate, dict):
             continue
+        raw_device_number = candidate.get("device_number", device_index)
+        try:
+            device_number = int(raw_device_number)
+        except (TypeError, ValueError):
+            device_number = device_index
+        if device_number < 1 or device_number in used_device_numbers:
+            device_number = max(used_device_numbers, default=0) + 1
+        used_device_numbers.add(device_number)
         device = _optional_text(candidate.get("device"))
         model = _optional_text(candidate.get("model"))
+        notes = _optional_text(candidate.get("notes"))
         faulty_sns = newline_values(
             candidate.get("faulty_sns", candidate.get("faulty_sn"))
         )
         faulty_keys = {serial.casefold() for serial in faulty_sns}
         parts: list[dict[str, Any]] = []
+        used_part_numbers: set[int] = set()
         raw_parts = candidate.get("parts")
         if isinstance(raw_parts, list):
-            for raw_part in raw_parts:
+            for part_index, raw_part in enumerate(raw_parts, start=1):
                 if not isinstance(raw_part, dict):
                     continue
+                raw_part_number = raw_part.get("part_number", part_index)
+                try:
+                    part_number = int(raw_part_number)
+                except (TypeError, ValueError):
+                    part_number = part_index
+                if part_number < 1 or part_number in used_part_numbers:
+                    part_number = max(used_part_numbers, default=0) + 1
+                used_part_numbers.add(part_number)
                 # 3.1.4 stored diagnostic serials on each part. Upgrade them
                 # into the damaged-device evidence list without losing them.
                 for serial in newline_values(
@@ -225,19 +251,37 @@ def normalize_spare_parts(
                         faulty_sns.append(serial)
                         faulty_keys.add(serial.casefold())
                 part = {
+                    "part_number": part_number,
                     "slot": newline_text(raw_part.get("slots", raw_part.get("slot"))),
                     "part": _optional_text(raw_part.get("part")),
                     "bom": _optional_text(raw_part.get("bom")),
                     "new_sn": _optional_text(raw_part.get("new_sn")),
                     "notes": _optional_text(raw_part.get("notes")),
+                    "submitted_request_ids": [
+                        value
+                        for value in newline_values(raw_part.get("submitted_request_ids"))
+                        if re.fullmatch(r"\d{12}", value)
+                    ],
                 }
-                if any(item is not None for item in part.values()):
+                if any(
+                    part.get(key) is not None
+                    for key in ("slot", "part", "bom", "new_sn", "notes")
+                ) or part["submitted_request_ids"]:
                     parts.append(part)
-        if device is not None or model is not None or faulty_sns or parts:
+        raw_next_part = candidate.get("next_part_number")
+        try:
+            next_part_number = int(raw_next_part)
+        except (TypeError, ValueError):
+            next_part_number = 1
+        next_part_number = max(next_part_number, max(used_part_numbers, default=0) + 1)
+        if device is not None or model is not None or notes is not None or faulty_sns or parts:
             devices.append({
+                "device_number": device_number,
                 "device": device,
                 "model": model,
+                "notes": notes,
                 "faulty_sns": faulty_sns,
+                "next_part_number": next_part_number,
                 "parts": parts,
             })
     return devices
@@ -247,16 +291,22 @@ def spare_part_rows(spare_parts: Any) -> list[dict[str, Any]]:
     """Flatten normalized devices into ordered export rows."""
 
     rows: list[dict[str, Any]] = []
-    for device_number, device in enumerate(normalize_spare_parts(spare_parts), start=1):
+    for device_index, device in enumerate(normalize_spare_parts(spare_parts), start=1):
+        device_number = int(device.get("device_number") or device_index)
         parts = device["parts"] or [None]
-        for part_number, part in enumerate(parts, start=1):
+        for part_index, part in enumerate(parts, start=1):
             item = part or {}
+            part_number = (
+                int(item.get("part_number") or part_index)
+                if part is not None
+                else None
+            )
             rows.append(
                 {
                     "Device #": device_number,
                     "Device": device.get("device"),
                     "Model": device.get("model"),
-                    "Part #": part_number if part is not None else None,
+                    "Part #": part_number,
                     "Slot": item.get("slot"),
                     "Part": item.get("part"),
                     "BOM": item.get("bom"),

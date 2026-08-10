@@ -623,6 +623,8 @@ def _apply_confirmation(
             item["rma"] = rma
             rma_index[rma] = (request, item)
         timestamp = message.get("timestamp") or iso_now()
+        request["request_sent_at"] = request.get("request_sent_at") or timestamp
+        request["request_sent_source"] = request.get("request_sent_source") or "email-inferred"
         item["attendance_confirmed_at"] = item.get("attendance_confirmed_at") or timestamp
         item["attendance_source"] = item.get("attendance_source") or "email"
         for pending in request.get("items", []):
@@ -738,6 +740,14 @@ def _apply_warehouse(
             item.get("warehouse_candidate_at") or message.get("timestamp") or iso_now()
         )
         item["warehouse_message_key"] = message.get("message_key")
+        item["warehouse_confirmed_at"] = (
+            item.get("warehouse_confirmed_at")
+            or message.get("timestamp")
+            or iso_now()
+        )
+        item["warehouse_confirmation_source"] = (
+            item.get("warehouse_confirmation_source") or "email"
+        )
         if fact.get("rt"):
             item["rt"] = fact["rt"]
         affected.setdefault(request["request_id"], (request, set()))[1].add(item["item_id"])
@@ -745,7 +755,7 @@ def _apply_warehouse(
         _associate_message(request, message, item_ids, retained)
         request_history(
             request,
-            "possible-warehouse-confirmation",
+            "warehouse-confirmed",
             {"messageKey": message.get("message_key"), "items": sorted(item_ids)},
         )
     return set(affected), matched_all
@@ -762,6 +772,10 @@ def _associate_outbound(
     if not request_id or request_id not in request_id_index:
         return set()
     request = request_id_index[request_id]
+    prior_source = str(request.get("request_sent_source") or "")
+    if not prior_source or prior_source.endswith("-inferred"):
+        request["request_sent_at"] = message.get("timestamp") or iso_now()
+        request["request_sent_source"] = "email"
     item_ids = [item.get("item_id") for item in request.get("items", []) if item.get("item_id")]
     _associate_message(request, message, item_ids, retained)
     request_history(
@@ -770,6 +784,42 @@ def _associate_outbound(
         {"messageKey": message.get("message_key")},
     )
     return {request_id}
+
+
+def _associate_fault_tag_outbound(
+    message: dict[str, Any],
+    requests: list[dict[str, Any]],
+    retained: int,
+) -> set[str]:
+    if str(message.get("direction") or "").casefold() != "sent":
+        return set()
+    text = _message_text(message)
+    if not re.search(r"\bfault\s*tag\b", text, re.IGNORECASE):
+        return set()
+    _, rma_index = _global_indices(requests)
+    affected: dict[str, tuple[dict[str, Any], set[str]]] = {}
+    for match in RMA_PATTERN.finditer(text):
+        pair = rma_index.get(str(normalize_rma(match.group(1)) or ""))
+        if pair is None:
+            continue
+        request, item = pair
+        if not (item.get("fault_tag_generated_at") or item.get("return_exported_at")):
+            continue
+        item["fault_tag_sent_at"] = (
+            item.get("fault_tag_sent_at") or message.get("timestamp") or iso_now()
+        )
+        item["fault_tag_sent_source"] = item.get("fault_tag_sent_source") or "email"
+        affected.setdefault(request["request_id"], (request, set()))[1].add(
+            item["item_id"]
+        )
+    for request, item_ids in affected.values():
+        _associate_message(request, message, item_ids, retained)
+        request_history(
+            request,
+            "fault-tag-outbound-email",
+            {"messageKey": message.get("message_key"), "items": sorted(item_ids)},
+        )
+    return set(affected)
 
 
 def apply_spare_request_messages(
@@ -849,6 +899,10 @@ def apply_spare_request_messages(
             state["complete"] = state["complete"] and complete
         outbound = _associate_outbound(message, request_id_index, retained)
         state["matched"] = state["matched"] or bool(outbound)
+        fault_tag_outbound = _associate_fault_tag_outbound(
+            message, requests, retained
+        )
+        state["matched"] = state["matched"] or bool(fault_tag_outbound)
 
     updated: list[str] = []
     for request in requests:

@@ -29,7 +29,7 @@ export function SparePartsGrid({
       selectedRowId={selectedRowId}
       ariaLabel="Zeus spare parts"
       emptyTitle="No matching spare-parts records."
-      emptyHint="Add damaged devices and parts from an SR's Spare Parts editor."
+      emptyHint="Add affected devices and any replacement parts from an SR's Work Fields or Spare Parts editor."
       countLabel="part row(s)"
       draftTicketIds={draftTicketIds}
       detailOpen={detailOpen}

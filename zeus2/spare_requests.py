@@ -25,6 +25,15 @@ SPARE_SR_PATTERN = re.compile(r"\bSR\s*[:#-]?\s*(\d{7})(?!\d)", re.IGNORECASE)
 RMA_PATTERN = re.compile(r"\b(C\d{10})\b", re.IGNORECASE)
 REQUEST_ID_PATTERN = re.compile(r"(?<!\d)(\d{12})(?!\d)")
 INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+LIFECYCLE_STAGE_LABELS = (
+    "Added to Zeus",
+    "Request email sent",
+    "SR and RMA confirmed",
+    "Spare Parts dispatched",
+    "Replaced / Fault Tag generated",
+    "Fault Tag email sent",
+    "Warehouse confirmed",
+)
 
 class SpareRequestError(ValueError):
     pass
@@ -395,9 +404,15 @@ def _new_item(
         "return_exported_at": None,
         "return_export_filename": None,
         "return_batch_id": None,
+        "fault_tag_generated_at": None,
+        "fault_tag_generated_source": None,
+        "fault_tag_sent_at": None,
+        "fault_tag_sent_source": None,
         "rt": None,
         "warehouse_candidate_at": None,
         "warehouse_message_key": None,
+        "warehouse_confirmed_at": None,
+        "warehouse_confirmation_source": None,
         "conflicts": [],
         "notes": line.get("notes"),
     }
@@ -439,6 +454,8 @@ def create_request_record(
         "report_date": report_date,
         "source": normalized_source,
         "creation_method": None,
+        "request_sent_at": None,
+        "request_sent_source": None,
         "tt_editable": normalized_source == "manual",
         "spare_sr": None,
         "profile": deepcopy(profile),
@@ -477,8 +494,8 @@ def create_request_record(
 
 
 def item_status(item: dict[str, Any], request: dict[str, Any]) -> str:
-    if item.get("warehouse_candidate_at"):
-        return "awaiting_user_confirmation"
+    if item.get("warehouse_confirmed_at") or item.get("warehouse_candidate_at"):
+        return "warehouse_confirmed"
     if item.get("return_exported_at"):
         return "awaiting_warehouse"
     if item.get("dispatch_at"):
@@ -487,6 +504,75 @@ def item_status(item: dict[str, Any], request: dict[str, Any]) -> str:
         return "awaiting_dispatch"
     attended = bool(item.get("attendance_confirmed_at") or request.get("spare_sr"))
     return "awaiting_stock" if attended else "awaiting_confirmation"
+
+
+def lifecycle_stage(item: dict[str, Any], request: dict[str, Any]) -> int:
+    """Return the furthest auditable stage reached by one physical unit."""
+
+    if item.get("warehouse_confirmed_at") or item.get("warehouse_candidate_at"):
+        return 6
+    if item.get("fault_tag_sent_at"):
+        return 5
+    if item.get("fault_tag_generated_at") or item.get("return_exported_at"):
+        return 4
+    if item.get("dispatch_at"):
+        return 3
+    if request.get("spare_sr") and item.get("rma"):
+        return 2
+    if request.get("request_sent_at") or request.get("creation_method") == "manual_confirmation":
+        return 1
+    return 0
+
+
+def lifecycle_stage_details(
+    item: dict[str, Any],
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    stage = lifecycle_stage(item, request)
+    timestamps = {
+        0: request.get("created_at"),
+        1: request.get("request_sent_at") or (
+            request.get("created_at")
+            if request.get("creation_method") == "manual_confirmation"
+            else None
+        ),
+        2: item.get("attendance_confirmed_at"),
+        3: item.get("dispatch_at"),
+        4: item.get("fault_tag_generated_at") or item.get("return_exported_at"),
+        5: item.get("fault_tag_sent_at"),
+        6: item.get("warehouse_confirmed_at") or item.get("warehouse_candidate_at"),
+    }
+    sources = {
+        0: "zeus",
+        1: request.get("request_sent_source") or (
+            "manual" if request.get("creation_method") == "manual_confirmation" else None
+        ),
+        2: item.get("attendance_source"),
+        3: item.get("dispatch_source"),
+        4: item.get("fault_tag_generated_source") or (
+            "zeus_export" if item.get("return_exported_at") else None
+        ),
+        5: item.get("fault_tag_sent_source"),
+        6: item.get("warehouse_confirmation_source") or (
+            "email" if item.get("warehouse_candidate_at") else None
+        ),
+    }
+    return {
+        "stage": stage,
+        "label": LIFECYCLE_STAGE_LABELS[stage],
+        "timestamp": timestamps.get(stage),
+        "source": sources.get(stage),
+        "stages": [
+            {
+                "stage": index,
+                "label": label,
+                "reached": index <= stage,
+                "timestamp": timestamps.get(index),
+                "source": sources.get(index),
+            }
+            for index, label in enumerate(LIFECYCLE_STAGE_LABELS)
+        ],
+    }
 
 
 def lifecycle_color(item: dict[str, Any], request: dict[str, Any]) -> str:
@@ -529,7 +615,7 @@ def request_overall_status(request: dict[str, Any]) -> str:
         return "empty"
     if len(set(statuses)) == 1:
         return statuses[0]
-    dispatched = sum(status in {"dispatched", "awaiting_warehouse", "awaiting_user_confirmation"} for status in statuses)
+    dispatched = sum(status in {"dispatched", "awaiting_warehouse", "awaiting_user_confirmation", "warehouse_confirmed"} for status in statuses)
     confirmed = sum(status not in {"awaiting_confirmation", "awaiting_stock"} for status in statuses)
     if dispatched:
         return f"partial_dispatch_{dispatched}_of_{len(statuses)}"

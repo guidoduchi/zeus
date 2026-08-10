@@ -3,13 +3,17 @@ from __future__ import annotations
 import shutil
 import tempfile
 import unittest
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
 from zeus2.application.errors import ValidationError
-from zeus2.application.serialization import spare_requests_dashboard_payload
+from zeus2.application.serialization import (
+    spare_requests_dashboard_payload,
+    ticket_revision,
+)
 from zeus2.application.service import ApplicationService
 from zeus2.config import load_config, save_config
 from zeus2.spare_request_excel import (
@@ -28,6 +32,7 @@ from zeus2.spare_requests import (
     SpareRequestError,
     create_request_record,
     item_status,
+    lifecycle_stage,
     normalize_profile,
     normalize_request_lines,
     request_filename,
@@ -87,6 +92,49 @@ def request_record(amount: int = 2) -> dict:
         subject=request_subject(request_id, "39416095", lines),
         created_at="2026-08-08T12:34:56-05:00",
     )
+
+
+def source_ticket() -> dict:
+    return {
+        "schema_version": 2,
+        "ticket_id": "39416095",
+        "lifecycle": {"status": "active"},
+        "upstream": {
+            "fields": {
+                "SRNo": "39416095",
+                "Report Date": "2026-07-01 10:00:00",
+                "Customer Severity": "Minor",
+                "Problem Summary": "Controller board failure",
+            }
+        },
+        "local": {
+            "fields": {"Done?": "N", "Site": "UIO1", "Cloud": "Ecuador Cloud"},
+            "spare_parts": [
+                {
+                    "device": "SW-UIO-01",
+                    "model": "S6730",
+                    "faulty_sns": ["FAULTY-1"],
+                    "parts": [
+                        {
+                            "slot": "1/0/1",
+                            "part": "Controller board",
+                            "bom": "02312RCC",
+                            "notes": None,
+                            "new_sn": None,
+                        }
+                    ],
+                }
+            ],
+        },
+        "email": {
+            "total_received": 0,
+            "total_sent": 0,
+            "last_activity_at": None,
+            "messages": [],
+        },
+        "mop": {"latest": None, "versions": 0},
+        "updated_at": None,
+    }
 
 
 def create_request_template(path: Path) -> None:
@@ -380,6 +428,111 @@ class SpareRequestDomainTests(unittest.TestCase):
 
 
 class SpareRequestMailTests(unittest.TestCase):
+    def test_trusted_emails_advance_request_fault_tag_and_warehouse_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = load_config(root / "home")
+            config["email"].update(
+                {
+                    "request_confirmation_sender": "request-confirmation@example.test",
+                    "dispatch_notification_sender": "dispatch@example.test",
+                    "warehouse_sender_domain": "@warehouse.example.test",
+                }
+            )
+            save_config(root / "home", config)
+            store = ZeusStore(root / "data", config_home=root / "home")
+            store.ensure_layout()
+            seeded = request_record(1)
+            seeded["creation_method"] = "zeus_export"
+            with store.transaction("seed", {}) as staging:
+                store.write_spare_request(staging, seeded)
+            messages = [
+                {
+                    "message_key": "request-sent",
+                    "timestamp": "2026-08-06T08:00:00-05:00",
+                    "direction": "sent",
+                    "sender": "Zeus User",
+                    "sender_address": "user@example.com",
+                    "subject": "[TT 39416095] [SPARE PARTS REQUEST] 260808123456",
+                    "body": "Request attached",
+                    "html_body": "",
+                },
+                {
+                    "message_key": "confirmation",
+                    "timestamp": "2026-08-07T08:00:00-05:00",
+                    "direction": "received",
+                    "sender": "Request Service",
+                    "sender_address": "request-confirmation@example.test",
+                    "subject": "TT 39416095 request 260808123456",
+                    "body": "TT: 39416095",
+                    "html_body": "<table><tr><th>SR</th><th>RMA</th><th>ITEM</th></tr><tr><td>SR4956964</td><td>C3209937826</td><td>02312RCC</td></tr></table>",
+                },
+                {
+                    "message_key": "dispatch",
+                    "timestamp": "2026-08-08T08:00:00-05:00",
+                    "direction": "received",
+                    "sender": "Dispatch Service",
+                    "sender_address": "dispatch@example.test",
+                    "subject": "Dispatch delivery",
+                    "body": "",
+                    "html_body": "<table><tr><th>Order No.</th><th>Line No.</th><th>Item</th><th>QTY</th></tr><tr><td>C3209937826</td><td>10</td><td>02540255</td><td>1</td></tr></table>",
+                },
+            ]
+            with store.transaction("mail-stages-1-3", {}) as staging:
+                apply_spare_request_messages(
+                    store,
+                    staging,
+                    messages,
+                    now=datetime(2026, 8, 8, 12, 0, tzinfo=ECUADOR_TIMEZONE),
+                )
+            request = store.read_spare_request("260808123456")
+            item = request["items"][0]
+            self.assertEqual(request["request_sent_source"], "email")
+            self.assertEqual(lifecycle_stage(item, request), 3)
+
+            with store.transaction("fault-tag-generated", {}) as staging:
+                request = store.read_spare_request("260808123456", staging)
+                request["items"][0]["fault_tag_generated_at"] = "2026-08-09T08:00:00-05:00"
+                request["items"][0]["fault_tag_generated_source"] = "zeus_export"
+                store.write_spare_request(staging, request)
+            later_messages = [
+                {
+                    "message_key": "fault-tag-sent",
+                    "timestamp": "2026-08-09T09:00:00-05:00",
+                    "direction": "sent",
+                    "sender": "Zeus User",
+                    "sender_address": "user@example.com",
+                    "subject": "[FAULT TAG] RMA C3209937826",
+                    "body": "Fault Tag attached for C3209937826",
+                    "html_body": "",
+                },
+                {
+                    "message_key": "warehouse-confirmed",
+                    "timestamp": "2026-08-10T09:00:00-05:00",
+                    "direction": "received",
+                    "sender": "Warehouse",
+                    "sender_address": "agent@warehouse.example.test",
+                    "subject": "SR4956964 C3209937826 RT12345678",
+                    "body": "SR4956964 C3209937826 RT12345678",
+                    "html_body": "",
+                },
+            ]
+            with store.transaction("mail-stages-5-6", {}) as staging:
+                result = apply_spare_request_messages(
+                    store,
+                    staging,
+                    later_messages,
+                    now=datetime(2026, 8, 10, 12, 0, tzinfo=ECUADOR_TIMEZONE),
+                )
+            self.assertEqual(result["unmatched_messages"], 0)
+            request = store.read_spare_request("260808123456")
+            item = request["items"][0]
+            self.assertEqual(item["fault_tag_sent_source"], "email")
+            self.assertEqual(item["warehouse_confirmation_source"], "email")
+            self.assertEqual(item["rt"], "RT12345678")
+            self.assertEqual(lifecycle_stage(item, request), 6)
+            self.assertEqual(item_status(item, request), "warehouse_confirmed")
+
     def test_out_of_order_dispatch_and_partial_stock_resolve_per_unit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -516,48 +669,8 @@ class SpareRequestApplicationTests(unittest.TestCase):
         dashboard = spare_requests_dashboard_payload(self.store, view="active")
         self.assertEqual(len(dashboard["spareRequests"]), 2)
 
-    def test_manual_confirmation_owns_only_its_source_part_until_archived(self) -> None:
-        ticket = {
-            "schema_version": 2,
-            "ticket_id": "39416095",
-            "lifecycle": {"status": "active"},
-            "upstream": {
-                "fields": {
-                    "SRNo": "39416095",
-                    "Report Date": "2026-07-01 10:00:00",
-                    "Customer Severity": "Minor",
-                    "Problem Summary": "Controller board failure",
-                }
-            },
-            "local": {
-                "fields": {"Done?": "N", "Site": "UIO1", "Cloud": "Ecuador Cloud"},
-                "spare_parts": [
-                    {
-                        "device": "SW-UIO-01",
-                        "model": "S6730",
-                        "faulty_sns": ["FAULTY-1"],
-                        "parts": [
-                            {
-                                "slot": "1/0/1",
-                                "part": "Controller board",
-                                "bom": "02312RCC",
-                                "notes": None,
-                                "new_sn": None,
-                            }
-                        ],
-                    }
-                ],
-            },
-            "email": {
-                "total_received": 0,
-                "total_sent": 0,
-                "last_activity_at": None,
-                "messages": [],
-            },
-            "mop": {"latest": None, "versions": 0},
-            "updated_at": None,
-        }
-        self.store.write_ticket_bundle(self.store.current, ticket)
+    def test_submitted_source_part_stays_reserved_after_archive(self) -> None:
+        self.store.write_ticket_bundle(self.store.current, source_ticket())
         payload = {
             "source": "ticket",
             "ticketId": "39416095",
@@ -586,7 +699,7 @@ class SpareRequestApplicationTests(unittest.TestCase):
             spare_requests_dashboard_payload(self.store, view="eligible")["eligibleParts"],
             [],
         )
-        with self.assertRaisesRegex(ValidationError, "already has an Active Request"):
+        with self.assertRaisesRegex(ValidationError, "already submitted"):
             self.service.export_spare_request(payload)
 
         item_id = registered["items"][0]["item_id"]
@@ -595,8 +708,263 @@ class SpareRequestApplicationTests(unittest.TestCase):
             reason="cancelled",
             note="The externally prepared request was cancelled.",
         )
-        released = spare_requests_dashboard_payload(self.store, view="eligible")
-        self.assertEqual([row["rowId"] for row in released["eligibleParts"]], ["39416095:1:1"])
+        still_reserved = spare_requests_dashboard_payload(self.store, view="eligible")
+        self.assertEqual(still_reserved["eligibleParts"], [])
+        completed = spare_requests_dashboard_payload(
+            self.store,
+            view="completed",
+            closed_path=self.workbooks / "Closed.xlsx",
+        )["spareRequests"][0]
+        self.assertEqual(completed["lifecycleStage"], 0)
+        self.assertEqual(completed["lifecycleStageLabel"], "Cancelled")
+
+        current = self.store.read_ticket("39416095")
+        revision = ticket_revision(current)
+        spare_parts = deepcopy(current["local"]["spare_parts"])
+        spare_parts[0]["parts"].append(
+            {
+                "part_number": 2,
+                "slot": "1/0/1",
+                "part": "Controller board",
+                "bom": "02312RCC",
+                "notes": "Second physical replacement",
+                "new_sn": None,
+                "submitted_request_ids": [],
+            }
+        )
+        spare_parts[0]["next_part_number"] = 3
+        self.service.edit_ticket(
+            "39416095",
+            changes={"Spare Parts": spare_parts},
+            expected_revision=revision,
+        )
+        eligible = spare_requests_dashboard_payload(self.store, view="eligible")
+        self.assertEqual([row["rowId"] for row in eligible["eligibleParts"]], ["39416095:1:2"])
+
+    def test_delete_unconfirmed_request_releases_source_and_preserves_export(self) -> None:
+        self.store.write_ticket_bundle(self.store.current, source_ticket())
+        payload = {
+            "source": "ticket",
+            "ticketId": "39416095",
+            "reportDate": "2026-07-01",
+            "profile": profile_input(),
+            "lines": [{**lines_input(1)[0], "deviceNumber": 1, "partNumber": 1}],
+        }
+        exported = self.service.export_spare_request(payload)
+        request = exported["request"]
+        export_path = Path(exported["path"])
+        marker = self.store.read_ticket("39416095")["local"]["spare_parts"][0]["parts"][0]
+        self.assertEqual(marker["submitted_request_ids"], [request["requestId"]])
+        self.assertEqual(request["trackingId"], request["requestId"])
+        self.assertTrue(request["trackingIdProvisional"])
+        self.assertTrue(request["canDelete"])
+
+        deleted = self.service.delete_unconfirmed_spare_request(
+            request["requestId"], expected_revision=request["revision"]
+        )
+
+        self.assertEqual(deleted["deleted"], request["requestId"])
+        self.assertTrue(export_path.is_file())
+        self.assertFalse(self.store.spare_request_file(request["requestId"]).exists())
+        released = self.store.read_ticket("39416095")["local"]["spare_parts"][0]["parts"][0]
+        self.assertEqual(released["submitted_request_ids"], [])
+        eligible = spare_requests_dashboard_payload(self.store, view="eligible")
+        self.assertEqual([row["rowId"] for row in eligible["eligibleParts"]], ["39416095:1:1"])
+
+        confirmed = self.service.export_spare_request(payload)["request"]
+        confirmed = self.service.edit_spare_request(
+            confirmed["requestId"],
+            expected_revision=confirmed["revision"],
+            changes={"spareSr": "SR4956964", "note": "Confirmed manually"},
+            item_updates=[
+                {"itemId": confirmed["items"][0]["item_id"], "rma": "C3209937826"}
+            ],
+        )["request"]
+        self.assertFalse(confirmed["canDelete"])
+        with self.assertRaisesRegex(ValidationError, "confirmed Spare Request"):
+            self.service.delete_unconfirmed_spare_request(
+                confirmed["requestId"], expected_revision=confirmed["revision"]
+            )
+
+    def test_submitted_part_is_immutable_but_deletable_while_device_stays_owned(self) -> None:
+        self.store.write_ticket_bundle(self.store.current, source_ticket())
+        payload = {
+            "source": "ticket",
+            "ticketId": "39416095",
+            "reportDate": "2026-07-01",
+            "profile": profile_input(),
+            "lines": [{**lines_input(1)[0], "deviceNumber": 1, "partNumber": 1}],
+        }
+        self.service.register_spare_request(payload)
+        current = self.store.read_ticket("39416095")
+        modified = deepcopy(current["local"]["spare_parts"])
+        modified[0]["parts"][0]["bom"] = "DIFFERENT-BOM"
+        with self.assertRaisesRegex(ValidationError, "submitted part 1 is immutable"):
+            self.service.edit_ticket(
+                "39416095",
+                changes={"Spare Parts": modified},
+                expected_revision=ticket_revision(current),
+            )
+
+        current = self.store.read_ticket("39416095")
+        without_part = deepcopy(current["local"]["spare_parts"])
+        without_part[0]["parts"] = []
+        self.service.edit_ticket(
+            "39416095",
+            changes={"Spare Parts": without_part},
+            expected_revision=ticket_revision(current),
+        )
+        current = self.store.read_ticket("39416095")
+        self.assertEqual(current["local"]["spare_parts"][0]["parts"], [])
+        self.assertEqual(
+            self.service.ticket("39416095")["spareParts"][0]["active_request_ids"],
+            [next(self.store.iter_spare_request_ids())],
+        )
+        with self.assertRaisesRegex(ValidationError, "still belongs to an Active Request"):
+            self.service.edit_ticket(
+                "39416095",
+                changes={"Spare Parts": []},
+                expected_revision=ticket_revision(current),
+            )
+
+        new_record = deepcopy(current["local"]["spare_parts"])
+        new_record[0]["parts"] = [
+            {
+                "part_number": 2,
+                "slot": "1/0/1",
+                "part": "Controller board",
+                "bom": "02312RCC",
+                "notes": "New replacement record",
+                "new_sn": None,
+                "submitted_request_ids": [],
+            }
+        ]
+        new_record[0]["next_part_number"] = 3
+        self.service.edit_ticket(
+            "39416095",
+            changes={"Spare Parts": new_record},
+            expected_revision=ticket_revision(current),
+        )
+        eligible = spare_requests_dashboard_payload(self.store, view="eligible")
+        self.assertEqual([row["rowId"] for row in eligible["eligibleParts"]], ["39416095:1:2"])
+
+    def test_device_removal_requires_a_separate_spare_part_removal_save(self) -> None:
+        self.store.write_ticket_bundle(self.store.current, source_ticket())
+        current = self.store.read_ticket("39416095")
+        with self.assertRaisesRegex(ValidationError, "still has Spare Parts records"):
+            self.service.edit_ticket(
+                "39416095",
+                changes={"Spare Parts": []},
+                expected_revision=ticket_revision(current),
+            )
+
+        without_parts = deepcopy(current["local"]["spare_parts"])
+        without_parts[0]["parts"] = []
+        self.service.edit_ticket(
+            "39416095",
+            changes={"Spare Parts": without_parts},
+            expected_revision=ticket_revision(current),
+        )
+        current = self.store.read_ticket("39416095")
+        self.assertEqual(len(current["local"]["spare_parts"]), 1)
+        self.assertEqual(current["local"]["spare_parts"][0]["parts"], [])
+        self.assertEqual(current["local"]["fields"]["Spare"], "N")
+        self.service.edit_ticket(
+            "39416095",
+            changes={"Spare Parts": []},
+            expected_revision=ticket_revision(current),
+        )
+        self.assertEqual(self.store.read_ticket("39416095")["local"]["spare_parts"], [])
+
+    def test_archiving_a_legacy_active_request_backfills_its_submission_marker(self) -> None:
+        self.store.write_ticket_bundle(self.store.current, source_ticket())
+        legacy = request_record(1)
+        legacy["creation_method"] = "zeus_export"
+        legacy["request_lines"][0]["source_device_number"] = 1
+        legacy["request_lines"][0]["source_part_number"] = 1
+        legacy["items"][0]["source_device_number"] = 1
+        legacy["items"][0]["source_part_number"] = 1
+        with self.store.transaction("seed-legacy-active-request", {}) as staging:
+            self.store.write_spare_request(staging, legacy)
+        source = self.store.read_ticket("39416095")["local"]["spare_parts"][0]["parts"][0]
+        self.assertEqual(source["submitted_request_ids"], [])
+
+        self.service.archive_spare_items(
+            item_ids=[legacy["items"][0]["item_id"]],
+            reason="cancelled",
+            note="Legacy request cancelled after migration.",
+        )
+
+        source = self.store.read_ticket("39416095")["local"]["spare_parts"][0]["parts"][0]
+        self.assertEqual(source["submitted_request_ids"], [legacy["request_id"]])
+
+    def test_manual_lifecycle_advances_zero_through_six_and_switches_tracking_id(self) -> None:
+        request = self.service.export_spare_request(
+            {
+                "source": "manual",
+                "ticketId": "39416095",
+                "reportDate": "2026-07-01",
+                "profile": profile_input(),
+                "lines": lines_input(1),
+            }
+        )["request"]
+        item_id = request["items"][0]["item_id"]
+        self.assertEqual(request["items"][0]["lifecycle"]["stage"], 0)
+        self.assertEqual(request["trackingId"], request["requestId"])
+        self.assertTrue(request["trackingIdProvisional"])
+        with self.assertRaisesRegex(ValidationError, "one lifecycle stage"):
+            self.service.advance_spare_request_stage(
+                request["requestId"],
+                item_id=item_id,
+                target_stage=2,
+                expected_revision=request["revision"],
+            )
+
+        request = self.service.advance_spare_request_stage(
+            request["requestId"],
+            item_id=item_id,
+            target_stage=1,
+            expected_revision=request["revision"],
+        )["request"]
+        self.assertEqual(request["items"][0]["lifecycle"]["stage"], 1)
+        request = self.service.edit_spare_request(
+            request["requestId"],
+            expected_revision=request["revision"],
+            changes={"spareSr": "SR4956964", "note": "Confirmed manually"},
+            item_updates=[{"itemId": item_id, "rma": "C3209937826"}],
+        )["request"]
+        self.assertEqual(request["items"][0]["lifecycle"]["stage"], 2)
+        self.assertEqual(request["trackingId"], "SR4956964")
+        self.assertFalse(request["trackingIdProvisional"])
+
+        for stage in range(3, 7):
+            request = self.service.advance_spare_request_stage(
+                request["requestId"],
+                item_id=item_id,
+                target_stage=stage,
+                expected_revision=request["revision"],
+            )["request"]
+            self.assertEqual(request["items"][0]["lifecycle"]["stage"], stage)
+            self.assertEqual(
+                lifecycle_stage(
+                    self.store.read_spare_request(request["requestId"])["items"][0],
+                    self.store.read_spare_request(request["requestId"]),
+                ),
+                stage,
+            )
+        self.assertEqual(
+            [entry["stage"] for entry in request["items"][0]["lifecycle"]["stages"]],
+            list(range(7)),
+        )
+        self.assertTrue(all(entry["reached"] for entry in request["items"][0]["lifecycle"]["stages"]))
+        self.assertEqual(request["items"][0]["status"], "warehouse_confirmed")
+        archived = self.service.archive_spare_items(
+            item_ids=[item_id],
+            reason="returned",
+            note="",
+            manual_override=False,
+        )
+        self.assertEqual(archived["archived"], [item_id])
 
     def test_rma_is_immutable_and_return_archive_requires_confirmation(self) -> None:
         result = self.service.export_spare_request(

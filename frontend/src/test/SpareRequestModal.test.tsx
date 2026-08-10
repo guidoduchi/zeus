@@ -47,6 +47,8 @@ const part: SparePartSummary = {
   summary: "Controller alarm",
   risk: "none",
   hasPart: true,
+  submitted: false,
+  submittedRequestIds: [],
   readOnly: false,
   source: "current",
 };

@@ -86,7 +86,7 @@ describe("TicketDetail", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /add damaged device/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /add affected device/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /^Spare Parts/ })).toHaveClass("active");
   });
 
@@ -190,7 +190,7 @@ describe("TicketDetail", () => {
     await user.click(screen.getByRole("button", { name: /save to zeus/i }));
 
     await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeVisible());
-    expect(screen.queryByRole("button", { name: "Restore changes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Restore (work )?changes/ })).not.toBeInTheDocument();
     expect(countUnsavedDrafts()).toBe(0);
   });
 
@@ -212,7 +212,7 @@ describe("TicketDetail", () => {
     render(<TicketDetail ticket={current} loading={false} templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} initialTab="work" />);
 
     await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeVisible());
-    expect(screen.queryByRole("button", { name: "Restore changes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Restore (work )?changes/ })).not.toBeInTheDocument();
     expect(countUnsavedDrafts()).toBe(0);
   });
 
@@ -238,7 +238,7 @@ describe("TicketDetail", () => {
 
     expect(await screen.findByText(/same database work fields changed/i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Save to Zeus" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Restore changes" }));
+    await user.click(screen.getByRole("button", { name: "Restore work changes" }));
     expect(screen.getByRole("dialog", { name: "Restore protected SR 12345678 changes?" })).toBeVisible();
     expect(nativeConfirm).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Restore for review" }));
@@ -274,19 +274,21 @@ describe("TicketDetail", () => {
     await user.click(screen.getByRole("button", { name: /spare parts/i }));
 
     expect(screen.queryByLabelText("Spare")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /add damaged device/i }));
+    await user.click(screen.getByRole("button", { name: /add affected device/i }));
     await user.type(screen.getByLabelText("Device 1 name"), "server-a");
     await user.type(screen.getByLabelText("Device 1 model"), "2288H V5");
     await user.type(screen.getByLabelText("Device 1 faulty serial numbers"), "OLD-1{enter}OLD-2");
+    await user.click(screen.getByRole("button", { name: /add new spare part/i }));
     await user.type(screen.getByLabelText("Device 1 part 1 Slots"), "DIMM101{enter}DIMM203{enter}DIMM103");
     await user.type(screen.getByLabelText("Device 1 part 1 Part"), "Disk");
     await user.type(screen.getByLabelText("Device 1 part 1 BOM (part number)"), "BOM-1");
     await user.type(screen.getByLabelText("Device 1 part 1 Notes"), "Diagnostics completed");
-    await user.click(screen.getByRole("button", { name: /add damaged part/i }));
+    await user.click(screen.getByRole("button", { name: /add new spare part/i }));
     await user.type(screen.getByLabelText("Device 1 part 2 Slots"), "Slot 2");
     await user.type(screen.getByLabelText("Device 1 part 2 BOM (part number)"), "BOM-2");
-    await user.click(screen.getByRole("button", { name: /add damaged device/i }));
+    await user.click(screen.getByRole("button", { name: /add affected device/i }));
     await user.type(screen.getByLabelText("Device 2 name"), "server-b");
+    await user.click(screen.getAllByRole("button", { name: /add new spare part/i })[1]);
     await user.type(screen.getByLabelText("Device 2 part 1 Part"), "Memory");
     await user.type(screen.getByLabelText("Device 2 part 1 BOM (part number)"), "BOM-3");
     expect(screen.queryByLabelText(/New SN/)).not.toBeInTheDocument();
@@ -295,22 +297,111 @@ describe("TicketDetail", () => {
     expect(onSave).toHaveBeenCalledWith("12345678", "revision", {
       "Spare Parts": [
         {
+          device_number: 1,
           device: "server-a",
           model: "2288H V5",
+          notes: null,
           faulty_sns: ["OLD-1", "OLD-2"],
+          next_part_number: 3,
           parts: [
-            { slot: "DIMM101\nDIMM203\nDIMM103", part: "Disk", bom: "BOM-1", notes: "Diagnostics completed", new_sn: null },
-            { slot: "Slot 2", part: null, bom: "BOM-2", notes: null, new_sn: null },
+            { part_number: 1, slot: "DIMM101\nDIMM203\nDIMM103", part: "Disk", bom: "BOM-1", notes: "Diagnostics completed", new_sn: null, submitted_request_ids: [] },
+            { part_number: 2, slot: "Slot 2", part: null, bom: "BOM-2", notes: null, new_sn: null, submitted_request_ids: [] },
           ],
         },
         {
+          device_number: 2,
           device: "server-b",
           model: null,
+          notes: null,
           faulty_sns: [],
-          parts: [{ slot: null, part: "Memory", bom: "BOM-3", notes: null, new_sn: null }],
+          next_part_number: 2,
+          parts: [{ part_number: 1, slot: null, part: "Memory", bom: "BOM-3", notes: null, new_sn: null, submitted_request_ids: [] }],
         },
       ],
     });
+  });
+
+  it("registers an affected device in Work Fields without fabricating a spare part", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<TicketDetail ticket={detail} loading={false} initialTab="work" templates={[]} onClose={vi.fn()} onSave={onSave} onGenerateMop={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /add affected device/i }));
+    await user.type(screen.getByLabelText("Device"), "server-no-bom");
+    await user.type(screen.getByLabelText("Model"), "FusionServer");
+    await user.type(screen.getByLabelText("Intervention notes"), "Firmware checks only");
+    expect(screen.queryByText("Spare parts involved")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/BOM/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /save to zeus/i }));
+
+    expect(onSave).toHaveBeenCalledWith("12345678", "revision", {
+      "Spare Parts": [{
+        device_number: 1,
+        device: "server-no-bom",
+        model: "FusionServer",
+        notes: "Firmware checks only",
+        faulty_sns: [],
+        next_part_number: 1,
+        parts: [],
+      }],
+    });
+  });
+
+  it("shares one affected-device draft between Work Fields and Spare Parts", async () => {
+    const user = userEvent.setup();
+    render(<TicketDetail ticket={detail} loading={false} initialTab="work" templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /add affected device/i }));
+    await user.type(screen.getByLabelText("Device"), "shared-server");
+    await user.type(screen.getByLabelText("Model"), "2288H V5");
+    await user.click(screen.getByRole("button", { name: /^Spare Parts/ }));
+
+    expect(screen.getByLabelText("Device 1 name")).toHaveValue("shared-server");
+    expect(screen.getByLabelText("Device 1 model")).toHaveValue("2288H V5");
+    expect(screen.queryByLabelText("Device 1 part 1 BOM (part number)")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /add new spare part/i }));
+    await user.type(screen.getByLabelText("Device 1 part 1 BOM (part number)"), "BOM-SHARED");
+    await user.click(screen.getByRole("button", { name: /work fields/i }));
+
+    expect(screen.getByLabelText("Device")).toHaveValue("shared-server");
+    expect(screen.getByText("Spare parts involved")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Remove device" })).toBeDisabled();
+  });
+
+  it("separates submitted parts, locks their fields, and permits a new record", async () => {
+    const user = userEvent.setup();
+    const submitted: TicketDetailType = {
+      ...detail,
+      spareParts: [{
+        device_number: 1,
+        device: "server-a",
+        model: "2288H V5",
+        notes: null,
+        faulty_sns: ["FAULTY-1"],
+        next_part_number: 2,
+        active_request_ids: ["260810123456"],
+        has_submitted_parts: true,
+        parts: [{
+          part_number: 1,
+          slot: "Slot 1",
+          part: "Disk",
+          bom: "BOM-1",
+          notes: null,
+          new_sn: null,
+          submitted_request_ids: ["260810123456"],
+          submitted: true,
+          active_request_ids: ["260810123456"],
+        }],
+      }],
+    };
+    render(<TicketDetail ticket={submitted} loading={false} initialTab="spares" templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} />);
+
+    expect(screen.getByText("Submitted parts")).toBeVisible();
+    expect(screen.getByLabelText("Device 1 part 1 BOM (part number)")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete submitted part" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /add new spare part/i }));
+    expect(screen.getByText("New part 2")).toBeVisible();
+    expect(screen.getByLabelText("Device 1 part 2 BOM (part number)")).toBeEnabled();
   });
 
   it("keeps edit actions in a fixed row outside the scrolling fields", async () => {

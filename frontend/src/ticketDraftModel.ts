@@ -13,18 +13,27 @@ export const WORK_FIELDS = [
 export type WorkField = typeof WORK_FIELDS[number];
 export type WorkDraft = Record<string, string>;
 export interface DraftPart {
+  part_number: number;
   slot: string;
   part: string;
   bom: string;
   notes: string;
   /** Hidden compatibility value; the Spare Request lifecycle owns new SNs. */
   new_sn: string;
+  submitted_request_ids: string[];
+  submitted: boolean;
+  active_request_ids: string[];
 }
 
 export interface DraftDevice {
+  device_number: number;
   device: string;
   model: string;
+  notes: string;
   faulty_sns: string;
+  next_part_number: number;
+  active_request_ids: string[];
+  has_submitted_parts: boolean;
   parts: DraftPart[];
 }
 
@@ -66,8 +75,18 @@ export function changedWorkFields(
   );
 }
 
-export function emptyPart(): DraftPart {
-  return { slot: "", part: "", bom: "", notes: "", new_sn: "" };
+export function emptyPart(partNumber = 1): DraftPart {
+  return {
+    part_number: partNumber,
+    slot: "",
+    part: "",
+    bom: "",
+    notes: "",
+    new_sn: "",
+    submitted_request_ids: [],
+    submitted: false,
+    active_request_ids: [],
+  };
 }
 
 export function newlineValues(value: unknown): string[] {
@@ -92,44 +111,69 @@ export function requestedQuantity(slot: unknown): number {
 }
 
 export function spareDraft(value: SpareDevice[]): DraftDevice[] {
-  return value.map((device) => ({
+  return value.map((device, deviceIndex) => ({
+    device_number: Number(device.device_number || deviceIndex + 1),
     device: device.device || "",
     model: device.model || "",
+    notes: device.notes || "",
     faulty_sns: newlineValues([
       ...(device.faulty_sns || []),
       ...device.parts.flatMap((part) => newlineValues(part.faulty_sn)),
     ]).join("\n"),
-    parts: device.parts.map((part) => ({
+    next_part_number: Math.max(
+      Number(device.next_part_number || 1),
+      ...device.parts.map((part, partIndex) => Number(part.part_number || partIndex + 1) + 1),
+    ),
+    active_request_ids: [...(device.active_request_ids || [])],
+    has_submitted_parts: Boolean(device.has_submitted_parts),
+    parts: device.parts.map((part, partIndex) => ({
+      part_number: Number(part.part_number || partIndex + 1),
       slot: part.slot || "",
       part: part.part || "",
       bom: part.bom || "",
       notes: part.notes || "",
       new_sn: part.new_sn || "",
+      submitted_request_ids: [...(part.submitted_request_ids || [])],
+      submitted: Boolean(part.submitted || part.submitted_request_ids?.length),
+      active_request_ids: [...(part.active_request_ids || [])],
     })),
   }));
 }
 
 export function cleanSpareParts(value: DraftDevice[] | SpareDevice[]): SpareDevice[] {
-  return value.flatMap((device) => {
+  return value.flatMap((device, deviceIndex) => {
     const parts = device.parts.flatMap((part) => {
       const cleaned = {
+        part_number: Number(part.part_number || 1),
         slot: newlineValues(part.slot).join("\n") || null,
         part: String(part.part || "").trim() || null,
         bom: String(part.bom || "").trim() || null,
         notes: String(part.notes || "").trim() || null,
         new_sn: String(part.new_sn || "").trim() || null,
+        submitted_request_ids: [...new Set(
+          ("submitted_request_ids" in part ? part.submitted_request_ids || [] : [])
+            .filter((requestId) => /^\d{12}$/.test(String(requestId))),
+        )],
       };
-      return Object.values(cleaned).some(Boolean) ? [cleaned] : [];
+      return Object.entries(cleaned).some(([key, candidate]) => (
+        key === "part_number" ? false : Array.isArray(candidate) ? candidate.length > 0 : Boolean(candidate)
+      )) ? [cleaned] : [];
     });
     const cleaned: SpareDevice = {
+      device_number: Number(device.device_number || deviceIndex + 1),
       device: String(device.device || "").trim() || null,
       model: String(device.model || "").trim() || null,
+      notes: String(("notes" in device ? device.notes : "") || "").trim() || null,
       faulty_sns: newlineValues(
         "faulty_sns" in device ? device.faulty_sns : "",
       ),
+      next_part_number: Math.max(
+        Number(("next_part_number" in device ? device.next_part_number : 1) || 1),
+        ...parts.map((part) => Number(part.part_number || 0) + 1),
+      ),
       parts,
     };
-    return cleaned.device || cleaned.model || cleaned.faulty_sns?.length || cleaned.parts.length ? [cleaned] : [];
+    return cleaned.device || cleaned.model || cleaned.notes || cleaned.faulty_sns?.length || cleaned.parts.length ? [cleaned] : [];
   });
 }
 

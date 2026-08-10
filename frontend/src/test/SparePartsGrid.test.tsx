@@ -37,6 +37,8 @@ function row(rowId: string, bom: string, part: string): SparePartSummary {
     summary: "Disk replacement",
     risk: "none",
     hasPart: true,
+    submitted: false,
+    submittedRequestIds: [],
     readOnly: false,
     source: "current",
   };

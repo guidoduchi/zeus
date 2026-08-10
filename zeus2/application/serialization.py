@@ -10,12 +10,15 @@ from ..mail import strip_quoted_history
 from ..spare_request_excel import read_archived_items
 from ..spare_requests import (
     ECUADOR_TIMEZONE,
+    LIFECYCLE_STAGE_LABELS,
     active_source_part_keys,
     aging_color as spare_aging_color,
     dispatch_age_days,
     item_status,
     lifecycle_color,
+    lifecycle_stage_details,
     request_overall_status,
+    source_part_key,
 )
 from ..store import ZeusStore
 from ..tickets import normalize_local
@@ -85,8 +88,9 @@ SPARE_REQUEST_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "rma", "label": "RMA", "width": 132, "default": True},
     {"key": "emailLabel", "label": "Last Email", "width": 154, "default": True},
     {"key": "risk", "label": "", "width": 18, "default": True},
-    {"key": "spareSr", "label": "Spare SR", "width": 104, "default": True},
-    {"key": "statusLabel", "label": "Status", "width": 170, "default": True},
+    {"key": "trackingId", "label": "Tracking ID", "width": 128, "default": True},
+    {"key": "lifecycleStage", "label": "Lifecycle", "width": 220, "default": True},
+    {"key": "statusLabel", "label": "Status", "width": 170, "default": False},
     {"key": "dispatchAgeDays", "label": "Days", "width": 62, "default": True},
     {"key": "requestedBom", "label": "Requested BOM", "width": 145, "default": True},
     {"key": "deliveredBom", "label": "Delivered BOM", "width": 145, "default": True},
@@ -97,7 +101,7 @@ SPARE_REQUEST_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "device", "label": "Device", "width": 155, "default": False},
     {"key": "model", "label": "Model", "width": 145, "default": False},
     {"key": "slot", "label": "Slot", "width": 110, "default": False},
-    {"key": "requestId", "label": "Export ID", "width": 128, "default": False},
+    {"key": "requestId", "label": "Zeus ID", "width": 128, "default": False},
     {"key": "conflictCount", "label": "Conflicts", "width": 78, "default": False},
     {"key": "archiveReason", "label": "Archive reason", "width": 125, "default": False},
     {"key": "archivedAt", "label": "Archived at", "width": 165, "default": False},
@@ -106,6 +110,7 @@ SPARE_REQUEST_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
 
 SPARE_REQUEST_DEFAULT_SORT_DIRECTIONS = {
     "tt": "desc",
+    "tracking": "desc",
     "rma": "asc",
     "email": "desc",
     "status": "asc",
@@ -276,6 +281,7 @@ def serialize_ticket_detail(
     *,
     read_only: bool = False,
     source: str = "current",
+    active_requests: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     result = (
         serialize_archived_ticket_summary(ticket, config)
@@ -290,13 +296,46 @@ def serialize_ticket_detail(
     # labels such as ``Unplanned`` are represented by an empty date control;
     # the summary still exposes the human-readable "Unplanned" label.
     local_fields["Planned Date"] = planned_date.isoformat() if planned_date else None
+    spare_parts = deepcopy(prepared_local.get("spare_parts", []))
+    active_by_source: dict[tuple[str, int, int], set[str]] = {}
+    active_by_device: dict[tuple[str, int], set[str]] = {}
+    for active_request in active_requests:
+        request_id = str(active_request.get("request_id") or "")
+        for item in active_request.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            key = source_part_key(active_request.get("tt"), item)
+            if key is not None:
+                active_by_source.setdefault(key, set()).add(request_id)
+                active_by_device.setdefault((key[0], key[1]), set()).add(request_id)
+    ticket_id = str(ticket.get("ticket_id") or "")
+    for device_index, device in enumerate(spare_parts, start=1):
+        device_number = int(device.get("device_number") or device_index)
+        device_active: set[str] = set(
+            active_by_device.get((ticket_id, device_number), set())
+        )
+        for part_index, part in enumerate(device.get("parts") or [], start=1):
+            part_number = int(part.get("part_number") or part_index)
+            active_ids = active_by_source.get(
+                (ticket_id, device_number, part_number), set()
+            )
+            submitted_ids = set(part.get("submitted_request_ids") or []) | active_ids
+            part["submitted_request_ids"] = sorted(submitted_ids)
+            part["submitted"] = bool(submitted_ids)
+            part["active_request_ids"] = sorted(active_ids)
+            device_active.update(active_ids)
+        device["active_request_ids"] = sorted(device_active)
+        device["has_submitted_parts"] = any(
+            bool(part.get("submitted_request_ids"))
+            for part in device.get("parts") or []
+        )
     result.update(
         {
             "upstreamFields": deepcopy(
                 ticket.get("upstream", {}).get("fields", {})
             ),
             "localFields": local_fields,
-            "spareParts": deepcopy(prepared_local.get("spare_parts", [])),
+            "spareParts": spare_parts,
             "email": {
                 "totalReceived": int(email.get("total_received") or 0),
                 "totalSent": int(email.get("total_sent") or 0),
@@ -435,12 +474,18 @@ def _spare_part_rows(
         for device_index, device in enumerate(
             prepared_local.get("spare_parts", []), start=1
         ):
+            device_number = int(device.get("device_number") or device_index)
             parts = list(device.get("parts") or []) or [None]
             for part_index, part in enumerate(parts, start=1):
                 part = part or {}
+                part_number = (
+                    int(part.get("part_number") or part_index)
+                    if part
+                    else None
+                )
                 bom = str(part.get("bom") or "").strip()
                 row = {
-                    "rowId": f"{ticket_id}:{device_index}:{part_index}",
+                    "rowId": f"{ticket_id}:{device_number}:{part_number or 0}",
                     "ticketId": ticket_id,
                     "revision": summary["revision"],
                     "lifecycle": summary["lifecycle"],
@@ -451,14 +496,16 @@ def _spare_part_rows(
                     "plannedColor": summary["plannedColor"],
                     "site": local.get("Site") or "—",
                     "cloud": local.get("Cloud") or "—",
-                    "deviceNumber": device_index,
-                    "partNumber": part_index if part else None,
+                    "deviceNumber": device_number,
+                    "partNumber": part_number,
                     "device": device.get("device") or "—",
                     "model": device.get("model") or "—",
                     "slot": part.get("slot") or "—",
                     "part": part.get("part") or "—",
                     "bom": bom or "—",
                     "bomColor": None if bom else "yellow",
+                    "submitted": bool(part.get("submitted_request_ids")),
+                    "submittedRequestIds": list(part.get("submitted_request_ids") or []),
                     "faultySn": "\n".join(device.get("faulty_sns") or []) or "—",
                     "newSn": part.get("new_sn") or "—",
                     "summary": summary["summary"],
@@ -585,6 +632,7 @@ SPARE_STATUS_LABELS = {
     "dispatched": "Dispatched",
     "awaiting_warehouse": "Awaiting warehouse",
     "awaiting_user_confirmation": "Confirm warehouse return",
+    "warehouse_confirmed": "Warehouse confirmed",
     "cancelled": "Cancelled",
     "returned": "Returned",
 }
@@ -636,6 +684,8 @@ def serialize_spare_request_item(
     age_color = spare_aging_color(age)
     conflicts = _request_conflict_count(request)
     profile = request.get("profile", {})
+    stage = lifecycle_stage_details(item, request)
+    tracking_id = request.get("spare_sr") or request.get("request_id")
     return {
         "rowId": item.get("item_id"),
         "requestId": request.get("request_id"),
@@ -643,6 +693,11 @@ def serialize_spare_request_item(
         "ticketId": request.get("tt"),
         "rma": item.get("rma") or "—",
         "spareSr": request.get("spare_sr") or "—",
+        "trackingId": tracking_id or "—",
+        "trackingIdProvisional": not bool(request.get("spare_sr")),
+        "lifecycleStage": stage["stage"],
+        "lifecycleStageLabel": stage["label"],
+        "lifecycleStageSource": stage["source"],
         "status": status,
         "statusLabel": SPARE_STATUS_LABELS.get(status, status.replace("_", " ").title()),
         "lifecycleColor": lifecycle,
@@ -673,6 +728,21 @@ def _archived_spare_row(row: dict[str, Any]) -> dict[str, Any]:
     status = str(row.get("Status") or "returned").casefold()
     email_days = row.get("Email inactivity days")
     email_count = int(row.get("Emails received") or 0) + int(row.get("Emails sent") or 0)
+    if status == "returned":
+        stage = 6
+        stage_label = LIFECYCLE_STAGE_LABELS[stage]
+    elif row.get("Return Export"):
+        stage = 4
+        stage_label = LIFECYCLE_STAGE_LABELS[stage]
+    elif row.get("Dispatch Date"):
+        stage = 3
+        stage_label = LIFECYCLE_STAGE_LABELS[stage]
+    elif row.get("Spare SR") and row.get("RMA"):
+        stage = 2
+        stage_label = LIFECYCLE_STAGE_LABELS[stage]
+    else:
+        stage = 0
+        stage_label = "Cancelled" if status == "cancelled" else LIFECYCLE_STAGE_LABELS[stage]
     return {
         "rowId": str(row.get("Item ID") or ""),
         "requestId": str(row.get("Request ID") or ""),
@@ -680,6 +750,11 @@ def _archived_spare_row(row: dict[str, Any]) -> dict[str, Any]:
         "ticketId": str(row.get("TT") or ""),
         "rma": row.get("RMA") or "—",
         "spareSr": row.get("Spare SR") or "—",
+        "trackingId": row.get("Spare SR") or row.get("Request ID") or "—",
+        "trackingIdProvisional": not bool(row.get("Spare SR")),
+        "lifecycleStage": stage,
+        "lifecycleStageLabel": stage_label,
+        "lifecycleStageSource": "archive",
         "status": status,
         "statusLabel": SPARE_STATUS_LABELS.get(status, status.replace("_", " ").title()),
         "lifecycleColor": "grey",
@@ -721,6 +796,7 @@ def _eligible_spare_rows(store: ZeusStore) -> list[dict[str, Any]]:
         if (
             row.get("hasPart")
             and row.get("bom") != "—"
+            and not row.get("submitted")
             and (
                 row.get("ticketId"),
                 row.get("deviceNumber"),
@@ -745,6 +821,8 @@ def _spare_request_sort_value(row: dict[str, Any], mode: str) -> Any:
         return int(row.get("ticketId") or 0)
     if mode == "rma":
         return None if row.get("rma") == "—" else str(row.get("rma"))
+    if mode == "tracking":
+        return str(row.get("trackingId") or "")
     if mode == "email":
         return row.get("emailInactivityDays")
     if mode == "age":
@@ -813,8 +891,8 @@ def spare_requests_dashboard_payload(
             "activeItems": len(active_items),
             "awaitingStock": statuses.count("awaiting_stock"),
             "awaitingDispatch": statuses.count("awaiting_dispatch"),
-            "dispatched": sum(status in {"dispatched", "awaiting_warehouse", "awaiting_user_confirmation"} for status in statuses),
-            "warehouseCandidates": statuses.count("awaiting_user_confirmation"),
+            "dispatched": sum(status in {"dispatched", "awaiting_warehouse", "awaiting_user_confirmation", "warehouse_confirmed"} for status in statuses),
+            "warehouseCandidates": statuses.count("warehouse_confirmed"),
             "conflicts": sum(_request_conflict_count(request) for request in requests),
             "eligibleParts": len(_eligible_spare_rows(store)),
             "completedItems": len(read_archived_items(closed_path)) if closed_path else 0,
@@ -847,6 +925,13 @@ def serialize_spare_request_detail(request: dict[str, Any]) -> dict[str, Any]:
             else "legacy"
         ),
         "spareSr": request.get("spare_sr"),
+        "trackingId": request.get("spare_sr") or request.get("request_id"),
+        "trackingIdProvisional": not bool(request.get("spare_sr")),
+        "requestSentAt": request.get("request_sent_at"),
+        "canDelete": not bool(request.get("spare_sr")) and not any(
+            item.get("rma") or item.get("attendance_confirmed_at")
+            for item in request.get("items", [])
+        ),
         "status": request_overall_status(request),
         "profile": deepcopy(request.get("profile") or {}),
         "requestLines": deepcopy(request.get("request_lines") or []),
@@ -858,6 +943,7 @@ def serialize_spare_request_detail(request: dict[str, Any]) -> dict[str, Any]:
                 "lifecycleColor": lifecycle_color(item, request),
                 "dispatchAgeDays": dispatch_age_days(item),
                 "dispatchAgeColor": spare_aging_color(dispatch_age_days(item)),
+                "lifecycle": lifecycle_stage_details(item, request),
             }
             for item in request.get("items", [])
         ],

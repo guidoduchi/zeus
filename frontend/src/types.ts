@@ -95,6 +95,8 @@ export interface SparePartSummary {
   summary: string;
   risk: Risk;
   hasPart: boolean;
+  submitted: boolean;
+  submittedRequestIds: string[];
   readOnly: boolean;
   source: "current" | "closed";
 }
@@ -123,6 +125,11 @@ export interface SpareRequestItemSummary {
   ticketId: string;
   rma: string;
   spareSr: string;
+  trackingId: string;
+  trackingIdProvisional: boolean;
+  lifecycleStage: number;
+  lifecycleStageLabel: string;
+  lifecycleStageSource: string | null;
   status: string;
   statusLabel: string;
   lifecycleColor: "black" | "grey" | "green";
@@ -227,6 +234,8 @@ export interface SpareRequestItem {
   return_condition: string | null;
   return_export_filename: string | null;
   warehouse_candidate_at: string | null;
+  warehouse_confirmed_at?: string | null;
+  warehouse_confirmation_source?: string | null;
   rt: string | null;
   conflicts: Array<Record<string, unknown>>;
   status: string;
@@ -235,6 +244,23 @@ export interface SpareRequestItem {
   dispatchAgeDays: number | null;
   dispatchAgeColor: Risk | null;
   notes: string | null;
+  lifecycle: SpareLifecycle;
+}
+
+export interface SpareLifecycleStage {
+  stage: number;
+  label: string;
+  reached: boolean;
+  timestamp: string | null;
+  source: string | null;
+}
+
+export interface SpareLifecycle {
+  stage: number;
+  label: string;
+  timestamp: string | null;
+  source: string | null;
+  stages: SpareLifecycleStage[];
 }
 
 export interface SpareRequestDetail {
@@ -246,6 +272,10 @@ export interface SpareRequestDetail {
   source: "ticket" | "manual" | "recovered";
   creationMethod: "zeus_export" | "manual_confirmation" | "legacy";
   spareSr: string | null;
+  trackingId: string;
+  trackingIdProvisional: boolean;
+  requestSentAt: string | null;
+  canDelete: boolean;
   status: string;
   profile: SpareRequestProfile;
   requestLines: SpareRequestLine[];
@@ -377,6 +407,7 @@ export interface EmailMessage {
 }
 
 export interface SparePart {
+  part_number?: number;
   slot: string | null;
   part: string | null;
   bom: string | null;
@@ -384,12 +415,20 @@ export interface SparePart {
   /** Upgrade-only fields retained from 3.1.4 records and drafts. */
   faulty_sn?: string | null;
   new_sn?: string | null;
+  submitted_request_ids?: string[];
+  submitted?: boolean;
+  active_request_ids?: string[];
 }
 
 export interface SpareDevice {
+  device_number?: number;
   device: string | null;
   model: string | null;
+  notes?: string | null;
   faulty_sns?: string[];
+  next_part_number?: number;
+  active_request_ids?: string[];
+  has_submitted_parts?: boolean;
   parts: SparePart[];
 }
 
