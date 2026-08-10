@@ -74,7 +74,7 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
       selected: false,
       condition: item.return_condition === "New" ? "New" : "Faulty",
     }])));
-  }, [request?.revision]);
+  }, [request?.requestId, request?.revision]);
 
   useEffect(() => {
     const tabs = ["items", "emails", "history"] as const;

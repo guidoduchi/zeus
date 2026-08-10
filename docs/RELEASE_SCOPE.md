@@ -10,8 +10,9 @@ Included:
 - selectable data storage with a full-clone-plus-20-MiB capacity gate,
   verified restart handoff, safe rollback, and post-restart original deletion;
 - autocomplete Spare Request inputs, automatically derived customer initials,
-  one unified customer-contact name, and an explicit configuration prompt when
-  export destinations or templates are absent;
+  one unified customer-contact name, and an explicit configuration redirect
+  only when export is attempted while destinations or templates are absent;
+  the in-progress request form remains mounted while Configuration is corrected;
 - slot-derived physical-unit, future-RMA, and Fault Tag expansion, with a manual
   multiplier for slotless groups and every unit retaining the damaged device's
   newline-delimited faulty serial evidence together in one cell;
@@ -42,7 +43,8 @@ Included:
 - independent ticket-list and detail scrolling; no whole-page scrolling;
 - fixed-width columns with locally persisted visibility and order controls;
 - native wheel scrolling inside dense tables without wheel-driven row changes,
-  plus click/Enter-only activation and closed-detail customer-contact context;
+  plus click/Enter-only opening, arrow-driven refresh of an already-open detail,
+  and closed-detail customer-contact context;
 - a bounded, themed SR-number-prefix autocomplete in Global data and persisted
   Compact, Standard, and Large interface typography presets;
 - severity in the default dense dashboard, MW as the UI label for `Done?`, and

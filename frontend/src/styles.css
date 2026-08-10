@@ -696,10 +696,6 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .draft-manager-list article.has-conflict { box-shadow: inset 3px 0 var(--yellow); background: rgb(255 217 26 / 5%); }
 .bom-manager { min-height: 500px; }
 
-.export-setup-gate { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; padding: 10px; border: 1px solid var(--yellow); border-left-width: 4px; background: rgb(255 217 26 / 7%); }
-.export-setup-gate > div { display: grid; gap: 4px; }
-.export-setup-gate strong { color: var(--yellow); font-size: var(--font-body); }
-.export-setup-gate span { color: var(--muted); font-size: var(--font-small); line-height: 1.4; }
 .faulty-serials-field textarea { min-height: 92px; resize: vertical; }
 .faulty-serials-field small { color: var(--muted); font-size: var(--font-caption); line-height: 1.4; }
 .spare-request-detail .detail-header { min-height: 62px; }

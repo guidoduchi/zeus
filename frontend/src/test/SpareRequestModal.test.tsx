@@ -82,7 +82,7 @@ describe("SpareRequestModal", () => {
         initialPart={part}
         onClose={vi.fn()}
         onExport={vi.fn()}
-        onOpenSettings={vi.fn()}
+        onExportSetupRequired={vi.fn()}
         onError={vi.fn()}
       />,
     );
@@ -96,12 +96,92 @@ describe("SpareRequestModal", () => {
       <SpareRequestModal
         onClose={vi.fn()}
         onExport={vi.fn()}
-        onOpenSettings={vi.fn()}
+        onExportSetupRequired={vi.fn()}
         onError={vi.fn()}
       />,
     );
 
     expect(screen.getByLabelText("TT · 8 digits")).toBeEnabled();
+  });
+
+  it("defers missing export configuration until the explicit export attempt", async () => {
+    const user = userEvent.setup();
+    const onExport = vi.fn().mockResolvedValue(undefined);
+    const onExportSetupRequired = vi.fn();
+    api.getSpareReferenceData.mockResolvedValue({
+      schemaVersion: 2,
+      organizations: [],
+      customers: [],
+      sites: [],
+      requesters: [{ id: "__current_user__", name: "Nebby Operator", email: "nebby@example.com", phone: "+593991234567", username: "nebby", pinned: true, currentUser: true }],
+      boms: [],
+      exportSetup: {
+        requestReady: false,
+        returnReady: false,
+        requestMissing: [
+          { key: "paths.spare_parts_export_directory", label: "Spare Request export folder" },
+          { key: "paths.spare_request_template", label: "Spare Request template" },
+        ],
+        returnMissing: [],
+      },
+    });
+    api.getSpareRequestPrefill.mockResolvedValue({
+      ticketId: "39416095",
+      ticketExists: true,
+      profile: {
+        customerName: "Juan Piguave",
+        customerOrganization: "Claro Ecuador",
+        siteCode: "UIO1",
+        siteAddress: "Av. Example 123",
+        cloud: "FusionSphere",
+      },
+      lines: [],
+      warning: null,
+    });
+    const modalProps = {
+      initialPart: part,
+      onClose: vi.fn(),
+      onExport,
+      onExportSetupRequired,
+      onError: vi.fn(),
+    };
+    const { rerender } = render(
+      <SpareRequestModal
+        {...modalProps}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText("Requester *")).toHaveValue("Nebby Operator"));
+    await waitFor(() => expect(screen.getByLabelText("Customer name *")).toHaveValue("Juan Piguave"));
+    expect(screen.queryByText("Export configuration required")).not.toBeInTheDocument();
+    expect(onExportSetupRequired).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Export XLSX & create request" }));
+    expect(onExportSetupRequired).toHaveBeenCalledWith([
+      "Spare Request export folder",
+      "Spare Request template",
+    ]);
+    expect(onExport).not.toHaveBeenCalled();
+
+    api.getSpareReferenceData.mockResolvedValue({
+      schemaVersion: 2,
+      organizations: [],
+      customers: [],
+      sites: [],
+      requesters: [{ id: "__current_user__", name: "Changed default", email: "changed@example.com", phone: "000", username: null, pinned: true, currentUser: true }],
+      boms: [],
+      exportSetup: { requestReady: true, returnReady: true, requestMissing: [], returnMissing: [] },
+    });
+    rerender(<SpareRequestModal {...modalProps} configurationRevision={1} suspended />);
+    await waitFor(() => expect(api.getSpareReferenceData).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("dialog", { name: "Export Spare Request" })).not.toBeInTheDocument();
+
+    rerender(<SpareRequestModal {...modalProps} configurationRevision={1} />);
+    expect(screen.getByLabelText("Requester *")).toHaveValue("Nebby Operator");
+    expect(screen.getByLabelText("Customer name *")).toHaveValue("Juan Piguave");
+
+    await user.click(screen.getByRole("button", { name: "Export XLSX & create request" }));
+    expect(onExport).toHaveBeenCalledTimes(1);
   });
 
   it("autocompletes global data and derives one BOM quantity from newline slots", async () => {
@@ -120,7 +200,7 @@ describe("SpareRequestModal", () => {
       <SpareRequestModal
         onClose={vi.fn()}
         onExport={onExport}
-        onOpenSettings={vi.fn()}
+        onExportSetupRequired={vi.fn()}
         onError={vi.fn()}
       />,
     );

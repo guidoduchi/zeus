@@ -34,9 +34,11 @@ interface LineDraft {
 interface Props {
   initialTicketId?: string;
   initialPart?: SparePartSummary | null;
+  configurationRevision?: number;
+  suspended?: boolean;
   onClose: () => void;
   onExport: (payload: Record<string, unknown>) => Promise<void>;
-  onOpenSettings: () => void;
+  onExportSetupRequired: (missing: string[]) => void;
   onError: (error: unknown) => void;
 }
 
@@ -49,7 +51,7 @@ function normalized(value: unknown): string {
   return String(value || "").trim().toLocaleLowerCase();
 }
 
-export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExport, onOpenSettings, onError }: Props) {
+export function SpareRequestModal({ initialTicketId, initialPart, configurationRevision = 0, suspended = false, onClose, onExport, onExportSetupRequired, onError }: Props) {
   const inheritedTicket = Boolean(initialTicketId || initialPart);
   const [ticketId, setTicketId] = useState(initialTicketId || initialPart?.ticketId || "");
   const [source, setSource] = useState<"ticket" | "manual">(inheritedTicket ? "ticket" : "manual");
@@ -82,15 +84,15 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
   const [references, setReferences] = useState<SpareReferenceData | null>(null);
 
   const requestReady = Boolean(references?.exportSetup.requestReady);
-  const canExport = useMemo(() => (
-    requestReady
+  const canAttemptExport = useMemo(() => (
+    Boolean(references)
     && /^\d{8}$/.test(ticketId)
     && Boolean(profile.customerName.trim() && profile.customerOrganization.trim())
     && Boolean(profile.siteCode.trim() && profile.siteAddress.trim() && profile.cloud.trim())
     && Boolean(profile.requesterName.trim())
     && lines.length > 0
     && lines.every((line) => line.bom.trim() && line.description.trim() && Number(line.amount) >= 1)
-  ), [lines, profile, requestReady, ticketId]);
+  ), [lines, profile, references, ticketId]);
 
   useEffect(() => {
     getSpareReferenceData().then((result) => {
@@ -98,9 +100,9 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
       const preferred = result.requesters.find((row) => row.currentUser)
         || result.requesters.find((row) => row.pinned)
         || result.requesters[0];
-      if (preferred) applyRequester(preferred);
+      if (preferred) applyRequester(preferred, false);
     }).catch(onError);
-  }, []);
+  }, [configurationRevision, onError]);
 
   useEffect(() => {
     if (!inheritedTicket) return;
@@ -111,12 +113,12 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
     setProfile((current) => ({ ...current, [key]: value }));
   }
 
-  function applyRequester(row: RequesterProfile) {
+  function applyRequester(row: RequesterProfile, overwrite = true) {
     setProfile((current) => ({
       ...current,
-      requesterName: row.name || current.requesterName,
-      requesterEmail: row.email || current.requesterEmail,
-      requesterPhone: row.phone || current.requesterPhone,
+      requesterName: overwrite ? row.name || current.requesterName : current.requesterName || row.name,
+      requesterEmail: overwrite ? row.email || current.requesterEmail : current.requesterEmail || row.email,
+      requesterPhone: overwrite ? row.phone || current.requesterPhone : current.requesterPhone || row.phone,
     }));
   }
 
@@ -249,7 +251,11 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
   }
 
   async function submit() {
-    if (!canExport) return;
+    if (!canAttemptExport) return;
+    if (!requestReady) {
+      onExportSetupRequired(references?.exportSetup.requestMissing.map((item) => item.label) || []);
+      return;
+    }
     setSaving(true);
     try {
       await onExport({
@@ -279,14 +285,14 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
     }
   }
 
-  const missing = references?.exportSetup.requestMissing.map((item) => item.label).join(" and ");
+  if (suspended) return null;
+
   return <Modal title="Export Spare Request" subtitle="Choose the customer, site, requester, and one BOM per group. Newline-separated slots set quantity automatically; slotless groups keep a manual multiplier." onClose={onClose} wide actions={<>
     <span className="modal-action-note">{source === "ticket" ? "TT inherited from active SR" : "Manual TT · warning allowed"}</span>
     <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
-    <button type="button" className="primary-button" disabled={!canExport || saving} onClick={() => void submit()}>{saving ? "Exporting…" : "Export XLSX & create request"}</button>
+    <button type="button" className="primary-button" disabled={!canAttemptExport || saving} onClick={() => void submit()}>{saving ? "Exporting…" : "Export XLSX & create request"}</button>
   </>}>
     <div className="spare-request-form">
-      {!requestReady && <section className="export-setup-gate"><div><strong>Export configuration required</strong><span>Configure {missing || "the export folder and request template"} before Zeus can create this workbook.</span></div><button type="button" className="primary-button" onClick={onOpenSettings}>Open configuration</button></section>}
       <section className="form-section">
         <div className="section-heading"><strong>Customer and ticket</strong><span>{source}</span></div>
         <div className="form-grid three">

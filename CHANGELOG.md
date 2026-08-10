@@ -16,8 +16,12 @@
 - Prefetches and caches Service Requests and Spare Requests projections in the
   browser and server so workspace changes refresh in place instead of reopening
   the full workbench loading screen.
-- Keeps arrow keys highlight-only while native wheel input scrolls the table,
-  and shows the highlighted SR's customer contact only while detail is closed.
+- Keeps arrows highlight-only while detail is closed, refreshes an already-open
+  detail as arrow selection moves, and leaves native wheel input to scroll the
+  table without changing selection.
+- Defers missing Spare Request export-configuration redirection until an
+  explicit export attempt, so manual and eligible-SR request forms open freely
+  and remain intact while Configuration is corrected.
 - Replaces the browser-native Global data SR picker with a bounded Zeus-themed
   prefix autocomplete, fixes the two-row narrow Spare Request toolbar, and adds
   persisted Compact, Standard, and Large semantic typography presets.

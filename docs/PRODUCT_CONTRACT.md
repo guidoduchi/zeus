@@ -76,13 +76,16 @@ Consequences:
     alone creates the physical unit records, future RMAs, and Fault Tag rows.
 22. Newline-only faulty component serials are group evidence, not extra units.
     Every physical unit's single Faulty SN cell contains the entire serial list.
-23. ↑/↓ follows the currently visible server-sorted and filtered row order,
+23. ↑/↓ follows the currently visible server-sorted and filtered row order.
+    With detail closed it moves only the persistent highlight; with detail
+    already open it also refreshes that panel to the newly highlighted row,
     keeps the active detail tab, preserves drafts, and informs the user when a
     draft was left protected. ←/→ changes detail tabs without wrapping.
 24. Service filters cover Planning, MW, and Severity. Spare Request filters
     cover Status, dispatch risk, Site, Cloud, conflict state, and RMA state.
 25. The mouse wheel scrolls the table viewport without changing its highlighted
-    row. Only click or Enter opens a row; arrow keys only move the highlight.
+    row. Only click or Enter may open a closed detail panel; arrow keys may
+    refresh an already-open panel but never open one from the closed state.
 26. Global data SR lookup is hidden until a numeric prefix is typed, remains
     height-bounded, and scrolls independently. Interface typography uses one
     persisted Compact, Standard, or Large semantic scale.

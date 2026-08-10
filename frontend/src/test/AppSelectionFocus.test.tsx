@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   BootstrapPayload,
   ServiceRequestsDashboardPayload,
+  SparePartSummary,
   SpareRequestDetail,
   SpareRequestItemSummary,
   SpareRequestsDashboardPayload,
@@ -16,7 +17,10 @@ const apiMocks = vi.hoisted(() => ({
   exportSpareRequest: vi.fn(),
   getBootstrap: vi.fn(),
   getDashboard: vi.fn(),
+  getSpareReferenceData: vi.fn(),
   getSpareRequest: vi.fn(),
+  getSpareRequestPrefill: vi.fn(),
+  getSettings: vi.fn(),
   getTemplates: vi.fn(),
   getTicket: vi.fn(),
   purgeSpareArchive: vi.fn(),
@@ -252,6 +256,34 @@ function spareDetail(row: SpareRequestItemSummary): SpareRequestDetail {
 
 const serviceRows = ["20000001", "20000002", "20000003"].map(serviceSummary);
 const spareRows = [1, 2, 3].map(spareSummary);
+const eligiblePart: SparePartSummary = {
+  rowId: "20000001:1:1",
+  ticketId: "20000001",
+  revision: "revision-20000001",
+  lifecycle: "active",
+  done: "N",
+  plannedDate: "Unplanned",
+  plannedDays: null,
+  plannedState: "unplanned",
+  plannedColor: "yellow",
+  site: "GYE",
+  cloud: "Cloud",
+  deviceNumber: 1,
+  partNumber: 1,
+  device: "Device",
+  model: "Model",
+  slot: "1/0/1",
+  part: "Controller board",
+  bom: "BOM-1",
+  bomColor: null,
+  faultySn: "FAULTY-1",
+  newSn: "—",
+  summary: "Controller alarm",
+  risk: "none",
+  hasPart: true,
+  readOnly: false,
+  source: "current",
+};
 
 const serviceDashboard: ServiceRequestsDashboardPayload = {
   workspace: "service-requests",
@@ -312,6 +344,28 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", FakeEventSource);
   apiMocks.getBootstrap.mockResolvedValue(bootstrap);
   apiMocks.getTemplates.mockResolvedValue({ templates: [] });
+  apiMocks.getSettings.mockResolvedValue({ schemaVersion: 9, settings: [] });
+  apiMocks.getSpareReferenceData.mockResolvedValue({
+    schemaVersion: 2,
+    organizations: [],
+    customers: [],
+    sites: [],
+    requesters: [],
+    boms: [],
+    exportSetup: {
+      requestReady: true,
+      returnReady: true,
+      requestMissing: [],
+      returnMissing: [],
+    },
+  });
+  apiMocks.getSpareRequestPrefill.mockResolvedValue({
+    ticketId: eligiblePart.ticketId,
+    ticketExists: true,
+    profile: {},
+    lines: [],
+    warning: null,
+  });
   apiMocks.getDashboard.mockImplementation(async (workspace: string) => (
     workspace === "spare-requests" ? spareDashboard : serviceDashboard
   ));
@@ -335,6 +389,136 @@ describe("workspace selection and detail focus", () => {
 
     await screen.findByRole("row", { name: /20000001/ });
     expect(document.documentElement).toHaveAttribute("data-font-scale", "large");
+  });
+
+  it("keeps an open SR detail synchronized with arrow navigation, then returns to highlight-only after Escape", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const second = await screen.findByRole("row", { name: /20000002/ });
+    const third = screen.getByRole("row", { name: /20000003/ });
+    await user.click(second);
+    await screen.findByRole("complementary", { name: "SR 20000002 detail" });
+
+    apiMocks.getTicket.mockClear();
+    await user.keyboard("{ArrowDown}");
+    await screen.findByRole("complementary", { name: "SR 20000003 detail" });
+    expect(third).toHaveAttribute("aria-selected", "true");
+    expect(apiMocks.getTicket).toHaveBeenCalledWith("20000003");
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(third).toHaveFocus());
+    apiMocks.getTicket.mockClear();
+    await user.keyboard("{ArrowUp}");
+    await waitFor(() => expect(second).toHaveFocus());
+    expect(second).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("complementary", { name: "SR 20000002 detail" })).not.toBeInTheDocument();
+    expect(apiMocks.getTicket).not.toHaveBeenCalled();
+  });
+
+  it("keeps an open Spare Request detail synchronized with arrow navigation", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("row", { name: /20000001/ });
+    await user.click(screen.getByRole("button", { name: "Spare Requests" }));
+    const first = await screen.findByRole("row", { name: /C3209937821/ });
+    const second = screen.getByRole("row", { name: /C3209937822/ });
+    await user.click(first);
+    await screen.findByRole("complementary", { name: `Spare Request ${spareRows[0].requestId} detail` });
+
+    apiMocks.getSpareRequest.mockClear();
+    await user.keyboard("{ArrowDown}");
+    await screen.findByRole("complementary", { name: `Spare Request ${spareRows[1].requestId} detail` });
+    expect(second).toHaveAttribute("aria-selected", "true");
+    expect(apiMocks.getSpareRequest).toHaveBeenCalledWith(spareRows[1].requestId);
+  });
+
+  it("ignores stale detail responses during rapid arrow navigation", async () => {
+    const user = userEvent.setup();
+    let resolveSecond: ((value: TicketDetail) => void) | undefined;
+    let resolveThird: ((value: TicketDetail) => void) | undefined;
+    apiMocks.getTicket.mockImplementation((ticketId: string) => {
+      if (ticketId === "20000002") return new Promise<TicketDetail>((resolve) => { resolveSecond = resolve; });
+      if (ticketId === "20000003") return new Promise<TicketDetail>((resolve) => { resolveThird = resolve; });
+      return Promise.resolve(serviceDetail(ticketId));
+    });
+    render(<App />);
+
+    const second = await screen.findByRole("row", { name: /20000002/ });
+    await user.click(second);
+    await user.keyboard("{ArrowDown}");
+    resolveThird?.(serviceDetail("20000003"));
+    await screen.findByRole("complementary", { name: "SR 20000003 detail" });
+
+    resolveSecond?.(serviceDetail("20000002"));
+    await Promise.resolve();
+    expect(screen.getByRole("complementary", { name: "SR 20000003 detail" })).toBeVisible();
+    expect(screen.queryByRole("complementary", { name: "SR 20000002 detail" })).not.toBeInTheDocument();
+  });
+
+  it("opens manual and eligible request editors without redirecting to Configuration", async () => {
+    const user = userEvent.setup();
+    const exportSetup = {
+      requestReady: false,
+      returnReady: false,
+      requestMissing: [{ key: "paths.spare_parts_export_directory", label: "Spare Request export folder" }],
+      returnMissing: [],
+    };
+    apiMocks.getBootstrap.mockResolvedValue({ ...bootstrap, spareRequestExport: exportSetup });
+    apiMocks.getSpareReferenceData.mockResolvedValue({
+      schemaVersion: 2,
+      organizations: [],
+      customers: [],
+      sites: [],
+      requesters: [{ id: "__current_user__", name: "Nebby Operator", email: "nebby@example.com", phone: "+593991234567", username: "nebby", pinned: true, currentUser: true }],
+      boms: [],
+      exportSetup,
+    });
+    apiMocks.getSpareRequestPrefill.mockResolvedValue({
+      ticketId: eligiblePart.ticketId,
+      ticketExists: true,
+      profile: {
+        customerName: "Juan Piguave",
+        customerOrganization: "Claro Ecuador",
+        siteCode: "GYE",
+        siteAddress: "Av. Example 123",
+        cloud: "Cloud",
+      },
+      lines: [],
+      warning: null,
+    });
+    apiMocks.getDashboard.mockImplementation(async (nextWorkspace: string, _sort: string, _direction: string, _search: string, view: string) => {
+      if (nextWorkspace === "service-requests") return serviceDashboard;
+      if (view === "eligible") return { ...spareDashboard, view: "eligible", spareRequests: [], eligibleParts: [eligiblePart] };
+      return spareDashboard;
+    });
+    render(<App />);
+
+    await screen.findByRole("row", { name: /20000001/ });
+    await user.click(screen.getByRole("button", { name: "Spare Requests" }));
+    await user.click(screen.getByRole("button", { name: "Manual request" }));
+    expect(await screen.findByRole("dialog", { name: "Export Spare Request" })).toBeVisible();
+    expect(screen.queryByRole("dialog", { name: "Zeus configuration" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await user.click(screen.getByRole("tab", { name: "Eligible SR Parts" }));
+    const eligible = await screen.findByRole("row", { name: /20000001/ });
+    await user.click(eligible);
+    const requestEditor = await screen.findByRole("dialog", { name: "Export Spare Request" });
+    expect(requestEditor).toBeVisible();
+    expect(screen.queryByRole("dialog", { name: "Zeus configuration" })).not.toBeInTheDocument();
+
+    const exportButton = within(requestEditor).getByRole("button", { name: "Export XLSX & create request" });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    await user.click(exportButton);
+    const configuration = await screen.findByRole("dialog", { name: "Zeus configuration" });
+    expect(screen.queryByRole("dialog", { name: "Export Spare Request" })).not.toBeInTheDocument();
+    await user.click(within(configuration).getByRole("button", { name: /^Close$/ }));
+
+    const restoredEditor = await screen.findByRole("dialog", { name: "Export Spare Request" });
+    expect(within(restoredEditor).getByLabelText("TT · 8 digits")).toHaveValue(eligiblePart.ticketId);
+    expect(within(restoredEditor).getByLabelText("Customer name *")).toHaveValue("Juan Piguave");
   });
 
   it("closes an SR detail, moves the row cursor without opening, and activates only on Enter", async () => {

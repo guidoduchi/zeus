@@ -28,9 +28,15 @@ test("the dashboard wheel scrolls the table while activation remains click or En
   await expect(page.locator(".grid-status")).not.toContainText(/Enter opens/i);
   await expect(page.getByRole("complementary", { name: /SR \d{8} detail/ })).toHaveCount(0);
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("complementary", { name: /SR \d{8} detail/ })).toBeVisible();
+  const firstId = await rows.first().getAttribute("data-ticket-id");
+  const secondId = await rows.nth(1).getAttribute("data-ticket-id");
+  if (!firstId || !secondId) throw new Error("Expected two service-request rows");
+  await expect(page.getByRole("complementary", { name: `SR ${firstId} detail` })).toBeVisible();
   await expect(page.locator(".grid-status")).not.toContainText("Customer contact:");
   await expect(page.getByRole("button", { name: "Work fields" })).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("complementary", { name: `SR ${secondId} detail` })).toBeVisible();
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
 });
 
 test("Escape closes details without losing the row cursor in either workspace", async ({ page }) => {
@@ -321,7 +327,7 @@ test("saving to Zeus keeps the workstation mounted", async ({ page }, testInfo) 
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("zeus3.ticket-draft.")).length)).toBe(0);
 });
 
-test("unsaved Work Fields survive highlight-only arrows and keyboard reload is blocked", async ({ page }) => {
+test("unsaved Work Fields survive open-detail arrow navigation and keyboard reload is blocked", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("[data-ticket-id]");
   const firstId = await rows.nth(0).getAttribute("data-ticket-id");
@@ -335,14 +341,10 @@ test("unsaved Work Fields survive highlight-only arrows and keyboard reload is b
   await detail.getByLabel("Notes").fill("Protected navigation draft");
   await page.locator(".stats-bar").click();
   await page.keyboard.press("ArrowDown");
-  await expect(page.getByRole("complementary", { name: `SR ${firstId} detail` })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: `SR ${secondId} detail` })).toBeVisible();
   await expect(page.locator(`[data-ticket-id="${secondId}"]`)).toBeFocused();
   await expect(page.locator(`[data-ticket-id="${secondId}"]`)).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByText(new RegExp(`Unsaved SR ${firstId} draft kept safely`))).toHaveCount(0);
-
-  await page.keyboard.press("Enter");
   await expect(page.getByText(new RegExp(`Unsaved SR ${firstId} draft kept safely`))).toBeVisible();
-  await expect(page.getByRole("complementary", { name: `SR ${secondId} detail` })).toBeVisible();
   await expect(page.getByRole("button", { name: "Work fields" })).toHaveClass(/active/);
   await expect(page.locator(`[data-ticket-id="${secondId}"]`)).toBeFocused();
   await expect(page.locator(`[data-ticket-id="${firstId}"]`)).toHaveClass(/draft-protected/);
@@ -355,10 +357,8 @@ test("unsaved Work Fields survive highlight-only arrows and keyboard reload is b
   await expect(page.getByRole("button", { name: "Work fields" })).toBeFocused();
 
   await page.keyboard.press("ArrowUp");
-  await expect(page.getByRole("complementary", { name: `SR ${secondId} detail` })).toBeVisible();
-  await expect(page.locator(`[data-ticket-id="${firstId}"]`)).toHaveAttribute("aria-selected", "true");
-  await page.keyboard.press("Enter");
   await expect(page.getByRole("complementary", { name: `SR ${firstId} detail` })).toBeVisible();
+  await expect(page.locator(`[data-ticket-id="${firstId}"]`)).toHaveAttribute("aria-selected", "true");
   await expect(page.getByLabel("Notes")).toHaveValue("Protected navigation draft");
   await page.getByRole("button", { name: /1 protected draft/i }).click();
   const drafts = page.getByRole("dialog", { name: "Protected drafts" });

@@ -249,6 +249,7 @@ export default function App() {
   const [theme, setTheme] = useState(() => readPreference("zeus3.theme", "dark"));
   const [operationsOpen, setOperationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [configurationRevision, setConfigurationRevision] = useState(0);
   const [spareExportOpen, setSpareExportOpen] = useState(false);
   const [globalDataOpen, setGlobalDataOpen] = useState(false);
   const [bomCatalogOpen, setBomCatalogOpen] = useState(false);
@@ -264,6 +265,8 @@ export default function App() {
   const [ticketInitialTab, setTicketInitialTab] = useState<"overview" | "work" | "spares">("overview");
   const searchRef = useRef<HTMLInputElement>(null);
   const dashboardRequest = useRef(0);
+  const ticketDetailRequest = useRef(0);
+  const spareRequestDetailRequest = useRef(0);
   const dashboardCache = useRef(new Map<string, DashboardPayload>());
   const dashboardPrefetches = useRef(new Set<string>());
   const preference = workspacePreferences[workspace];
@@ -351,31 +354,38 @@ export default function App() {
   }, []);
 
   const loadTicket = useCallback(async (ticketId: string) => {
+    const requestId = ++ticketDetailRequest.current;
     setTicketLoading(true);
+    setTicket((current) => current?.ticketId === ticketId ? current : null);
     try {
       const result = await getTicket(ticketId);
-      setTicket(result);
+      if (requestId === ticketDetailRequest.current) setTicket(result);
     } catch (error) {
+      if (requestId !== ticketDetailRequest.current) return;
       reportError(error);
       setTicket(null);
       setSelectedTicketId(null);
       setSelectedRowId(null);
     } finally {
-      setTicketLoading(false);
+      if (requestId === ticketDetailRequest.current) setTicketLoading(false);
     }
   }, [reportError]);
 
   const loadSpareRequest = useCallback(async (requestId: string) => {
+    const detailRequestId = ++spareRequestDetailRequest.current;
     setTicketLoading(true);
+    setSpareRequest((current) => current?.requestId === requestId ? current : null);
     try {
-      setSpareRequest(await getSpareRequest(requestId));
+      const result = await getSpareRequest(requestId);
+      if (detailRequestId === spareRequestDetailRequest.current) setSpareRequest(result);
     } catch (error) {
+      if (detailRequestId !== spareRequestDetailRequest.current) return;
       reportError(error);
       setSpareRequest(null);
       setSelectedRequestId(null);
       setSelectedRowId(null);
     } finally {
-      setTicketLoading(false);
+      if (detailRequestId === spareRequestDetailRequest.current) setTicketLoading(false);
     }
   }, [reportError]);
 
@@ -501,6 +511,7 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedTicketId) {
+      ticketDetailRequest.current += 1;
       setTicket(null);
       return;
     }
@@ -509,6 +520,7 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedRequestId) {
+      spareRequestDetailRequest.current += 1;
       setSpareRequest(null);
       return;
     }
@@ -652,7 +664,11 @@ export default function App() {
 
   const highlightServiceRequest = useCallback((ticketId: string) => {
     setSelectedRowId(ticketId);
-  }, []);
+    if (!selectedTicketId) return;
+    informProtectedTicketMove(ticketId);
+    setSelectedRequestId(null);
+    setSelectedTicketId(ticketId);
+  }, [informProtectedTicketMove, selectedTicketId]);
 
   const selectSparePart = useCallback((row: SparePartSummary) => {
     informProtectedTicketMove(row.ticketId);
@@ -664,7 +680,12 @@ export default function App() {
 
   const highlightSparePart = useCallback((row: SparePartSummary) => {
     setSelectedRowId(row.rowId);
-  }, []);
+    if (!selectedTicketId) return;
+    informProtectedTicketMove(row.ticketId);
+    setSelectedRequestId(null);
+    setSelectedTicketId(row.ticketId);
+    setTicketInitialTab("spares");
+  }, [informProtectedTicketMove, selectedTicketId]);
 
   const selectSpareRequest = useCallback((row: SpareRequestItemSummary) => {
     setSelectedTicketId(null);
@@ -674,7 +695,10 @@ export default function App() {
 
   const highlightSpareRequest = useCallback((row: SpareRequestItemSummary) => {
     setSelectedRowId(row.rowId);
-  }, []);
+    if (!selectedRequestId || row.readOnly) return;
+    setSelectedTicketId(null);
+    setSelectedRequestId(row.requestId);
+  }, [selectedRequestId]);
 
   const chooseSpareView = useCallback((next: SpareRequestView) => {
     if (next === spareView) return;
@@ -717,21 +741,10 @@ export default function App() {
   }, [workspace, workspacePreferences]);
 
   const openSpareExport = useCallback((ticketId?: string, part: SparePartSummary | null = null) => {
-    if (bootstrap && !bootstrap.spareRequestExport.requestReady) {
-      const missing = bootstrap.spareRequestExport.requestMissing
-        .map((item) => item.label)
-        .join(" and ");
-      setToast({
-        tone: "info",
-        message: `Configure ${missing || "the Spare Request export paths"} before exporting.`,
-      });
-      setSettingsOpen(true);
-      return;
-    }
     setSpareExportTicketId(ticketId);
     setSpareExportPart(part);
     setSpareExportOpen(true);
-  }, [bootstrap]);
+  }, []);
 
   const completeOnboarding = useCallback(async (profile: UserProfile) => {
     await saveUserProfile(profile);
@@ -1076,14 +1089,24 @@ export default function App() {
           onError={reportError}
         />
       )}
+      {spareExportOpen && <SpareRequestModal initialTicketId={spareExportTicketId} initialPart={spareExportPart} configurationRevision={configurationRevision} suspended={settingsOpen} onClose={() => setSpareExportOpen(false)} onExport={createSpareRequest} onExportSetupRequired={(missing) => {
+        setToast({
+          tone: "info",
+          message: `Configure ${missing.join(" and ") || "the Spare Request export paths"} before exporting.`,
+        });
+        setSettingsOpen(true);
+      }} onError={reportError} />}
       {settingsOpen && (
         <SettingsModal
           onClose={() => setSettingsOpen(false)}
-          onSaved={() => { loadBootstrap().catch(reportError); loadDashboard().catch(reportError); }}
+          onSaved={() => {
+            setConfigurationRevision((current) => current + 1);
+            loadBootstrap().catch(reportError);
+            loadDashboard().catch(reportError);
+          }}
           onError={reportError}
         />
       )}
-      {spareExportOpen && <SpareRequestModal initialTicketId={spareExportTicketId} initialPart={spareExportPart} onClose={() => setSpareExportOpen(false)} onExport={createSpareRequest} onOpenSettings={() => { setSpareExportOpen(false); setSettingsOpen(true); }} onError={reportError} />}
       {globalDataOpen && <GlobalDataModal onClose={() => setGlobalDataOpen(false)} onSaved={() => { loadBootstrap().catch(reportError); setToast({ tone: "success", message: "Global data saved locally." }); }} onError={reportError} />}
       {draftsOpen && <DraftsModal onClose={() => setDraftsOpen(false)} onReview={reviewProtectedDraft} onSaved={(tickets) => { if (selectedTicketId && tickets[selectedTicketId]) setTicket(tickets[selectedTicketId]); loadDashboard().catch(reportError); }} onError={reportError} onNotice={(message) => setToast({ tone: "success", message })} />}
       {bomCatalogOpen && <BomCatalogModal onClose={() => setBomCatalogOpen(false)} onSaved={() => setToast({ tone: "success", message: "BOM catalog saved locally." })} onError={reportError} />}
