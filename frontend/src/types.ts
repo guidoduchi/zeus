@@ -620,6 +620,14 @@ export interface Job {
   message: string;
   current: number | null;
   total: number | null;
+  lastProgressAt?: string | null;
+  updates?: Array<{
+    timestamp: string;
+    stage: string;
+    message: string;
+    current: number | null;
+    total: number | null;
+  }>;
   result: unknown;
   error: { type: string; message: string } | null;
 }

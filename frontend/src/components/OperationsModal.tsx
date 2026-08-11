@@ -18,6 +18,7 @@ interface Props {
 export function OperationsModal({ jobs, outlookEnabled, outlookAvailable, onClose, onSettings, onRun, onCancel, onError }: Props) {
   const [confirmation, setConfirmation] = useState<"publish" | "shutdown" | null>(null);
   const [stopping, setStopping] = useState(false);
+  const [expandedJobs, setExpandedJobs] = useState<Set<string>>(() => new Set());
   const active = jobs.filter((job) => job.status === "queued" || job.status === "running");
   const outlookReady = outlookEnabled && outlookAvailable;
   const outlookMessage = !outlookEnabled
@@ -36,6 +37,14 @@ export function OperationsModal({ jobs, outlookEnabled, outlookAvailable, onClos
       try { await stopZeus(); } catch (error) { setStopping(false); onError(error); }
     }
   }
+  function toggleProgressLog(jobId: string) {
+    setExpandedJobs((current) => {
+      const next = new Set(current);
+      if (next.has(jobId)) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+  }
 
   return <>
     <Modal title="Zeus operations" subtitle="The local database is authoritative; workbook output is explicit." onClose={onClose} wide>
@@ -51,14 +60,35 @@ export function OperationsModal({ jobs, outlookEnabled, outlookAvailable, onClos
       <section className="activity-section">
         <div className="section-heading"><strong>Activity</strong><span>{jobs.length}</span></div>
         <div className="job-list">
-          {jobs.length ? jobs.slice(0, 12).map((job) => (
-            <article className={`job-row status-${job.status}`} key={job.id}>
+          {jobs.length ? jobs.slice(0, 12).map((job) => {
+            const updates = job.updates || [];
+            const expanded = expandedJobs.has(job.id);
+            const percent = job.current !== null && job.total
+              ? Math.max(0, Math.min(100, Math.round((job.current / job.total) * 100)))
+              : null;
+            return <article className={`job-row status-${job.status}`} key={job.id}>
               <i aria-hidden="true" />
-              <div><strong>{job.label}</strong><span>{job.message}</span></div>
+              <div className="job-main">
+                <strong>{job.label}</strong>
+                <span>{job.message}</span>
+                {percent !== null && <div className="job-progress" aria-label={`${percent}% complete`}><span style={{ width: `${percent}%` }} /></div>}
+                {updates.length > 0 && <button
+                  type="button"
+                  className="job-log-toggle"
+                  aria-expanded={expanded}
+                  onClick={() => toggleProgressLog(job.id)}
+                >Progress log ({updates.length})</button>}
+                {expanded && <ol className="job-update-list">
+                  {updates.map((update, index) => <li key={`${update.timestamp}-${index}`}>
+                    <time>{new Date(update.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
+                    <span>{update.message}</span>
+                  </li>)}
+                </ol>}
+              </div>
               <time>{job.status}</time>
               {job.cancellable && active.some((candidate) => candidate.id === job.id) && <button type="button" className="text-button" onClick={() => onCancel(job.id)}>Cancel</button>}
-            </article>
-          )) : <div className="empty-panel">No operations in this session.</div>}
+            </article>;
+          }) : <div className="empty-panel">No operations in this session.</div>}
         </div>
       </section>
       <section className="shutdown-row">

@@ -30,9 +30,8 @@ from ..fault_tags import (
     next_fault_tag_id,
     normalize_return_site,
 )
-from ..mail import fetch_and_commit_outlook, synchronize_staged_email
+from ..mail import MailFetchCancelled, fetch_and_commit_outlook, synchronize_staged_email
 from ..mop import generate_mop
-from ..reconcile import sync_newest_advanced_search
 from ..reference_data import (
     ReferenceDataError,
     combined_reference_data,
@@ -98,7 +97,7 @@ from .errors import (
     SetupRequiredError,
     ValidationError,
 )
-from .jobs import EventBroker, JobContext, JobManager
+from .jobs import EventBroker, JobCancelled, JobContext, JobManager
 from .serialization import (
     DEFAULT_SORT_DIRECTIONS,
     SPARE_PART_DEFAULT_SORT_DIRECTIONS,
@@ -3085,16 +3084,22 @@ class ApplicationService:
     ) -> dict[str, Any]:
         def operation() -> dict[str, Any]:
             self._require_outlook()
-            context.report("eligibility", "Refreshing ticket eligibility")
-            sync_newest_advanced_search(self.store)
+            # Direct email fetches intentionally use the last successfully
+            # committed ticket database. Advanced Search is an independent
+            # operation and must never block Outlook because one workbook has
+            # a new or invalid column.
+            context.report("eligibility", "Reading committed ticket eligibility")
             context.report("outlook", "Opening Classic Outlook")
-            result = fetch_and_commit_outlook(
-                self.store,
-                full_scan=True if rebuild else None,
-                synchronize=synchronize,
-                cancel_event=context.cancel_event,
-                progress=context.progress_callback,
-            )
+            try:
+                result = fetch_and_commit_outlook(
+                    self.store,
+                    full_scan=True if rebuild else None,
+                    synchronize=synchronize,
+                    cancel_event=context.cancel_event,
+                    progress=context.progress_callback,
+                )
+            except MailFetchCancelled as exc:
+                raise JobCancelled(str(exc)) from exc
             self._touch_data("email-rebuild" if rebuild else "email-fetch")
             return result
 

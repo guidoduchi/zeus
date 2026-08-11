@@ -699,6 +699,8 @@ def _folder_metadata(
     callback: ProgressCallback | None,
 ) -> tuple[list[dict[str, Any]], int]:
     items = folder.Items
+    folder_name = str(getattr(folder, "FolderPath", getattr(folder, "Name", "")))
+    item_total = int(getattr(items, "Count", 0) or 0)
     date_property = "[ReceivedTime]" if direction == "received" else "[SentOn]"
     try:
         items.Sort(date_property, True)
@@ -709,13 +711,29 @@ def _folder_metadata(
     _notify(
         callback,
         phase="scan",
-        folder=str(getattr(folder, "FolderPath", getattr(folder, "Name", ""))),
-        total=int(getattr(items, "Count", 0) or 0),
+        folder=folder_name,
+        index=0,
+        total=item_total,
+        scanned=0,
+        matched=0,
         direction=direction,
     )
-    for index in range(1, int(items.Count) + 1):
+    inspected = 0
+    for index in range(1, item_total + 1):
+        inspected = index
         if _cancelled(cancel_event):
             raise MailFetchCancelled("Email fetch cancelled")
+        if index % 100 == 0:
+            _notify(
+                callback,
+                phase="scan",
+                folder=folder_name,
+                index=index,
+                total=item_total,
+                scanned=scanned,
+                matched=len(matched),
+                direction=direction,
+            )
         try:
             item = items.Item(index)
             if getattr(item, "Class", None) != 43:
@@ -773,13 +791,63 @@ def _folder_metadata(
                     "source": "outlook",
                 }
             )
-            if scanned % 100 == 0:
-                _notify(callback, phase="scan", scanned=scanned, matched=len(matched))
         except MailFetchCancelled:
             raise
         except Exception:
             continue
+    _notify(
+        callback,
+        phase="scan",
+        folder=folder_name,
+        index=inspected,
+        total=item_total,
+        scanned=scanned,
+        matched=len(matched),
+        direction=direction,
+    )
     return matched, scanned
+
+
+def _body_fetch_keys(
+    metadata: Iterable[dict[str, Any]],
+    *,
+    known_ids: set[str],
+    retained_count: int | None,
+    seen_by_ticket: dict[str, set[str]],
+    refetch_seen: bool,
+) -> set[str]:
+    """Plan the smallest Outlook body read that can change retained data."""
+
+    candidates = list(metadata)
+    body_keys = {
+        str(message["message_key"])
+        for message in candidates
+        if message.get("spare_candidate")
+    }
+    if retained_count == 0:
+        return body_keys
+    for ticket_id in known_ids:
+        ticket_candidates = [
+            message
+            for message in candidates
+            if ticket_id in message.get("ticket_ids", [])
+        ]
+        ticket_candidates.sort(
+            key=lambda message: _timestamp_key(message.get("timestamp")),
+            reverse=True,
+        )
+        selected = (
+            ticket_candidates
+            if retained_count is None
+            else ticket_candidates[:retained_count]
+        )
+        seen = seen_by_ticket.get(ticket_id, set())
+        body_keys.update(
+            str(message["message_key"])
+            for message in selected
+            if refetch_seen or str(message["message_key"]) not in seen
+        )
+    return body_keys
 
 
 def _fetch_outlook_messages_on_worker(
@@ -848,7 +916,13 @@ def _fetch_outlook_messages_on_worker(
             if _cancelled(cancel_event):
                 raise MailFetchCancelled("Email fetch cancelled")
             direction = "sent" if folder is sent else "received"
-            _notify(progress, phase="folder", index=index, count=len(folders))
+            _notify(
+                progress,
+                phase="folder",
+                index=index,
+                count=len(folders),
+                folder=str(getattr(folder, "FolderPath", getattr(folder, "Name", ""))),
+            )
             found, count = _folder_metadata(
                 folder,
                 direction=direction,
@@ -865,38 +939,51 @@ def _fetch_outlook_messages_on_worker(
             metadata.extend(found)
             scanned += count
 
-        # Bodies are the expensive part.  Retrieve only the union of each
-        # ticket's newest configured N matches.
+        # Bodies are the expensive part. Retrieve only messages that can add
+        # retained information. Incremental scans never reopen bodies Zeus has
+        # already committed; an explicit full rebuild may refetch them.
         retained_count = retained_message_limit(store.config)
-        body_keys: set[str] = set()
-        body_keys.update(
-            message["message_key"]
-            for message in metadata
-            if message.get("spare_candidate")
-        )
-        if retained_count is None or retained_count > 0:
-            for ticket_id in known_ids:
-                candidates = [
-                    message for message in metadata if ticket_id in message["ticket_ids"]
-                ]
-                candidates.sort(
-                    key=lambda message: _timestamp_key(message["timestamp"]), reverse=True
+        seen_by_ticket: dict[str, set[str]] = {}
+        for ticket_id in known_ids & active_ids:
+            try:
+                seen_by_ticket[ticket_id] = set(
+                    store.read_ticket(ticket_id)
+                    .get("email", {})
+                    .get("seen_message_keys", [])
                 )
-                selected = candidates if retained_count is None else candidates[:retained_count]
-                body_keys.update(message["message_key"] for message in selected)
-        for index, message in enumerate(metadata, start=1):
-            if message["message_key"] not in body_keys:
-                continue
+            except Exception:
+                seen_by_ticket[ticket_id] = set()
+        body_keys = _body_fetch_keys(
+            metadata,
+            known_ids=known_ids,
+            retained_count=retained_count,
+            seen_by_ticket=seen_by_ticket,
+            refetch_seen=is_full,
+        )
+        body_messages = [
+            message for message in metadata if message["message_key"] in body_keys
+        ]
+        _notify(
+            progress,
+            phase="body",
+            index=0,
+            total=len(body_messages),
+            matched=len(metadata),
+        )
+        for index, message in enumerate(body_messages, start=1):
             if _cancelled(cancel_event):
                 raise MailFetchCancelled("Email fetch cancelled")
             try:
                 item = namespace.GetItemFromID(message["entry_id"], message["store_id"])
                 message["body"] = str(getattr(item, "Body", "") or "")
-                message["html_body"] = str(getattr(item, "HTMLBody", "") or "")
+                if message.get("spare_candidate"):
+                    # Spare Request tables need HTML; ordinary SR history does
+                    # not, and avoiding it materially reduces OST I/O.
+                    message["html_body"] = str(getattr(item, "HTMLBody", "") or "")
             except Exception:
                 message["body"] = ""
                 message["html_body"] = ""
-            _notify(progress, phase="body", index=index, total=len(metadata))
+            _notify(progress, phase="body", index=index, total=len(body_messages))
         for message in metadata:
             message.pop("entry_id", None)
             message.pop("store_id", None)
@@ -908,6 +995,7 @@ def _fetch_outlook_messages_on_worker(
             "folders": len(folders),
             "full_scan": is_full,
             "cutoff": to_iso(cutoff),
+            "body_candidates": len(body_messages),
         }
         return metadata, diagnostics
     finally:
@@ -974,16 +1062,32 @@ def fetch_and_commit_outlook(
     )
     if synchronize is None:
         synchronize = store.config.get("email", {}).get("sync_mode") == "after_fetch"
-    return commit_fetched_messages(
-        store,
-        messages,
-        fetched_ticket_ids=targets,
-        full_scan=bool(diagnostics.get("full_scan")),
-        synchronize=bool(synchronize),
-        update_global_fetch_timer=update_global_timers,
-        update_global_sync_timer=update_global_timers,
-        diagnostics=diagnostics,
+    _notify(
+        progress,
+        phase="commit",
+        message=f"Committing {len(messages):,} matched Outlook messages",
     )
+    try:
+        return commit_fetched_messages(
+            store,
+            messages,
+            fetched_ticket_ids=targets,
+            full_scan=bool(diagnostics.get("full_scan")),
+            synchronize=bool(synchronize),
+            update_global_fetch_timer=update_global_timers,
+            update_global_sync_timer=update_global_timers,
+            diagnostics=diagnostics,
+        )
+    except OSError as exc:
+        log_path = record_exception(store.config_home, "Email database commit", exc)
+        details = f" Diagnostic log: {log_path}" if log_path is not None else ""
+        wrapped = MailSyncError(
+            "The Outlook scan completed, but Windows blocked Zeus while committing "
+            "the email results. The previous database remains intact."
+            f"{details}"
+        )
+        wrapped.diagnostic_log_path = log_path
+        raise wrapped from exc
 
 
 def import_mail_csv(store: ZeusStore, csv_path: Path) -> dict[str, Any]:

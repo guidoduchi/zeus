@@ -66,6 +66,10 @@ class JobRecord:
     message: str = "Waiting"
     current: int | None = None
     total: int | None = None
+    last_progress_at: str | None = None
+    updates: deque[dict[str, Any]] = field(
+        default_factory=lambda: deque(maxlen=50)
+    )
     result: dict[str, Any] | list[Any] | str | int | float | bool | None = None
     error: dict[str, Any] | None = None
 
@@ -84,9 +88,24 @@ class JobRecord:
             "message": value["message"],
             "current": value["current"],
             "total": value["total"],
+            "lastProgressAt": value["last_progress_at"],
+            "updates": list(value["updates"]),
             "result": value["result"],
             "error": value["error"],
         }
+
+
+def _append_job_update(job: JobRecord) -> None:
+    job.last_progress_at = iso_now()
+    job.updates.append(
+        {
+            "timestamp": job.last_progress_at,
+            "stage": job.stage,
+            "message": job.message,
+            "current": job.current,
+            "total": job.total,
+        }
+    )
 
 
 class JobContext:
@@ -113,19 +132,49 @@ class JobContext:
 
     def progress_callback(self, event: dict[str, Any]) -> None:
         phase = str(event.get("phase") or "working")
+        current = _optional_int(
+            event.get("index")
+            if event.get("index") is not None
+            else event.get("current")
+            if event.get("current") is not None
+            else event.get("scanned")
+        )
+        total = _optional_int(
+            event.get("count")
+            if event.get("count") is not None
+            else event.get("total")
+        )
+        folder = str(event.get("folder") or "").strip()
+        matched = _optional_int(event.get("matched"))
         if phase == "folder":
-            message = "Scanning Outlook folders"
+            position = (
+                f"{current:,} / {total:,}" if current is not None and total else ""
+            )
+            target = f": {folder}" if folder else ""
+            message = f"Scanning Outlook folder {position}{target}".strip()
         elif phase == "scan":
-            message = "Reading Outlook messages"
+            target = folder or "Outlook"
+            position = (
+                f"{current:,} / {total:,} messages"
+                if current is not None and total
+                else f"{current:,} messages" if current is not None else "messages"
+            )
+            suffix = f" · {matched:,} matched" if matched is not None else ""
+            message = f"{target} · {position}{suffix}"
+        elif phase == "body":
+            position = (
+                f"{current:,} / {total:,}" if current is not None and total else ""
+            )
+            message = f"Loading new email bodies {position}".strip()
         elif phase == "commit":
-            message = "Committing email results"
+            message = str(event.get("message") or "Committing email results")
         else:
             message = str(event.get("message") or phase.replace("_", " ").title())
         self.report(
             phase,
             message,
-            current=_optional_int(event.get("index") or event.get("current")),
-            total=_optional_int(event.get("count") or event.get("total")),
+            current=current,
+            total=total,
         )
 
     def raise_if_cancelled(self) -> None:
@@ -225,6 +274,7 @@ class JobManager:
             job.message = message
             job.current = current
             job.total = total
+            _append_job_update(job)
             snapshot = job.snapshot()
         self.broker.publish("job", snapshot)
 
@@ -242,6 +292,7 @@ class JobManager:
                 job.started_at = iso_now()
                 job.stage = "starting"
                 job.message = "Starting"
+                _append_job_update(job)
                 snapshot = job.snapshot()
             self.broker.publish("job", snapshot)
             context = JobContext(self, job_id, cancel_event)
@@ -254,6 +305,7 @@ class JobManager:
                     job.stage = "cancelled"
                     job.message = str(exc)
                     job.finished_at = iso_now()
+                    _append_job_update(job)
                     snapshot = job.snapshot()
             except Exception as exc:
                 with self._lock:
@@ -268,6 +320,7 @@ class JobManager:
                         ).strip(),
                     }
                     job.finished_at = iso_now()
+                    _append_job_update(job)
                     snapshot = job.snapshot()
             else:
                 with self._lock:
@@ -276,6 +329,7 @@ class JobManager:
                     job.message = "Complete"
                     job.result = result
                     job.finished_at = iso_now()
+                    _append_job_update(job)
                     snapshot = job.snapshot()
             finally:
                 with self._lock:
@@ -295,6 +349,7 @@ class JobManager:
                 return job.snapshot()
             self._cancel_events[job_id].set()
             job.message = "Cancellation requested"
+            _append_job_update(job)
             snapshot = job.snapshot()
         self.broker.publish("job", snapshot)
         return snapshot

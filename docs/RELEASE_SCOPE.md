@@ -1,4 +1,4 @@
-# Zeus 3.1.13 release scope
+# Zeus 3.1.14 release scope
 
 Included:
 
@@ -121,6 +121,13 @@ Included:
   interval configuration, all matched email bodies retained by default with an
   optional finite per-ticket cap, and clear nonfatal disablement when no valid
   store exists;
+- direct Outlook fetching isolated from Advanced Search validation, incremental
+  body reads that skip already-retained SR messages, plain-text-only SR reads
+  while preserving Spare Request HTML parsing, exact folder/message/body
+  progress with a bounded activity log, and cancellation reported as cancelled;
+- bounded Windows access-denied/sharing retries for atomic ticket replacement,
+  inherited read-only correction inside disposable transactions, and a durable
+  diagnostic while preserving the previous database if a lock persists;
 - the full Advanced Search, closure, Outlook, publishing, recovery, MOP, aging,
   and Markdown transaction behavior inherited from 2.0.3;
 - retained non-interactive command-line automation;

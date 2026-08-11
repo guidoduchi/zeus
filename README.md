@@ -1,4 +1,4 @@
-# Zeus 3.1.13
+# Zeus 3.1.14
 
 Zeus is a strictly local ticket workstation. Its Python backend runs in the
 background, serves a bundled React interface on `127.0.0.1`, and opens that
@@ -67,8 +67,10 @@ Starting Zeus queues one visible source query. After that:
 - available Outlook stores fetch new mail hourly by default and synchronize it
   immediately after each fetch;
 - **Check Advanced Search** runs that discovery manually;
-- the activity banner shows queued/running stage, message, progress, and safe
-  cancellation where supported;
+- the activity banner and Operations log show exact Outlook folder/message/body
+  progress, keep the latest 50 in-session updates, and offer safe cancellation;
+- Outlook fetch uses only the last successfully committed ticket eligibility;
+  it never opens or validates an Advanced Search workbook;
 - if a newer Advanced Search file contains fewer SRs, the absent database
   records become `closure_pending`; they remain recoverable until export, and
   reappearing in a later source cancels the pending closure;
@@ -78,6 +80,12 @@ Starting Zeus queues one visible source query. After that:
 - refreshing or reopening the browser page only reads current Markdown state;
   it never touches Excel, Advanced Search, or Outlook. Unsaved editor drafts are
   stored in the browser and trigger reload protection.
+
+Ticket writes use bounded atomic replacement retries for transient Windows
+access-denied/sharing locks and clear inherited read-only attributes inside the
+disposable transaction copy. If Windows still refuses the commit, Zeus keeps
+the previous database intact and records a diagnostic instead of partially
+applying email results.
 
 The default preferred URL is `http://127.0.0.1:8765`. If that port is occupied,
 Zeus tries the next local ports and finally an operating-system-assigned local

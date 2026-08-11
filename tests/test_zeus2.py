@@ -64,9 +64,11 @@ from zeus2.excel_import import (
 )
 from zeus2.mail import (
     MailSyncError,
+    _body_fetch_keys,
     _select_outlook_store,
     commit_fetched_messages,
     extract_ticket_ids,
+    fetch_and_commit_outlook,
     fetch_outlook_messages,
     interval_due,
     strip_quoted_history,
@@ -90,7 +92,7 @@ from zeus2.tickets import (
     empty_local,
     new_ticket,
 )
-from zeus2.utils import atomic_write_json, normalize_ticket_id, sha256_file
+from zeus2.utils import atomic_write_json, atomic_write_text, normalize_ticket_id, sha256_file
 
 
 def upstream_row(
@@ -405,6 +407,46 @@ class UtilityAndConfigTests(ZeusCase):
 
 
 class StoreTests(ZeusCase):
+    def test_atomic_markdown_write_retries_a_transient_windows_access_denial(self) -> None:
+        path = self.root / "ticket.md"
+        path.write_text("before", encoding="utf-8")
+        real_replace = os.replace
+        attempts = 0
+
+        def transient_denial(source: object, destination: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError(13, "Access is denied", str(destination))
+            real_replace(source, destination)
+
+        with (
+            patch("zeus2.utils.os.replace", side_effect=transient_denial),
+            patch("zeus2.utils.time.sleep"),
+        ):
+            atomic_write_text(path, "after")
+
+        self.assertEqual(attempts, 3)
+        self.assertEqual(path.read_text(encoding="utf-8"), "after")
+
+    def test_atomic_markdown_write_fails_bounded_and_preserves_destination(self) -> None:
+        path = self.root / "ticket.md"
+        path.write_text("before", encoding="utf-8")
+
+        with (
+            patch(
+                "zeus2.utils.os.replace",
+                side_effect=PermissionError(13, "Access is denied", str(path)),
+            ) as replace,
+            patch("zeus2.utils.time.sleep") as sleep,
+        ):
+            with self.assertRaises(PermissionError):
+                atomic_write_text(path, "after")
+
+        self.assertEqual(replace.call_count, 8)
+        self.assertEqual(sleep.call_count, 7)
+        self.assertEqual(path.read_text(encoding="utf-8"), "before")
+
     def test_markdown_is_the_self_contained_ticket_record(self) -> None:
         ticket = new_ticket(
             "12345678",
@@ -757,6 +799,56 @@ class EmailTests(ZeusCase):
         retained = self.store.read_ticket("12345678")["email"]["messages"]
         self.assertEqual([message["body"] for message in retained], ["body 8", "body 7", "body 6"])
 
+    def test_incremental_body_plan_skips_already_seen_service_email(self) -> None:
+        metadata = [
+            {
+                "message_key": "seen",
+                "ticket_ids": ["12345678"],
+                "timestamp": "2026-08-01 10:00:00",
+                "spare_candidate": False,
+            },
+            {
+                "message_key": "new",
+                "ticket_ids": ["12345678"],
+                "timestamp": "2026-08-02 10:00:00",
+                "spare_candidate": False,
+            },
+            {
+                "message_key": "spare",
+                "ticket_ids": [],
+                "timestamp": "2026-08-03 10:00:00",
+                "spare_candidate": True,
+            },
+        ]
+
+        keys = _body_fetch_keys(
+            metadata,
+            known_ids={"12345678"},
+            retained_count=None,
+            seen_by_ticket={"12345678": {"seen"}},
+            refetch_seen=False,
+        )
+
+        self.assertEqual(keys, {"new", "spare"})
+
+    def test_full_rebuild_body_plan_can_refetch_seen_email(self) -> None:
+        metadata = [{
+            "message_key": "seen",
+            "ticket_ids": ["12345678"],
+            "timestamp": "2026-08-01 10:00:00",
+            "spare_candidate": False,
+        }]
+
+        keys = _body_fetch_keys(
+            metadata,
+            known_ids={"12345678"},
+            retained_count=None,
+            seen_by_ticket={"12345678": {"seen"}},
+            refetch_seen=True,
+        )
+
+        self.assertEqual(keys, {"seen"})
+
     def test_worker_failure_is_normalized_and_logged(self) -> None:
         failed: Future[object] = Future()
         failed.set_exception(RuntimeError("transient MAPI initialization failure"))
@@ -772,6 +864,25 @@ class EmailTests(ZeusCase):
             "transient MAPI initialization failure",
             diagnostic_log.read_text(encoding="utf-8"),
         )
+
+    def test_commit_access_denial_is_normalized_after_the_scan(self) -> None:
+        with (
+            patch(
+                "zeus2.mail.fetch_outlook_messages",
+                return_value=([], {"full_scan": False, "scanned": 1}),
+            ),
+            patch(
+                "zeus2.mail.commit_fetched_messages",
+                side_effect=PermissionError(13, "Access is denied", "39206939.md"),
+            ),
+        ):
+            with self.assertRaises(MailSyncError) as caught:
+                fetch_and_commit_outlook(self.store)
+
+        self.assertIn("scan completed", str(caught.exception))
+        self.assertIn("previous database remains intact", str(caught.exception))
+        diagnostic_log = self.home / "logs" / "zeus.log"
+        self.assertIn("39206939.md", diagnostic_log.read_text(encoding="utf-8"))
 
     def test_reply_history_gets_a_compact_view_without_losing_the_raw_body(self) -> None:
         message = {

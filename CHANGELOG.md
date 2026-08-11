@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.1.14 - 2026-08-11
+
+- Decouples direct Outlook fetching from Advanced Search so an invalid source
+  workbook cannot block or be misreported as an email failure.
+- Adds exact Outlook folder/message/body progress, a bounded expandable
+  in-session activity log, and correct cancelled status for stopped scans.
+- Avoids reopening already-retained bodies during incremental fetches and skips
+  expensive HTML retrieval for ordinary Service Request mail while preserving
+  HTML parsing for Spare Request evidence.
+- Retries transient Windows access-denied/sharing failures at the exact atomic
+  ticket replacement boundary, clears inherited read-only state in the private
+  transaction copy, and preserves the previous database with a diagnostic if
+  the lock persists.
+
 ## 3.1.13 - 2026-08-11
 
 - Restores the startup review for every elapsed Maintenance Window, preserving

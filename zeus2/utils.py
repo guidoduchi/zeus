@@ -4,13 +4,17 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
-from datetime import date, datetime, time, timezone
+import time
+from datetime import date, datetime, time as datetime_time, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 
 ISO_Z_SUFFIX = "Z"
+ATOMIC_REPLACE_ATTEMPTS = 8
+ATOMIC_REPLACE_BASE_DELAY_SECONDS = 0.05
 
 
 def now_utc() -> datetime:
@@ -37,7 +41,7 @@ def parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value
     if isinstance(value, date):
-        return datetime.combine(value, time.min)
+        return datetime.combine(value, datetime_time.min)
     text = str(value).strip()
     if not text:
         return None
@@ -147,10 +151,56 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
+        _replace_with_retry(temporary_path, path)
     except Exception:
-        temporary_path.unlink(missing_ok=True)
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            # Preserve the original write error. A locked temporary file lives
+            # only inside Zeus's disposable transaction directory.
+            pass
         raise
+
+
+def _replace_with_retry(source: Path, destination: Path) -> None:
+    """Replace one file after bounded retries for transient Windows locks.
+
+    Antivirus, indexing, and inherited read-only attributes can briefly deny a
+    replace even inside Zeus's private transaction clone. Non-permission
+    failures remain immediate; a persistent denial is raised after less than
+    three seconds so the caller can preserve the previous database and report
+    a useful diagnostic.
+    """
+
+    for attempt in range(1, ATOMIC_REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            retryable = (
+                isinstance(exc, PermissionError)
+                or getattr(exc, "winerror", None) in {5, 32}
+                or getattr(exc, "errno", None) in {1, 13}
+            )
+            if not retryable or attempt >= ATOMIC_REPLACE_ATTEMPTS:
+                if retryable and hasattr(exc, "add_note"):
+                    exc.add_note(
+                        f"Zeus retried the atomic replacement {attempt} times: "
+                        f"{source} -> {destination}"
+                    )
+                raise
+            if destination.exists():
+                try:
+                    destination.chmod(destination.stat().st_mode | stat.S_IWRITE)
+                except OSError:
+                    # A sharing lock can also block chmod. The later retry is
+                    # still useful and the original replace error is retained.
+                    pass
+            delay = min(
+                ATOMIC_REPLACE_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+                0.5,
+            )
+            time.sleep(delay)
 
 
 def atomic_write_json(path: Path, value: Any) -> None:

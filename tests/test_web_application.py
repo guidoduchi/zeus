@@ -23,7 +23,7 @@ from zeus2.application.edits import (
     edit_ticket_through_pendings,
 )
 from zeus2.application.errors import ValidationError
-from zeus2.application.jobs import EventBroker, JobManager
+from zeus2.application.jobs import EventBroker, JobContext, JobManager
 from zeus2.application.serialization import (
     dashboard_payload,
     spare_parts_dashboard_payload,
@@ -38,6 +38,7 @@ from zeus2.excel_export import (
 )
 from zeus2.excel_import import WorkbookValidationError, read_pendings
 from zeus2.main import _restart_command
+from zeus2.mail import MailFetchCancelled
 from zeus2.reconcile import sync_advanced_search
 from zeus2.reference_data import save_user_profile, user_profile_path
 from zeus2.startup import StartupResult, run_startup
@@ -913,6 +914,38 @@ class JobManagerTests(unittest.TestCase):
         self.assertEqual(manager.get(one["id"])["status"], "succeeded")
         self.assertEqual(manager.get(two["id"])["status"], "succeeded")
 
+    def test_outlook_progress_preserves_counts_and_a_bounded_activity_log(self) -> None:
+        broker = EventBroker()
+        manager = JobManager(broker)
+        job = manager.submit(
+            "email-fetch",
+            "Fetching Outlook email",
+            lambda context: {"ok": True},
+        )
+        context = JobContext(manager, job["id"], threading.Event())
+
+        for scanned in range(100, 5_101, 100):
+            context.progress_callback(
+                {
+                    "phase": "scan",
+                    "folder": "Inbox",
+                    "index": scanned,
+                    "total": 20_000,
+                    "scanned": scanned,
+                    "matched": 12,
+                }
+            )
+
+        snapshot = manager.get(job["id"])
+        manager.stop()
+
+        self.assertEqual(snapshot["current"], 5_100)
+        self.assertEqual(snapshot["total"], 20_000)
+        self.assertIn("Inbox", snapshot["message"])
+        self.assertIn("5,100 / 20,000", snapshot["message"])
+        self.assertLessEqual(len(snapshot["updates"]), 50)
+        self.assertEqual(snapshot["updates"][-1]["current"], 5_100)
+
 
 class ApplicationServiceContractTests(WebFixture):
     def test_dashboard_projection_is_cached_until_the_dataset_changes(self) -> None:
@@ -1250,7 +1283,12 @@ class ApplicationServiceContractTests(WebFixture):
         try:
             with (
                 patch.object(service, "_require_outlook"),
-                patch("zeus2.application.service.sync_newest_advanced_search"),
+                patch(
+                    "zeus2.reconcile.sync_newest_advanced_search",
+                    side_effect=AssertionError(
+                        "A direct Outlook fetch must not query Advanced Search"
+                    ),
+                ),
                 patch(
                     "zeus2.application.service.fetch_and_commit_outlook",
                     return_value={"fetched": 1, "synchronized": 1},
@@ -1267,6 +1305,30 @@ class ApplicationServiceContractTests(WebFixture):
 
             self.assertEqual(snapshot["status"], "succeeded")
             self.assertTrue(fetch.call_args.kwargs["synchronize"])
+        finally:
+            service.stop()
+
+    def test_cancelled_outlook_fetch_is_reported_as_cancelled_not_failed(self) -> None:
+        service = ApplicationService(self.store)
+        try:
+            with (
+                patch.object(service, "_require_outlook"),
+                patch(
+                    "zeus2.application.service.fetch_and_commit_outlook",
+                    side_effect=MailFetchCancelled("Email fetch cancelled"),
+                ),
+            ):
+                job = service.submit_job("email-fetch", {})
+                deadline = time.monotonic() + 3
+                snapshot = service.jobs.get(job["id"])
+                while snapshot and snapshot["status"] in {"queued", "running"}:
+                    if time.monotonic() >= deadline:
+                        self.fail("Cancelled email fetch did not finish")
+                    time.sleep(0.01)
+                    snapshot = service.jobs.get(job["id"])
+
+            self.assertEqual(snapshot["status"], "cancelled")
+            self.assertIn("cancelled", snapshot["message"].lower())
         finally:
             service.stop()
 

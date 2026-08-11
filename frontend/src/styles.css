@@ -623,14 +623,20 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .restore-row span, .shutdown-row span { color: var(--muted); font-size: var(--font-small); }
 .activity-section { margin-top: 12px; }
 .job-list { max-height: 230px; overflow: auto; }
-.job-row { min-height: 44px; display: grid; grid-template-columns: 8px minmax(0, 1fr) 90px auto; align-items: center; gap: 8px; padding: 5px 7px; border-bottom: 1px solid var(--line); }
+.job-row { min-height: 44px; display: grid; grid-template-columns: 8px minmax(0, 1fr) 90px auto; align-items: start; gap: 8px; padding: 7px; border-bottom: 1px solid var(--line); }
 .job-row > i { width: 6px; height: 18px; background: var(--grey); }
 .job-row.status-running > i, .job-row.status-queued > i { background: var(--cyan); }
 .job-row.status-succeeded > i { background: var(--green); }
 .job-row.status-failed > i { background: var(--red); }
-.job-row > div { display: grid; gap: 3px; min-width: 0; }
+.job-row > .job-main { display: grid; gap: 4px; min-width: 0; }
 .job-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-body); }
 .job-row span, .job-row time { color: var(--muted); font-size: var(--font-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-main > .job-progress { width: min(100%, 360px); margin: 2px 0; }
+.job-log-toggle { justify-self: start; padding: 0; border: 0; background: transparent; color: var(--cyan); font-size: var(--font-small); cursor: pointer; }
+.job-log-toggle:hover { text-decoration: underline; }
+.job-update-list { display: grid; gap: 3px; max-height: 130px; margin: 2px 0 0; padding: 6px 8px; overflow: auto; border: 1px solid var(--line); background: var(--bg); list-style: none; }
+.job-update-list li { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 7px; }
+.job-update-list li span { white-space: normal; }
 .shutdown-row { grid-template-columns: 1fr auto; border-color: rgb(255 64 85 / 45%); }
 
 .settings-groups { display: grid; gap: 14px; }
