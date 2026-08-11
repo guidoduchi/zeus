@@ -137,10 +137,16 @@ describe("TicketDetail", () => {
     expect(screen.getByLabelText("Optional start time")).toBeEnabled();
     fireEvent.change(screen.getByLabelText("Optional start time"), { target: { value: "22:30" } });
     expect(screen.getByLabelText("Optional start time")).toHaveValue("22:30");
-    const visibility = screen.getByRole("button", { name: "MW visibility unknown" });
+    const visibility = screen.getByRole("button", { name: "MW is visible" });
     expect(visibility).toHaveAttribute("aria-pressed", "false");
+    expect(visibility.querySelector(".mw-visibility-icon")).not.toBeNull();
+    expect(visibility.querySelector(".mw-visibility-slash")).toBeNull();
     await user.click(visibility);
     expect(visibility).toHaveAttribute("aria-pressed", "true");
+    expect(visibility).toHaveAccessibleName("MW is not visible");
+    expect(visibility.querySelector(".mw-visibility-slash")).not.toBeNull();
+    expect(styles).toMatch(/\.maintenance-window-editor > \.section-heading\s*\{[^}]*padding:\s*8px 12px 6px/s);
+    expect(styles).toMatch(/\.mw-visibility-toggle\s*\{[^}]*width:\s*34px[^}]*height:\s*31px/s);
     const mw = screen.getByRole("region", { name: "Maintenance Window (MW)" });
     const site = screen.getByRole("region", { name: "Site information" });
     const devices = screen.getByText("Affected / intervened devices").closest("section")!;
@@ -241,6 +247,29 @@ describe("TicketDetail", () => {
     await user.click(screen.getByRole("button", { name: /full thread/i }));
     expect(screen.getByText(/<img src=x onerror=alert\(1\)> full history/)).toBeInTheDocument();
     expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("distinguishes sent and received email rows with restrained directional accents", async () => {
+    const user = userEvent.setup();
+    const sent = {
+      ...detail.email.messages[0],
+      messageKey: "message-2",
+      timestamp: "2026-08-04",
+      direction: "sent",
+      subject: "Sent follow-up",
+    };
+    const withDirections: TicketDetailType = {
+      ...detail,
+      email: { ...detail.email, messages: [detail.email.messages[0], sent] },
+    };
+    render(<TicketDetail ticket={withDirections} loading={false} templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /emails/i }));
+
+    expect(screen.getByRole("option", { name: /received/i })).toHaveClass("direction-received");
+    expect(screen.getByRole("option", { name: /sent follow-up/i })).toHaveClass("direction-sent");
+    expect(styles).toMatch(/\.email-list button\.direction-received\s*\{[^}]*inset 3px 0 var\(--green\)/s);
+    expect(styles).toMatch(/\.email-list button\.direction-sent\s*\{[^}]*inset 3px 0 var\(--cyan\)/s);
+    expect(styles).toMatch(/\.email-list button\.direction-received:not\(\.selected\):not\(:hover\)\s*\{[^}]*linear-gradient/s);
   });
 
   it("saves only changed database-owned fields", async () => {

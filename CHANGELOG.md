@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.1.13 - 2026-08-11
+
+- Restores the startup review for every elapsed Maintenance Window, preserving
+  safe per-ticket decisions for standalone MWs and atomic per-SR review for
+  shared Upcoming windows.
+- Confirms the exact `Customer Org.` Advanced Search mapping through dashboard
+  and detail projections, accepts compatible legacy organization keys, and
+  clarifies that a rejected workbook applies none of its values.
+- Gives sent and received email rows distinct restrained green/cyan accents
+  matching their dashboard counters.
+- Rebalances the Maintenance Window header and replaces the broken text-based
+  visibility control with compact accessible eye and eye-off icons.
+
 ## 3.1.12 - 2026-08-11
 
 - Adds a first-class **Upcoming** workspace for several concurrent Maintenance

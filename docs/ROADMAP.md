@@ -1,6 +1,6 @@
 # Zeus roadmap
 
-This file preserves agreed work that belongs after the Zeus 3.1.12 interaction
+This file preserves agreed work that belongs after the Zeus 3.1.13 interaction
 patch. Requirements remain provisional until their dedicated design pass.
 
 ## Next major patch

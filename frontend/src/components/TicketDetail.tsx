@@ -86,6 +86,14 @@ function FieldList({ fields }: { fields: Record<string, unknown> }) {
   );
 }
 
+function MaintenanceWindowVisibilityIcon({ hidden }: { hidden: boolean }) {
+  return <svg className="mw-visibility-icon" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M2.5 12s3.6-6 9.5-6 9.5 6 9.5 6-3.6 6-9.5 6-9.5-6-9.5-6Z" />
+    <circle cx="12" cy="12" r="2.5" />
+    {hidden && <path className="mw-visibility-slash" d="M3.5 3.5 20.5 20.5" />}
+  </svg>;
+}
+
 function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow, onOpenUpcoming }: Pick<Props, "ticket" | "onSave" | "onConfirmMaintenanceWindow" | "onOpenUpcoming"> & { ticket: TicketDetailType }) {
   const [draft, setDraft] = useState<WorkDraft>(() => workFieldValues(ticket));
   const [draftRevision, setDraftRevision] = useState(ticket.revision);
@@ -390,14 +398,14 @@ function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow, onOpenUpcoming }:
                 <button
                   type="button"
                   className={`mw-visibility-toggle${maintenanceWindowInvisible ? " active" : ""}`}
-                  aria-label="MW visibility unknown"
+                  aria-label={maintenanceWindowInvisible ? "MW is not visible" : "MW is visible"}
                   aria-pressed={maintenanceWindowInvisible}
-                  title="Toggle when the Maintenance Window date is not visible to you"
+                  title={maintenanceWindowInvisible ? "MW date is not visible · click to restore normal planning" : "MW date is visible · click when it is unavailable"}
                   disabled={ticket.readOnly || maintenanceWindowCompleted || maintenanceWindowManaged}
                   onClick={() => setFields(maintenanceWindowInvisible
                     ? { "Done?": "N", "Planned Date": "", "Maintenance Window Start Time": "" }
                     : { "Done?": "?", "Planned Date": "", "Maintenance Window Start Time": "" })}
-                ><strong>?</strong><span>No visibility</span></button>
+                ><MaintenanceWindowVisibilityIcon hidden={maintenanceWindowInvisible} /></button>
               </div>
               <p className="mw-editor-help">No date is Unplanned. Today or a future date is Planned. Optional times must end in :00 or :30. After the date passes, Zeus marks it Incomplete until you confirm Completed.</p>
               {maintenanceWindowManaged && <div className="mw-managed-note"><span>This SR belongs to shared window <strong>{currentMaintenanceWindow?.windowId}</strong>. Its schedule and completion are controlled from Upcoming.</span>{onOpenUpcoming && <button type="button" className="secondary-button" onClick={onOpenUpcoming}>Open Upcoming</button>}</div>}
@@ -747,20 +755,23 @@ function EmailsTab({ messages }: { messages: EmailMessage[] }) {
   return (
     <div className="email-layout">
       <div className="email-list" role="listbox" aria-label="Retained email replies">
-        {messages.map((candidate, index) => (
-          <button
-            type="button"
-            role="option"
-            aria-selected={index === selected}
-            className={index === selected ? "selected" : ""}
-            key={candidate.messageKey || `${candidate.timestamp}-${index}`}
-            onClick={() => { setSelected(index); setFullThread(false); }}
-          >
-            <span>{candidate.timestamp || "Unknown time"}</span>
-            <strong>{candidate.direction || "unknown"}</strong>
-            <em>{candidate.subject}</em>
-          </button>
-        ))}
+        {messages.map((candidate, index) => {
+          const direction = candidate.direction === "sent" || candidate.direction === "received"
+            ? candidate.direction
+            : "unknown";
+          return <button
+              type="button"
+              role="option"
+              aria-selected={index === selected}
+              className={`email-message-row direction-${direction}${index === selected ? " selected" : ""}`}
+              key={candidate.messageKey || `${candidate.timestamp}-${index}`}
+              onClick={() => { setSelected(index); setFullThread(false); }}
+            >
+              <span>{candidate.timestamp || "Unknown time"}</span>
+              <strong>{candidate.direction || "unknown"}</strong>
+              <em>{candidate.subject}</em>
+            </button>;
+        })}
       </div>
       <article className="email-reader">
         <header>

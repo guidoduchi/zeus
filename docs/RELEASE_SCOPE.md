@@ -1,4 +1,4 @@
-# Zeus 3.1.12 release scope
+# Zeus 3.1.13 release scope
 
 Included:
 
@@ -66,11 +66,13 @@ Included:
   Compact, Standard, and Large interface typography presets;
 - severity in the default dense dashboard, one structured MW field with legacy
   workbook projections, Last Email age plus directional received/sent triangles,
-  and compact unit-count Spare Parts badges with day-20 active escalation;
+  restrained directional email-row accents, and compact unit-count Spare Parts
+  badges with day-20 active escalation;
 - one date-first MW column and full-width editor, optional half-hour start and
   finish times with next-day inference and a 12-hour limit, automatic
   Unplanned/Planned/Incomplete states, manual completion after the date passes,
-  a New MW cycle action after completion, and durable archived attempt history;
+  a startup review for elapsed standalone and shared windows, a New MW cycle
+  action after completion, and durable archived attempt history;
 - a first-class Upcoming workspace with multiple shared MWs, multiple linked
   SRs per window, one unfinished MW per SR, revision-safe atomic scheduling,
   and per-SR completion review defaulted to Completed;

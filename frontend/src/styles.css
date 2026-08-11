@@ -466,12 +466,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .work-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .maintenance-window-editor { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 9px; border: 1px solid var(--line-bright); border-left: 4px solid var(--cyan); background: var(--bg); }
 .maintenance-window-editor > .section-heading, .maintenance-window-editor > .mw-control-row, .maintenance-window-editor > .mw-editor-help, .maintenance-window-editor > .mw-attempt-history { grid-column: 1 / -1; }
-.maintenance-window-editor > .section-heading { margin: -9px -9px 2px; }
-.mw-control-row { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(130px, .65fr) auto; align-items: end; gap: 8px; }
+.maintenance-window-editor > .section-heading { margin: -9px -9px 2px; padding: 8px 12px 6px; }
+.mw-control-row { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(112px, .65fr) 34px; align-items: end; gap: 8px; }
 .mw-date-field, .mw-time-field { max-width: 420px; }
-.mw-visibility-toggle { min-width: 112px; height: 31px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line-bright); background: var(--surface-soft); color: var(--muted); cursor: pointer; }
-.mw-visibility-toggle strong { width: 17px; height: 17px; display: grid; place-items: center; border: 1px solid currentColor; font-size: var(--font-small); }
-.mw-visibility-toggle span { font-size: var(--font-small); }
+.mw-visibility-toggle { width: 34px; height: 31px; display: inline-grid; place-items: center; padding: 0; border: 1px solid var(--line-bright); background: var(--surface-soft); color: var(--cyan); cursor: pointer; }
+.mw-visibility-icon { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.mw-visibility-slash { stroke-width: 2.2; }
 .mw-visibility-toggle.active { border-color: var(--yellow); background: rgb(255 217 26 / 9%); color: var(--yellow); }
 .mw-state { padding: 2px 6px; border: 1px solid currentColor; }
 .mw-state-completed { color: var(--green) !important; }
@@ -564,6 +564,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .email-list { overflow: auto; border-bottom: 1px solid var(--line-bright); }
 .email-list button { width: 100%; min-height: 42px; display: grid; grid-template-columns: 120px 74px minmax(0, 1fr); align-items: center; gap: 7px; padding: 5px 8px; border: 0; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--text); text-align: left; cursor: pointer; }
 .email-list button:hover, .email-list button.selected { background: var(--selected-bg); color: var(--selected-text); }
+.email-list button.direction-received { box-shadow: inset 3px 0 var(--green); }
+.email-list button.direction-sent { box-shadow: inset 3px 0 var(--cyan); }
+.email-list button.direction-received:not(.selected):not(:hover) { background-image: linear-gradient(90deg, rgb(103 229 140 / 9%), transparent 22%); }
+.email-list button.direction-sent:not(.selected):not(:hover) { background-image: linear-gradient(90deg, rgb(66 231 235 / 9%), transparent 22%); }
+.email-list button.direction-received:not(.selected) strong { color: var(--green); }
+.email-list button.direction-sent:not(.selected) strong { color: var(--cyan); }
 .email-list span, .email-list strong { font-size: var(--font-small); }
 .email-list em { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-body); font-style: normal; }
 .email-reader { min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; padding: 0; }
@@ -992,6 +998,18 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .upcoming-review-list select { height: 31px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
 .completion-time { max-width: 420px; }
 .completion-time small { color: var(--muted); line-height: 1.4; }
+.mw-startup-review { display: grid; gap: 9px; }
+.mw-startup-review > article { display: grid; grid-template-columns: minmax(210px, 1fr) minmax(150px, .62fr) minmax(150px, .62fr); gap: 8px; align-items: end; padding: 9px; border: 1px solid var(--line); border-left: 3px solid var(--red); background: var(--bg); }
+.mw-startup-review > article > header { min-width: 0; display: grid; gap: 3px; align-self: center; }
+.mw-startup-review > article > header strong { color: var(--cyan); }
+.mw-startup-review > article > header span, .mw-startup-review > article > header small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.mw-startup-review > article.shared { border-left-color: var(--cyan); }
+.mw-startup-review > article > .status-bad { grid-column: 2 / -1; }
+.mw-startup-members { grid-column: 1 / -1; display: grid; gap: 4px; padding-top: 7px; border-top: 1px solid var(--line); }
+.mw-startup-members > label { display: grid; grid-template-columns: minmax(0, 1fr) 140px; gap: 8px; align-items: center; }
+.mw-startup-members > label > span { min-width: 0; display: grid; gap: 2px; }
+.mw-startup-members small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.mw-startup-members select { height: 31px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
 
 @media (max-width: 1050px) {
   .app-shell.with-detail .workspace { grid-template-columns: minmax(430px, 1fr) minmax(360px, 48vw); }
@@ -1002,10 +1020,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .form-grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .maintenance-window-editor { grid-template-columns: minmax(0, 1fr); }
   .maintenance-window-editor > * { grid-column: 1; }
-  .mw-control-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mw-visibility-toggle { grid-column: 1 / -1; }
+  .mw-control-row { grid-template-columns: minmax(120px, 1fr) minmax(108px, .8fr) 34px; }
   .upcoming-header { align-items: flex-start; }
   .upcoming-archive > article { grid-template-columns: minmax(180px, .7fr) minmax(0, 1fr); }
+  .mw-startup-review > article { grid-template-columns: minmax(0, 1fr) minmax(130px, .65fr); }
+  .mw-startup-review > article > header { grid-column: 1 / -1; }
 }
 
 @media (max-width: 1280px) {

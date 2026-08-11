@@ -130,8 +130,10 @@ Consequences:
     the Advanced Search `Customer Org.` column. Spare badges count physical
     units, hide zeros, and use yellow eligible, green active, day-21 red active,
     and gray completed states.
-34. Overdue Maintenance Windows are reviewed in one batch, with Successful,
-    Incomplete/Postponed, or Later per ticket and optional immediate rescheduling.
+34. Every elapsed Maintenance Window is offered for review at startup. Standalone
+    SRs choose Completed, Incomplete, or Review later; shared windows are reviewed
+    atomically, default each linked SR to Completed, and allow per-SR correction
+    plus an optional half-hour finish time before saving.
 
 ## Authority invariants
 

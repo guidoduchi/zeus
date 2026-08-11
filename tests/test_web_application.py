@@ -97,6 +97,29 @@ class WebFixture(unittest.TestCase):
 
 
 class DatabaseFirstSourceTests(WebFixture):
+    def test_customer_organization_from_advanced_search_reaches_dashboard_and_detail(self) -> None:
+        source = self.downloads / "Advanced Search(Service Request)20260811010101.xlsx"
+        row = upstream_row("12345678", summary="Organization mapping")
+        row["Customer Org."] = "Consorcio Ecuatoriano de Telecomunicaciones S.A."
+        write_advanced(source, [row])
+
+        sync_advanced_search(self.store, source)
+        service = ApplicationService(self.store)
+        try:
+            dashboard_ticket = service.dashboard(sort="report", search="")["tickets"][0]
+            detail = service.ticket("12345678")
+        finally:
+            service.stop()
+
+        self.assertEqual(
+            dashboard_ticket["customerOrganization"],
+            "Consorcio Ecuatoriano de Telecomunicaciones S.A.",
+        )
+        self.assertEqual(
+            detail["upstreamFields"]["Customer Org."],
+            "Consorcio Ecuatoriano de Telecomunicaciones S.A.",
+        )
+
     def test_pendings_alone_is_read_only_output_and_does_not_seed_database(self) -> None:
         write_managed(
             self.books / "Pendings.xlsx",

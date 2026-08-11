@@ -152,7 +152,7 @@ def reconcile_advanced_and_new_mail(
     except (WorkbookValidationError, ReconciliationError, OSError) as exc:
         result.warnings.append(
             "ADVANCED SEARCH WARNING — online fields and email eligibility were not "
-            f"refreshed: {exc}"
+            f"refreshed: {exc}. No values from that workbook were applied."
         )
     return result
 

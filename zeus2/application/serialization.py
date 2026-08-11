@@ -229,7 +229,12 @@ def serialize_ticket_summary(
             }
         ),
         "summary": upstream.get("Problem Summary") or "",
-        "customerOrganization": upstream.get("Customer Org.") or "—",
+        "customerOrganization": (
+            upstream.get("Customer Org.")
+            or upstream.get("Customer Org")
+            or upstream.get("Customer Organization")
+            or "—"
+        ),
         "customerContact": (
             upstream.get("Customer Contact")
             or upstream.get("Contact Name")

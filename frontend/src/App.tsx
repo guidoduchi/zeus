@@ -37,6 +37,10 @@ import { FaultTagDetail } from "./components/FaultTagDetail";
 import { FaultTagsGrid } from "./components/FaultTagsGrid";
 import { GlobalDataModal } from "./components/GlobalDataModal";
 import { JobBanner } from "./components/JobBanner";
+import {
+  MaintenanceWindowStartupPrompt,
+  type MaintenanceWindowStartupDecision,
+} from "./components/MaintenanceWindowStartupPrompt";
 import { Modal } from "./components/Modal";
 import { NoticeStrip } from "./components/NoticeStrip";
 import { OperationsModal } from "./components/OperationsModal";
@@ -310,6 +314,8 @@ export default function App() {
   const [spareLifecycleTargets, setSpareLifecycleTargets] = useState<SpareLifecycleTarget[]>([]);
   const [faultTagTargets, setFaultTagTargets] = useState<FaultTagTarget[]>([]);
   const [spareBulkBusy, setSpareBulkBusy] = useState(false);
+  const [dismissedMaintenanceWindows, setDismissedMaintenanceWindows] = useState<Set<string>>(() => new Set());
+  const [maintenanceWindowReviewBusy, setMaintenanceWindowReviewBusy] = useState(false);
   const [templates, setTemplates] = useState<Array<{ name: string; path: string }>>([]);
   const [toast, setToast] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(null);
   const [draftCount, setDraftCount] = useState(countProtectedDrafts);
@@ -812,6 +818,38 @@ export default function App() {
     const stages = new Set(selectedActiveSpareItems.map((row) => row.lifecycleStage));
     return stages.size === 1 ? selectedActiveSpareItems[0]?.lifecycleStage ?? null : null;
   }, [selectedActiveSpareItems]);
+  const maintenanceWindowReviewTickets = useMemo(() => (
+    bootstrap?.maintenanceWindowsDue || []
+  ).filter((candidate) => {
+    const date = candidate.maintenanceWindow?.date;
+    return candidate.maintenanceWindow?.confirmationRequired
+      && Boolean(date)
+      && !draftTicketIds.has(candidate.ticketId)
+      && !dismissedMaintenanceWindows.has(`${candidate.ticketId}:${date}`);
+  }), [bootstrap?.maintenanceWindowsDue, dismissedMaintenanceWindows, draftTicketIds]);
+  const maintenanceWindowSharedIds = useMemo(() => new Set(
+    maintenanceWindowReviewTickets
+      .map((candidate) => candidate.maintenanceWindow?.managedInUpcoming
+        ? candidate.maintenanceWindow.windowId
+        : null)
+      .filter((value): value is string => Boolean(value)),
+  ), [maintenanceWindowReviewTickets]);
+  const maintenanceWindowSharedPayloadReady = maintenanceWindowSharedIds.size === 0 || Boolean(
+    upcoming
+    && [...maintenanceWindowSharedIds].every((windowId) => upcoming.windows.some((window) => window.windowId === windowId)),
+  );
+  const maintenanceWindowReviewKey = maintenanceWindowReviewTickets
+    .map((candidate) => `${candidate.ticketId}:${candidate.maintenanceWindow?.date || ""}:${candidate.revision}`)
+    .sort()
+    .join("|");
+
+  useEffect(() => {
+    if (!maintenanceWindowSharedIds.size || upcomingLoading) return;
+    const currentIds = new Set(upcoming?.windows.map((window) => window.windowId) || []);
+    const current = upcoming?.datasetRevision === bootstrap?.datasetRevision
+      && [...maintenanceWindowSharedIds].every((windowId) => currentIds.has(windowId));
+    if (!current) loadUpcoming().catch(reportError);
+  }, [bootstrap?.datasetRevision, loadUpcoming, maintenanceWindowSharedIds, reportError, upcoming, upcomingLoading]);
 
   const summaryLifecycleTarget = useCallback((row: SpareRequestItemSummary): SpareLifecycleTarget => ({
     itemId: row.itemId,
@@ -1005,6 +1043,81 @@ export default function App() {
       setSpareBulkBusy(false);
     }
   }
+
+  const dismissMaintenanceWindowReviews = useCallback((tickets: TicketSummary[] = maintenanceWindowReviewTickets) => {
+    setDismissedMaintenanceWindows((current) => new Set([
+      ...current,
+      ...tickets.map((candidate) => `${candidate.ticketId}:${candidate.maintenanceWindow?.date || candidate.plannedDate}`),
+    ]));
+  }, [maintenanceWindowReviewTickets]);
+
+  async function recordStartupMaintenanceWindowReview(decisions: MaintenanceWindowStartupDecision[]) {
+    setMaintenanceWindowReviewBusy(true);
+    const processed: TicketSummary[] = [];
+    let reviewedWindows = 0;
+    let reviewedTickets = 0;
+    try {
+      for (const decision of decisions) {
+        if (decision.kind === "standalone") {
+          if (decision.outcome === "later") {
+            processed.push(decision.ticket);
+            continue;
+          }
+          const plannedDate = decision.ticket.maintenanceWindow?.date;
+          if (!plannedDate) continue;
+          const result = await confirmMaintenanceWindow(
+            decision.ticket.ticketId,
+            decision.ticket.revision,
+            plannedDate,
+            decision.outcome === "completed",
+            decision.finishTime || null,
+          );
+          if (selectedTicketId === decision.ticket.ticketId) setTicket(result.ticket);
+          processed.push(decision.ticket);
+          reviewedWindows += 1;
+          reviewedTickets += 1;
+          continue;
+        }
+        const groupedTickets = maintenanceWindowReviewTickets.filter(
+          (candidate) => candidate.maintenanceWindow?.windowId === decision.window.windowId,
+        );
+        if (!decision.reviewNow) {
+          processed.push(...groupedTickets);
+          continue;
+        }
+        const result = await completeUpcomingMaintenanceWindow(
+          decision.window.windowId,
+          decision.window.revision,
+          decision.outcomes,
+          decision.finishTime || null,
+        );
+        setUpcoming(result.upcoming);
+        processed.push(...groupedTickets);
+        reviewedWindows += 1;
+        reviewedTickets += result.ticketIds.length;
+      }
+      dismissMaintenanceWindowReviews(processed);
+      dashboardCache.current.clear();
+      await Promise.all([loadBootstrap(), loadDashboard(), loadUpcoming()]);
+      if (selectedTicketId) await loadTicket(selectedTicketId);
+      setToast({
+        tone: "success",
+        message: `Saved ${reviewedWindows} Maintenance Window review${reviewedWindows === 1 ? "" : "s"} across ${reviewedTickets} Service Request${reviewedTickets === 1 ? "" : "s"}.`,
+      });
+    } catch (error) {
+      dismissMaintenanceWindowReviews(processed);
+      dashboardCache.current.clear();
+      await Promise.all([
+        loadBootstrap().catch(() => undefined),
+        loadDashboard().catch(() => undefined),
+        loadUpcoming().catch(() => undefined),
+      ]);
+      reportError(error);
+    } finally {
+      setMaintenanceWindowReviewBusy(false);
+    }
+  }
+
   const chooseSort = useCallback((next: string) => {
     updateWorkspacePreference({
       sort: next,
@@ -1267,7 +1380,20 @@ export default function App() {
     }
   }
 
-  const keyboardDisabled = operationsOpen || settingsOpen || spareExportOpen || Boolean(spareEmailReminder) || globalDataOpen || bomCatalogOpen || draftsOpen || purgeConfirmationOpen || Boolean(bootstrap?.onboarding.required);
+  const maintenanceWindowReviewVisible = maintenanceWindowReviewTickets.length > 0
+    && maintenanceWindowSharedPayloadReady
+    && !operationsOpen
+    && !settingsOpen
+    && !spareExportOpen
+    && !spareEmailReminder
+    && !globalDataOpen
+    && !bomCatalogOpen
+    && !draftsOpen
+    && !purgeConfirmationOpen
+    && !reloadUndoPrompt
+    && !spareBulkDialog
+    && !bootstrap?.onboarding.required;
+  const keyboardDisabled = operationsOpen || settingsOpen || spareExportOpen || Boolean(spareEmailReminder) || globalDataOpen || bomCatalogOpen || draftsOpen || purgeConfirmationOpen || maintenanceWindowReviewVisible || Boolean(bootstrap?.onboarding.required);
 
   useGlobalCommands({
     disabled: keyboardDisabled,
@@ -1431,7 +1557,7 @@ export default function App() {
       data-spare-view={workspace === "spare-requests" ? spareView : undefined}
     >
       <TopBar
-        version={bootstrap.version || "3.1.12"}
+        version={bootstrap.version || "3.1.13"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId || selectedFaultTagId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
@@ -1630,6 +1756,14 @@ export default function App() {
       {reloadUndoPrompt && <ConfirmationDialog title="Reload and lose Undo?" message="Reloading now permanently removes the one-time Undo for your last Save or Discard. Existing protected drafts remain in browser storage." confirmLabel="Reload anyway" tone="danger" onCancel={() => setReloadUndoPrompt(false)} onConfirm={() => { clearDraftUndo(); window.location.reload(); }} />}
       {(spareBulkDialog === "advance" || spareBulkDialog === "rollback") && <SpareLifecycleBulkDialog rows={spareLifecycleTargets} action={spareBulkDialog} busy={spareBulkBusy} onCancel={() => { setSpareBulkDialog(null); setSpareLifecycleTargets([]); }} onConfirm={(emailOverrideConfirmed, note, confirmedAt) => void runBulkSpareLifecycle(spareBulkDialog, emailOverrideConfirmed, note, confirmedAt)} />}
       {spareBulkDialog === "fault-tag" && <FaultTagDialog rows={faultTagTargets} busy={spareBulkBusy} onCancel={() => { setSpareBulkDialog(null); setFaultTagTargets([]); }} onConfirm={(mode, selections, returnSite) => void createFaultTagFromSelection(mode, selections, returnSite)} />}
+      {maintenanceWindowReviewVisible && <MaintenanceWindowStartupPrompt
+        key={maintenanceWindowReviewKey}
+        tickets={maintenanceWindowReviewTickets}
+        sharedWindows={upcoming?.windows || []}
+        busy={maintenanceWindowReviewBusy}
+        onClose={() => dismissMaintenanceWindowReviews()}
+        onSubmit={(decisions) => void recordStartupMaintenanceWindowReview(decisions)}
+      />}
       {spareEmailReminder && !spareExportOpen && <Modal
         title="Spare Request created"
         subtitle="The request is now registered in Active Requests."

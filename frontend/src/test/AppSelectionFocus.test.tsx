@@ -477,6 +477,35 @@ afterEach(() => {
 });
 
 describe("workspace selection and detail focus", () => {
+  it("opens the overdue Maintenance Window review from the bootstrap payload", async () => {
+    const overdue: TicketSummary = {
+      ...serviceSummary("20000001"),
+      maintenanceWindow: {
+        schemaVersion: 1,
+        status: "incomplete",
+        date: "2026-08-10",
+        startTime: "22:30",
+        windowId: null,
+        managedInUpcoming: false,
+        display: "2026-08-10 · 22:30",
+        color: "red",
+        confirmationRequired: true,
+        attempts: [],
+        reviewRequired: false,
+      },
+      plannedDate: "2026-08-10",
+      plannedDays: -1,
+      plannedState: "overdue",
+      plannedColor: "red",
+    };
+    apiMocks.getBootstrap.mockResolvedValue({ ...bootstrap, maintenanceWindowsDue: [overdue] });
+
+    render(<App />);
+
+    expect(await screen.findByRole("dialog", { name: "Review 1 Maintenance Window" })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "SR 20000001 outcome" })).toHaveValue("later");
+  });
+
   it("keeps Advanced Search in Service Requests and shows only the selected spare stage action", async () => {
     const user = userEvent.setup();
     render(<App />);
