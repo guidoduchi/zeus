@@ -1,5 +1,6 @@
 export const DRAFT_STORAGE_PREFIX = "zeus3.ticket-draft.";
 export const DRAFTS_CHANGED_EVENT = "zeus:drafts-changed";
+export const DRAFT_UNDO_CHANGED_EVENT = "zeus:draft-undo-changed";
 
 export interface StoredDraft<Value, BaseValue = Value> {
   revision: string;
@@ -16,12 +17,49 @@ export interface TicketDraftRecord {
   draft: StoredDraft<unknown, unknown>;
 }
 
+export interface DraftUndoEdit {
+  ticketId: string;
+  revision: string;
+  changes: Record<string, unknown>;
+}
+
+export interface DraftUndoState {
+  action: "save" | "discard";
+  records: TicketDraftRecord[];
+  inverseEdits: DraftUndoEdit[];
+  ticketCount: number;
+}
+
+let pendingUndo: DraftUndoState | null = null;
+
 function storageKey(ticketId: string, kind: TicketDraftKind): string {
   return `${DRAFT_STORAGE_PREFIX}${ticketId}.${kind}`;
 }
 
 function announceChange() {
   window.dispatchEvent(new CustomEvent(DRAFTS_CHANGED_EVENT));
+}
+
+function announceUndoChange() {
+  window.dispatchEvent(new CustomEvent(DRAFT_UNDO_CHANGED_EVENT));
+}
+
+export function setDraftUndo(state: DraftUndoState) {
+  pendingUndo = structuredClone(state);
+  announceUndoChange();
+}
+
+export function getDraftUndo(): DraftUndoState | null {
+  return pendingUndo ? structuredClone(pendingUndo) : null;
+}
+
+export function clearDraftUndo() {
+  pendingUndo = null;
+  announceUndoChange();
+}
+
+export function hasDraftUndo(): boolean {
+  return pendingUndo !== null;
 }
 
 export function readTicketDraft<Value, BaseValue = Value>(

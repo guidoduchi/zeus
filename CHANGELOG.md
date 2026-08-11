@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.1.7 - 2026-08-10
+
+- Rebuilds the Spare Request lifecycle as seven fully named stages with
+  dashboard bulk advance and one-stage rollback. Email-backed rollback requires
+  a second confirmation and audit note; the exact email remains evidence while
+  its lifecycle effect stays suppressed on later synchronization.
+- Introduces independent multi-item Fault Tag batches with Ecuador timestamp
+  IDs, per-item Faulty/New conditions, explicit mixed-site return destinations,
+  revision-safe re-export, and a dedicated active view. Export never advances
+  an Active Request.
+- Locks Fault Tag membership when Zeus detects its first sent email. A mistaken
+  batch can still be deleted to release its items without changing lifecycle;
+  later additions use a new Fault Tag.
+- Requires matching warehouse email evidence plus explicit user confirmation
+  before completing each item. Partial batches stay visible until every member
+  completes, then archive with the final item.
+- Adds New Request Create/Export paths at Added to Zeus, Customer Organization
+  filtering/search, directional Last Email triangles, and eligible/active/
+  completed spare-unit badges with active items turning red after 20 full days.
+- Makes row clicks highlight-only and double-click/Enter open detail, expands
+  affected-device batch entry, adds themed destructive confirmations, and
+  batches overdue Maintenance Window outcomes with optional rescheduling.
+- Simplifies Protected Drafts to Close, Discard selected, and Save Selected,
+  with one-level undo for the latest Save or Discard and a reload warning while
+  that undo remains available.
+- Defaults available Outlook stores to hourly fetch-and-sync, supports linked
+  intervals in Configuration, and makes the page-level `S` command explicitly
+  fetch and synchronize email while `R` checks Advanced Search.
+
 ## 3.1.6 - 2026-08-10
 
 - Replaces the separate dashboard MW and Planned columns with one date-first

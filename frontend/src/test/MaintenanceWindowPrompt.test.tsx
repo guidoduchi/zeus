@@ -32,7 +32,9 @@ const ticket: TicketSummary = {
   lastEmailDirection: null,
   received: 0,
   sent: 0,
+  spareBadges: { eligible: 0, active: 0, activeColor: "green", completed: 0 },
   summary: "MW decision",
+  customerOrganization: "Organization",
   customerContact: "Customer",
   severity: "Minor",
   product: "Product",
@@ -48,19 +50,18 @@ const ticket: TicketSummary = {
 };
 
 describe("MaintenanceWindowPrompt", () => {
-  it("offers explicit later, incomplete, and complete outcomes", async () => {
+  it("collects each overdue window in one batch review", async () => {
     const user = userEvent.setup();
-    const onLater = vi.fn();
-    const onOutcome = vi.fn();
-    render(<MaintenanceWindowPrompt ticket={ticket} busy={false} onLater={onLater} onOutcome={onOutcome} />);
+    const onClose = vi.fn();
+    const onSubmit = vi.fn();
+    render(<MaintenanceWindowPrompt tickets={[ticket]} busy={false} onClose={onClose} onSubmit={onSubmit} />);
 
     expect(screen.getByText("2026-08-08")).toBeVisible();
-    expect(screen.getByText(/clears the current date.*failed date remains in history/i)).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "No · incomplete" }));
-    expect(onOutcome).toHaveBeenCalledWith(false);
-    await user.click(screen.getByRole("button", { name: "Yes · complete" }));
-    expect(onOutcome).toHaveBeenCalledWith(true);
-    await user.click(screen.getByRole("button", { name: "Decide later" }));
-    expect(onLater).toHaveBeenCalledTimes(1);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Outcome" }), "incomplete");
+    await user.type(screen.getByLabelText("Optional new MW date"), "2026-08-22");
+    await user.click(screen.getByRole("button", { name: "Save MW review" }));
+    expect(onSubmit).toHaveBeenCalledWith([{ ticket, outcome: "incomplete", rescheduleDate: "2026-08-22" }]);
+    await user.click(screen.getByRole("button", { name: "Review later" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

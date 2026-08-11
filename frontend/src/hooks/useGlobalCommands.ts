@@ -3,8 +3,9 @@ import { useEffect } from "react";
 interface GlobalCommandHandlers {
   disabled?: boolean;
   queryDisabled?: boolean;
+  syncDisabled?: boolean;
   onSearch: () => void;
-  onSort: () => void;
+  onSync: () => void;
   onOperations: () => void;
   onQuery: () => void;
 }
@@ -20,8 +21,9 @@ export function isEditingArea(target: EventTarget | null): boolean {
 export function useGlobalCommands({
   disabled = false,
   queryDisabled = false,
+  syncDisabled = false,
   onSearch,
-  onSort,
+  onSync,
   onOperations,
   onQuery,
 }: GlobalCommandHandlers) {
@@ -46,7 +48,7 @@ export function useGlobalCommands({
         return;
       }
 
-      if (key === "s") onSort();
+      if (key === "s" && !syncDisabled) onSync();
       else if (key === "m") onOperations();
       else if (key === "r" && !queryDisabled) onQuery();
       else return;
@@ -55,5 +57,5 @@ export function useGlobalCommands({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [disabled, onOperations, onQuery, onSearch, onSort, queryDisabled]);
+  }, [disabled, onOperations, onQuery, onSearch, onSync, queryDisabled, syncDisabled]);
 }

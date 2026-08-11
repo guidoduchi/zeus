@@ -24,6 +24,8 @@ interface Props<Row extends WorkspaceGridRow> {
   onHighlight: (row: Row) => void;
   onOpen: (row: Row) => void;
   onCloseDetail: () => void;
+  bulkSelectedRowIds?: ReadonlySet<string>;
+  onToggleBulk?: (row: Row) => void;
 }
 
 function displayValue(row: WorkspaceGridRow, key: string): string {
@@ -66,8 +68,8 @@ function lifecycleStage(row: WorkspaceGridRow): number {
   return Number.isFinite(value) ? Math.max(0, Math.min(6, Math.floor(value))) : 0;
 }
 
-function emailCount(row: WorkspaceGridRow): number {
-  const value = Number(row.emailCount);
+function directionalEmailCount(row: WorkspaceGridRow, key: "received" | "sent"): number {
+  const value = Number(row[key]);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
@@ -85,6 +87,8 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
   onHighlight,
   onOpen,
   onCloseDetail,
+  bulkSelectedRowIds,
+  onToggleBulk,
 }: Props<Row>) {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const gridTemplate = useMemo(
@@ -117,7 +121,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
     else if (event.key === "Home") moveSelection(0);
     else if (event.key === "End") moveSelection(rows.length - 1);
     else if (event.key === "Enter" && rows[current < 0 ? 0 : current]) onOpen(rows[current < 0 ? 0 : current]);
-    else if (event.key === " ") { /* Row activation is deliberately click/Enter only. */ }
+    else if (event.key === " ") { /* Row activation is deliberately double-click/Enter only. */ }
     else if (event.key === "Escape" && detailOpen) onCloseDetail();
     else return;
     event.preventDefault();
@@ -151,7 +155,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
               data-ticket-id={row.ticketId}
               data-row-id={row.rowId}
               aria-selected={selected}
-              className={`ticket-row ${selected ? "selected" : ""} ${row.readOnly ? "archived" : ""} ${hasDraft ? "draft-protected" : ""}`}
+              className={`ticket-row ${selected ? "selected" : ""} ${row.readOnly ? "archived" : ""} ${hasDraft ? "draft-protected" : ""} ${row.lifecycleStage === 4 && row.returnCondition === "Faulty" ? "return-faulty" : ""} ${row.lifecycleStage === 4 && row.returnCondition === "New" ? "return-new" : ""}`}
               data-read-only={row.readOnly ? "true" : "false"}
               style={{ gridTemplateColumns: gridTemplate }}
               key={row.rowId}
@@ -159,14 +163,15 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
                 if (element) rowRefs.current.set(row.rowId, element);
                 else rowRefs.current.delete(row.rowId);
               }}
-              onClick={() => onOpen(row)}
+              onClick={() => onHighlight(row)}
+              onDoubleClick={() => onOpen(row)}
             >
               {columns.map((column) => (
                 <span
                   role="gridcell"
                   className={`ticket-cell column-${column.key} tone-${displayTone(row, column.key)}`}
                   title={column.key === "emailLabel"
-                    ? `${displayValue(row, column.key)} · ${emailCount(row)} total email(s)`
+                    ? `${displayValue(row, column.key)} · ${directionalEmailCount(row, "received")} received · ${directionalEmailCount(row, "sent")} sent`
                     : displayValue(row, column.key)}
                   key={column.key}
                 >
@@ -175,10 +180,14 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
                   ) : column.key === "emailLabel" ? (
                     <span className="email-fact">
                       <span>{displayValue(row, column.key)}</span>
-                      <i
-                        className={`email-count-badge ${emailCount(row) === 0 ? "email-count-zero" : "email-count-positive"}`}
-                        aria-label={`${emailCount(row)} total email${emailCount(row) === 1 ? "" : "s"}`}
-                      >{emailCount(row)}</i>
+                      <i className="email-direction-badge received" aria-label={`${directionalEmailCount(row, "received")} received email(s)`}>▼{directionalEmailCount(row, "received")}</i>
+                      <i className="email-direction-badge sent" aria-label={`${directionalEmailCount(row, "sent")} sent email(s)`}>▲{directionalEmailCount(row, "sent")}</i>
+                    </span>
+                  ) : column.key === "spareBadges" ? (
+                    <span className="spare-counts" aria-label="Spare-parts unit counts">
+                      {Number((row.spareBadges as { eligible?: number } | undefined)?.eligible || 0) > 0 && <i className="spare-count eligible" title="Eligible / not created">{Number((row.spareBadges as { eligible?: number }).eligible)}</i>}
+                      {Number((row.spareBadges as { active?: number } | undefined)?.active || 0) > 0 && <i className={`spare-count active ${(row.spareBadges as { activeColor?: string }).activeColor === "red" ? "overdue" : ""}`} title="Active">{Number((row.spareBadges as { active?: number }).active)}</i>}
+                      {Number((row.spareBadges as { completed?: number } | undefined)?.completed || 0) > 0 && <i className="spare-count completed" title="Completed">{Number((row.spareBadges as { completed?: number }).completed)}</i>}
                     </span>
                   ) : column.key === "trackingId" ? (
                     <span className={`tracking-identity ${row.trackingIdProvisional ? "provisional" : "confirmed"}`}>
@@ -187,12 +196,11 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
                   ) : column.key === "lifecycleStage" ? (
                     <span className="lifecycle-meter" aria-label={`Stage ${lifecycleStage(row)} of 6: ${String(row.lifecycleStageLabel || "Added to Zeus")}`}>
                       <span className="lifecycle-pips" aria-hidden="true">
-                        {Array.from({ length: 7 }, (_, index) => <i className={index <= lifecycleStage(row) ? "reached" : ""} key={index} />)}
+                        {Array.from({ length: 7 }, (_, index) => <i className={`${index <= lifecycleStage(row) ? "reached" : ""} ${index === lifecycleStage(row) ? "current" : ""}`} key={index} />)}
                       </span>
-                      <strong>S{lifecycleStage(row)}</strong>
                       <span>{String(row.lifecycleStageLabel || "Added to Zeus")}</span>
                     </span>
-                  ) : <>{displayValue(row, column.key)}{column.key === "ticketId" && hasDraft && <i className="draft-mark" aria-label="Protected draft" title="This SR has protected unsaved changes">✎</i>}</>}
+                  ) : <>{column.key === "ticketId" && onToggleBulk && <i role="checkbox" aria-checked={Boolean(bulkSelectedRowIds?.has(row.rowId))} className={`bulk-row-check ${bulkSelectedRowIds?.has(row.rowId) ? "checked" : ""}`} title="Select for bulk action" onClick={(event) => { event.stopPropagation(); onToggleBulk(row); }}>{bulkSelectedRowIds?.has(row.rowId) ? "✓" : ""}</i>}{displayValue(row, column.key)}{column.key === "ticketId" && hasDraft && <i className="draft-mark" aria-label="Protected draft" title="This SR has protected unsaved changes">✎</i>}</>}
                 </span>
               ))}
             </button>

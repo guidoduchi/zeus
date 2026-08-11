@@ -65,7 +65,7 @@ describe("SparePartsGrid", () => {
       />,
     );
 
-    await user.click(screen.getByRole("row", { name: /Backplane/i }));
+    await user.dblClick(screen.getByRole("row", { name: /Backplane/i }));
     expect(onOpen).toHaveBeenCalledWith(rows[1]);
     expect(screen.getByText("—", { selector: ".column-bom" })).toHaveClass("tone-yellow");
 

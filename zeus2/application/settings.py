@@ -99,7 +99,10 @@ def settings_payload(store: ZeusStore) -> dict[str, Any]:
             "minimum": spec.minimum,
             "choices": list(spec.choices),
             "nullable": spec.nullable,
-            "editable": spec.editable,
+            "editable": spec.editable and not (
+                spec.key == "email.sync_interval_minutes"
+                and config.get("email", {}).get("sync_mode") == "after_fetch"
+            ),
             "value": deepcopy(value),
         }
         if spec.key.startswith("paths."):
@@ -119,6 +122,14 @@ def update_settings(store: ZeusStore, updates: dict[str, Any]) -> dict[str, Any]
             raise ValidationError(f"Unknown configuration setting: {key}")
         if not spec.editable:
             raise ValidationError(f"{spec.label} is fixed")
+        if (
+            key == "email.sync_interval_minutes"
+            and config.get("email", {}).get("sync_mode") == "after_fetch"
+            and "email.sync_mode" not in updates
+        ):
+            raise ValidationError(
+                "Email synchronization interval is inherited from the fetch interval in linked mode"
+            )
         try:
             value = coerce_setting_value(key, raw_value, base=store.config_home)
             if spec.kind == "directory" and value is not None and not Path(value).is_dir():
@@ -130,6 +141,12 @@ def update_settings(store: ZeusStore, updates: dict[str, Any]) -> dict[str, Any]
                 changed.append(key)
         except (OSError, ValueError) as exc:
             raise ValidationError(str(exc), details={"setting": key}) from exc
+    if config.get("email", {}).get("sync_mode") == "after_fetch":
+        linked_interval = config["email"]["fetch_interval_minutes"]
+        if config["email"].get("sync_interval_minutes") != linked_interval:
+            config["email"]["sync_interval_minutes"] = linked_interval
+            if "email.sync_interval_minutes" not in changed:
+                changed.append("email.sync_interval_minutes")
     if changed:
         store.save_config(config)
         store.append_audit("configuration-update", {"changed_settings": changed})

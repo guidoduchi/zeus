@@ -31,8 +31,8 @@ Consequences:
 3. Columns may be toggled and reordered, but not resized.
 4. The default field set has one MW column. It shows the current date whenever
    one exists; only an undated state or `Complete` is rendered as text. Last
-   Email combines age plus a compact cumulative-count badge. Zero is red;
-   every positive total uses the same neutral badge.
+   Email shows age plus separate colored received/sent triangle counts and no
+   cumulative-count badge.
 5. Opening a ticket reveals full detail without requiring every detail column
    in the list.
 6. Search, category filters, sort, theme, visible columns, and column order
@@ -46,8 +46,9 @@ Consequences:
    prompt: success completes it, while failure records the attempt and waits
    for another date.
 10. `S`, `M`, `R`, Ctrl+F, and navigation arrows operate at page scope while
-    focus is outside an editable control. Text entry must never become an
-    application command.
+    focus is outside an editable control. `S` fetches and synchronizes email,
+    `M` opens Operations, and `R` checks Advanced Search. Text entry must never
+    become an application command.
 11. Sort field and ascending/descending direction are separate browser-local
     preferences.
 12. Work and Spare Parts editors own a fixed action row above the global command
@@ -55,21 +56,20 @@ Consequences:
 13. Top-level work is organized as extensible workspaces. Service Requests and
     Spare Requests share the same dense interaction grammar without sharing
     incompatible sort, search, filter, or column preferences.
-14. Spare Requests has Active Requests, reusable Eligible SR Parts, and
-    Completed subviews. Eligible rows remain a projection. Exporting through
-    Zeus or confirming an already-sent manual file creates the same independent
-    persistent request immediately. Its exact TT/device/part source is withheld
-    from eligibility while active and released after completion or cancellation.
+14. Spare Requests has Active Requests, reusable Eligible SR Parts, Fault Tags,
+    and Completed subviews. Eligible rows remain a projection. Create and Export
+    both persist an independent request at Added to Zeus; only Export writes the
+    XLSX, and neither pretends an email was sent. Its exact TT/device/part source
+    is withheld from eligibility while active and remains reserved after archive.
 15. TT, RMA, and Last Email are first-class active-request fields. Last Email
-    renders age beside an enclosed count (for example `17 days` plus a `13`
-    badge); lifecycle attendance and dispatch aging use separate visual signals.
+    renders age beside received/sent triangle counts; lifecycle attendance and
+    dispatch aging use separate visual signals.
 16. The damaged-device Spare Parts editor remains inside SR detail. Once its
-    request is exported or registered as already sent, later request work is
-    available in Active Requests. Spare SR and RMA may arrive later in either
-    path; Zeus-exported requests recommend email synchronization before manual
-    entry.
-17. Warehouse email only creates a candidate. Returned archive requires a user
-    confirmation, or a manual override with a mandatory note.
+    request is created or exported, later request work is available in Active
+    Requests. Spare SR and RMA may arrive later in either path.
+17. Warehouse email only creates exact-match evidence. Complete requires that
+    evidence plus one explicit user confirmation; manual evidence cannot replace
+    the warehouse match.
 18. The first usable screen is local profile setup until name, email, and phone
     are valid. Picture and username are optional; password and login controls do
     not exist.
@@ -82,9 +82,10 @@ Consequences:
     loaded automatically for active SRs (or entered once for an unknown manual
     TT). Missing export paths turn the export action into an explicit red
     Configuration gate before any workbook write begins.
-21. One request group contains one BOM and a quantity multiplier. Quantity
-    alone creates the physical unit records, future RMAs, and Fault Tag rows.
-22. Newline-only faulty component serials are group evidence, not extra units.
+21. One request group contains one BOM and zero or more unique newline slots.
+    Slot count creates physical units; only a slotless manual group uses an
+    explicit quantity multiplier.
+22. Newline-only faulty component serials are device evidence, not extra units.
     Every physical unit's single Faulty SN cell contains the entire serial list.
 23. ↑/↓ follows the currently visible server-sorted and filtered row order.
     With detail closed it moves only the persistent highlight; with detail
@@ -94,16 +95,42 @@ Consequences:
 24. Service filters cover unified MW state and Severity. Spare Request filters
     cover Status, dispatch risk, Site, Cloud, conflict state, and RMA state.
 25. The mouse wheel scrolls the table viewport without changing its highlighted
-    row. Only click or Enter may open a closed detail panel; arrow keys may
+    row. One click highlights and only double-click or Enter opens a closed
+    detail panel; arrow keys may
     refresh an already-open panel but never open one from the closed state.
 26. Global data SR lookup is hidden until a numeric prefix is typed, remains
     height-bounded, and scrolls independently. Interface typography uses one
     persisted Compact, Standard, or Large semantic scale.
+27. Active Request lifecycle uses seven full labels. Dashboard bulk actions move
+    every selected unit exactly one stage. The shared request-email stage may
+    change only when every active unit in that request is selected.
+28. Rolling back an email-backed stage requires a second confirmation and audit
+    note. The message remains retained evidence, while that exact message key's
+    lifecycle effect stays suppressed on every later sync.
+29. Fault Tags are independent multi-item batches with `FT-YYMMDDHHmmss` IDs,
+    per-item Faulty/New conditions, and an explicit actual return destination
+    for mixed source sites. Export and re-export never change request lifecycle.
+30. The first detected sent Fault Tag email locks membership. Re-export keeps
+    the same ID and members; additions use a new batch. Deleting a mistaken
+    batch releases members without changing their stages.
+31. Partial warehouse evidence remains visible per Fault Tag member. A batch
+    stays active until every member receives evidence and explicit confirmation,
+    then archives with the final member.
+32. Protected Drafts exposes Close, Discard selected, and Save Selected. The
+    latest Save or Discard has one-level undo, and reload warns while that
+    in-memory undo is available.
+33. Service Request rows may filter by Customer Organization and optionally show
+    the Advanced Search `Customer Org.` column. Spare badges count physical
+    units, hide zeros, and use yellow eligible, green active, day-21 red active,
+    and gray completed states.
+34. Overdue Maintenance Windows are reviewed in one batch, with Successful,
+    Incomplete/Postponed, or Later per ticket and optional immediate rescheduling.
 
 ## Authority invariants
 
 1. The transactional Markdown database is the source of truth for current
-   tickets, local work fields, normalized Spare Parts, and active requests.
+   tickets, local work fields, normalized Spare Parts, active requests, and
+   active/completed Fault Tag records.
 2. Pendings.xlsx and Closed.xlsx are read-only operational outputs. Startup,
    scheduled/manual Advanced Search checks, and browser saves never import or
    recreate them.
@@ -137,8 +164,10 @@ Consequences:
 13. Email/manual contradictions produce conflicts. Existing RMA and New SN facts
     are never silently overwritten.
 14. Completed/cancelled items are appended to dedicated Closed.xlsx tabs,
-    removed from active Markdown, and cannot reopen. Active spare email and
-    completed private/archive data are retained for at most 180 days.
+    removed from active request Markdown, and cannot reopen. Completion requires
+    warehouse evidence plus explicit confirmation and also confirms the Fault
+    Tag member. Active spare email and completed private/archive data are
+    retained for at most 180 days.
 15. The local user profile and global reference collections live with the
     mutable data root. Only the tiny location pointer and runtime bootstrap stay
     in the fixed application-data home after relocation.
@@ -156,6 +185,9 @@ Consequences:
     transaction boundary, and swaps atomically. An invalid embedded record
     blocks automatic repair; readable Markdown may be regenerated only from a
     valid embedded authority record.
+20. One active Fault Tag may own an item at a time. A confirmed member may leave
+    active request Markdown while its partially completed batch remains valid;
+    member snapshots preserve same-ID re-export until the batch archives.
 
 ## Runtime invariants
 

@@ -18,7 +18,7 @@ OUTLOOK_STORE_SUFFIXES = {".ost", ".pst"}
 # Runtime markers (processed filenames, hashes and successful operation times)
 # live in current/state.json and are never accepted from this file.
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 9,
+    "schema_version": 10,
     "paths": {
         # ``None`` keeps the mutable database under ``%LOCALAPPDATA%\\Zeus\\data``.
         # A configured value is only written by the verified migration workflow;
@@ -37,9 +37,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "poll_interval_minutes": 15,
     },
     "email": {
-        "fetch_interval_days": 7,
-        "sync_mode": "scheduled",  # scheduled | after_fetch
-        "sync_interval_days": 7,
+        "fetch_interval_minutes": 60,
+        "sync_mode": "after_fetch",  # scheduled | after_fetch
+        "sync_interval_minutes": 60,
         "retained_message_count": 7,
         "incremental_overlap_days": 7,
         "fetch_new_ticket_history_automatically": True,
@@ -58,6 +58,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "planned_due_soon_days": 2,
         "resolve_due_soon_days": 3,
         "resolve_suspend_status_contains": ["suspend"],
+        "spare_dispatch_red_days": 20,
     },
     "excel": {
         "portal_url_template": None,
@@ -171,11 +172,11 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         minimum=0,
     ),
     SettingSpec(
-        "email.fetch_interval_days",
+        "email.fetch_interval_minutes",
         "Email fetch interval",
         "Email",
         "integer",
-        "Calendar days between Outlook fetches; -1 startup, 0 manual only.",
+        "Minutes between Outlook fetches while Zeus is open; -1 startup only, 0 manual only.",
         minimum=-1,
     ),
     SettingSpec(
@@ -187,11 +188,11 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         choices=("scheduled", "after_fetch"),
     ),
     SettingSpec(
-        "email.sync_interval_days",
+        "email.sync_interval_minutes",
         "Email synchronization interval",
         "Email",
         "integer",
-        "Calendar days between staged-email syncs; -1 startup, 0 manual only.",
+        "Minutes between staged-email syncs when it is independent; linked mode inherits the fetch interval.",
         minimum=-1,
     ),
     SettingSpec(
@@ -295,6 +296,14 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Aging",
         "integer",
         "Days before ResolveBy when it becomes yellow.",
+        minimum=0,
+    ),
+    SettingSpec(
+        "aging.spare_dispatch_red_days",
+        "Spare dispatch overdue threshold",
+        "Aging",
+        "integer",
+        "Complete calendar days after dispatch before an unresolved active spare turns red; 20 means red on day 21.",
         minimum=0,
     ),
     SettingSpec(
@@ -413,6 +422,10 @@ def _looks_like_outlook_store(value: Any) -> bool:
 
 def _migrate_legacy_keys(saved: dict[str, Any]) -> dict[str, Any]:
     migrated = copy.deepcopy(saved)
+    try:
+        saved_schema = int(migrated.get("schema_version") or 1)
+    except (TypeError, ValueError):
+        saved_schema = 1
     paths = migrated.setdefault("paths", {})
     if not isinstance(paths, dict):
         paths = {}
@@ -440,11 +453,49 @@ def _migrate_legacy_keys(saved: dict[str, Any]) -> dict[str, Any]:
         email = migrated.setdefault("email", {})
         if "historical_days" in legacy_mail and "incremental_overlap_days" not in email:
             email["incremental_overlap_days"] = legacy_mail["historical_days"]
+    email = migrated.setdefault("email", {})
+    if not isinstance(email, dict):
+        email = {}
+        migrated["email"] = email
+    old_fetch = email.pop("fetch_interval_days", None)
+    old_sync = email.pop("sync_interval_days", None)
+    if "fetch_interval_minutes" not in email and old_fetch is not None:
+        try:
+            old_fetch_value = int(old_fetch)
+        except (TypeError, ValueError):
+            old_fetch_value = 7
+        email["fetch_interval_minutes"] = (
+            old_fetch_value
+            if old_fetch_value in {-1, 0}
+            else 60 if saved_schema <= 9 and old_fetch_value == 7
+            else old_fetch_value * 1440
+        )
+    if "sync_interval_minutes" not in email and old_sync is not None:
+        try:
+            old_sync_value = int(old_sync)
+        except (TypeError, ValueError):
+            old_sync_value = 7
+        email["sync_interval_minutes"] = (
+            old_sync_value
+            if old_sync_value in {-1, 0}
+            else 60 if saved_schema <= 9 and old_sync_value == 7
+            else old_sync_value * 1440
+        )
+    if (
+        saved_schema <= 9
+        and old_fetch == 7
+        and old_sync == 7
+        and email.get("sync_mode") == "scheduled"
+    ):
+        # 3.1.7 makes the ordinary one-hour fetch+sync operation the default.
+        # Preserve deliberately customized schedules, but migrate the former
+        # untouched seven-day defaults into linked mode.
+        email["sync_mode"] = "after_fetch"
     migrated.pop("base_dir", None)
     migrated.pop("updatefile_dir", None)
     migrated.pop("mail", None)
     paths.pop("update_directory", None)
-    migrated["schema_version"] = 9
+    migrated["schema_version"] = 10
     return migrated
 
 
@@ -490,7 +541,7 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
         raise ValueError("advanced_search.poll_interval_minutes cannot be negative")
 
     email = config.get("email", {})
-    for key in ("fetch_interval_days", "sync_interval_days"):
+    for key in ("fetch_interval_minutes", "sync_interval_minutes"):
         value = _require_integer(config, f"email.{key}")
         if value < -1:
             raise ValueError(f"email.{key} must be -1, 0, or a positive integer")
@@ -523,6 +574,7 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
         "ticket_age_red_days",
         "planned_due_soon_days",
         "resolve_due_soon_days",
+        "spare_dispatch_red_days",
     ):
         if _require_integer(config, f"aging.{key}") < 0:
             raise ValueError(f"aging.{key} cannot be negative")
@@ -561,7 +613,11 @@ def load_config(home: Path) -> dict[str, Any]:
     migrated = _migrate_legacy_keys(saved)
     _assert_known_structure(migrated)
     config = deep_merge(DEFAULT_CONFIG, migrated)
-    config["schema_version"] = 9
+    config["schema_version"] = 10
+    if config.get("email", {}).get("sync_mode") == "after_fetch":
+        config["email"]["sync_interval_minutes"] = config["email"][
+            "fetch_interval_minutes"
+        ]
     _validate(config)
     return config
 
@@ -569,9 +625,17 @@ def load_config(home: Path) -> dict[str, Any]:
 def save_config(home: Path, config: dict[str, Any]) -> Path:
     resolved_home = home.expanduser().resolve()
     resolved_home.mkdir(parents=True, exist_ok=True)
+    # Loading may repair legacy aliases, but saving must reject typos and
+    # unknown root keys instead of silently consuming them as migrations.
     _assert_known_structure(config)
-    prepared = deep_merge(DEFAULT_CONFIG, config)
-    prepared["schema_version"] = 9
+    migrated = _migrate_legacy_keys(config)
+    _assert_known_structure(migrated)
+    prepared = deep_merge(DEFAULT_CONFIG, migrated)
+    prepared["schema_version"] = 10
+    if prepared.get("email", {}).get("sync_mode") == "after_fetch":
+        prepared["email"]["sync_interval_minutes"] = prepared["email"][
+            "fetch_interval_minutes"
+        ]
     _validate(prepared, validate_paths=True)
     path = config_path(resolved_home)
     atomic_write_json(path, prepared)

@@ -215,6 +215,37 @@ def interval_due(
     return ((today or local_today()) - then).days >= interval
 
 
+def interval_due_minutes(
+    interval_minutes: int,
+    last_successful_at: Any,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Return whether a minute-based live task is due.
+
+    ``-1`` means startup only and is therefore due when this helper is used by
+    startup, while ``0`` is manual only.  The live scheduler handles ``-1`` by
+    leaving the task unscheduled after startup.
+    """
+
+    interval = int(interval_minutes)
+    if interval == -1:
+        return True
+    if interval == 0:
+        return False
+    if interval < -1:
+        raise ValueError("interval must be -1, 0, or positive")
+    parsed = parse_datetime(last_successful_at)
+    if parsed is None:
+        return True
+    current = now or datetime.now().astimezone()
+    if current.tzinfo is None and parsed.tzinfo is not None:
+        current = current.replace(tzinfo=parsed.tzinfo)
+    if current.tzinfo is not None and parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=current.tzinfo)
+    return current - parsed >= timedelta(minutes=interval)
+
+
 def _read_ndjson(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []

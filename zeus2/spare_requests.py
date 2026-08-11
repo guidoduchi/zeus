@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 SPARE_REQUEST_MARKER = "<!-- ZEUS_SPARE_REQUEST_V1:"
-SPARE_REQUEST_SCHEMA_VERSION = 1
+SPARE_REQUEST_SCHEMA_VERSION = 2
 ECUADOR_TIMEZONE = ZoneInfo("America/Guayaquil")
 TT_PATTERN = re.compile(r"(?<!\d)(\d{8})(?!\d)")
 SPARE_SR_PATTERN = re.compile(r"\bSR\s*[:#-]?\s*(\d{7})(?!\d)", re.IGNORECASE)
@@ -29,10 +29,10 @@ LIFECYCLE_STAGE_LABELS = (
     "Added to Zeus",
     "Request email sent",
     "SR and RMA confirmed",
-    "Spare Parts dispatched",
-    "Replaced / Fault Tag generated",
-    "Fault Tag email sent",
-    "Warehouse confirmed",
+    "Spare parts dispatched",
+    "Spare replaced",
+    "Warehouse evidence received",
+    "Complete",
 )
 
 class SpareRequestError(ValueError):
@@ -398,8 +398,10 @@ def _new_item(
         "new_sn": None,
         "attendance_confirmed_at": None,
         "attendance_source": None,
+        "attendance_message_key": None,
         "dispatch_at": None,
         "dispatch_source": None,
+        "dispatch_message_key": None,
         "return_condition": None,
         "return_exported_at": None,
         "return_export_filename": None,
@@ -411,8 +413,15 @@ def _new_item(
         "rt": None,
         "warehouse_candidate_at": None,
         "warehouse_message_key": None,
+        "warehouse_evidence": [],
         "warehouse_confirmed_at": None,
         "warehouse_confirmation_source": None,
+        "replacement_confirmed_at": None,
+        "replacement_confirmation_source": None,
+        "completion_confirmed_at": None,
+        "completion_confirmation_source": None,
+        "fault_tag_ids": [],
+        "lifecycle_suppressions": [],
         "conflicts": [],
         "notes": line.get("notes"),
     }
@@ -456,6 +465,8 @@ def create_request_record(
         "creation_method": None,
         "request_sent_at": None,
         "request_sent_source": None,
+        "request_sent_message_key": None,
+        "lifecycle_suppressions": [],
         "tt_editable": normalized_source == "manual",
         "spare_sr": None,
         "profile": deepcopy(profile),
@@ -493,34 +504,155 @@ def create_request_record(
     }
 
 
+def upgrade_request_record(request: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade one legacy active request without discarding ambiguous evidence."""
+
+    prepared = deepcopy(request)
+    raw_version = prepared.get("schema_version", 1)
+    try:
+        version = int(raw_version)
+    except (TypeError, ValueError) as exc:
+        raise SpareRequestError("Spare Request schema_version must be a whole number") from exc
+    if version > SPARE_REQUEST_SCHEMA_VERSION or version < 1:
+        raise SpareRequestError(f"Unsupported Spare Request schema {version}")
+    creation_method = prepared.get("creation_method")
+    if creation_method == "manual_confirmation":
+        # 3.1.6 used this name for a request that was immediately advanced to
+        # email-sent. Keep the evidence, but use the clearer legacy label.
+        prepared["creation_method"] = "legacy_manual_sent"
+    for item in prepared.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        item.setdefault("fault_tag_ids", [])
+        item.setdefault("lifecycle_suppressions", [])
+        item.setdefault("attendance_message_key", None)
+        item.setdefault("dispatch_message_key", None)
+        item.setdefault("replacement_confirmed_at", None)
+        item.setdefault("replacement_confirmation_source", None)
+        item.setdefault("completion_confirmed_at", None)
+        item.setdefault("completion_confirmation_source", None)
+        item.setdefault("warehouse_evidence", [])
+        legacy_replacement = item.get("fault_tag_generated_at") or item.get(
+            "return_exported_at"
+        )
+        if legacy_replacement and not item.get("replacement_confirmed_at"):
+            item["replacement_confirmed_at"] = legacy_replacement
+            item["replacement_confirmation_source"] = "legacy-conflated"
+            item["lifecycle_review_required"] = True
+        source = str(item.get("warehouse_confirmation_source") or "").casefold()
+        if (
+            item.get("warehouse_confirmed_at")
+            and source == "manual"
+            and not item.get("completion_confirmed_at")
+        ):
+            item["completion_confirmed_at"] = item.get("warehouse_confirmed_at")
+            item["completion_confirmation_source"] = "legacy-manual"
+        item.setdefault("lifecycle_review_required", False)
+    prepared.setdefault("lifecycle_suppressions", [])
+    prepared.setdefault("request_sent_message_key", None)
+    prepared["schema_version"] = SPARE_REQUEST_SCHEMA_VERSION
+    return prepared
+
+
+def lifecycle_effect_suppressed(
+    target: dict[str, Any], stage: int, message_key: Any
+) -> bool:
+    key = str(message_key or "")
+    return any(
+        int(entry.get("stage") or -1) == int(stage)
+        and str(entry.get("message_key") or "") == key
+        for entry in target.get("lifecycle_suppressions", [])
+        if isinstance(entry, dict)
+    )
+
+
 def item_status(item: dict[str, Any], request: dict[str, Any]) -> str:
-    if item.get("warehouse_confirmed_at") or item.get("warehouse_candidate_at"):
-        return "warehouse_confirmed"
-    if item.get("return_exported_at"):
-        return "awaiting_warehouse"
-    if item.get("dispatch_at"):
+    if item.get("completion_confirmed_at"):
+        return "complete"
+    if _stage_reached(item, request, 5):
+        return "awaiting_user_confirmation"
+    if _stage_reached(item, request, 4):
+        return "awaiting_return"
+    if _stage_reached(item, request, 3):
         return "dispatched"
-    if item.get("rma"):
+    if _stage_reached(item, request, 2):
         return "awaiting_dispatch"
     attended = bool(item.get("attendance_confirmed_at") or request.get("spare_sr"))
     return "awaiting_stock" if attended else "awaiting_confirmation"
 
 
+def _effective_email_evidence(
+    target: dict[str, Any],
+    *,
+    stage: int,
+    source: Any,
+    message_key: Any,
+) -> bool:
+    return not (
+        str(source or "").casefold().startswith("email")
+        and lifecycle_effect_suppressed(target, stage, message_key)
+    )
+
+
+def _stage_reached(item: dict[str, Any], request: dict[str, Any], stage: int) -> bool:
+    if stage == 6:
+        return bool(item.get("completion_confirmed_at"))
+    if stage == 5:
+        return bool(item.get("warehouse_candidate_at")) and _effective_email_evidence(
+            item,
+            stage=5,
+            source=item.get("warehouse_confirmation_source") or "email",
+            message_key=item.get("warehouse_message_key"),
+        )
+    if stage == 4:
+        return bool(item.get("replacement_confirmed_at"))
+    if stage == 3:
+        return bool(item.get("dispatch_at")) and _effective_email_evidence(
+            item,
+            stage=3,
+            source=item.get("dispatch_source"),
+            message_key=item.get("dispatch_message_key"),
+        )
+    if stage == 2:
+        return bool(
+            request.get("spare_sr")
+            and item.get("rma")
+            and item.get("attendance_confirmed_at")
+        ) and _effective_email_evidence(
+            item,
+            stage=2,
+            source=item.get("attendance_source"),
+            message_key=item.get("attendance_message_key"),
+        )
+    if stage == 1:
+        legacy = request.get("creation_method") == "manual_confirmation"
+        return bool(request.get("request_sent_at") or legacy) and _effective_email_evidence(
+            request,
+            stage=1,
+            source=request.get("request_sent_source") or ("manual" if legacy else None),
+            message_key=request.get("request_sent_message_key"),
+        )
+    return True
+
+
 def lifecycle_stage(item: dict[str, Any], request: dict[str, Any]) -> int:
     """Return the furthest auditable stage reached by one physical unit."""
 
-    if item.get("warehouse_confirmed_at") or item.get("warehouse_candidate_at"):
-        return 6
-    if item.get("fault_tag_sent_at"):
-        return 5
-    if item.get("fault_tag_generated_at") or item.get("return_exported_at"):
-        return 4
-    if item.get("dispatch_at"):
-        return 3
-    if request.get("spare_sr") and item.get("rma"):
-        return 2
-    if request.get("request_sent_at") or request.get("creation_method") == "manual_confirmation":
-        return 1
+    for stage in range(6, 0, -1):
+        if _stage_reached(item, request, stage):
+            # A later stage is only valid if all earlier lifecycle effects are
+            # still active. Rollback therefore exposes exactly one prior stage.
+            return min(
+                stage,
+                next(
+                    (
+                        earlier - 1
+                        for earlier in range(1, stage)
+                        if not _stage_reached(item, request, earlier)
+                    ),
+                    stage,
+                ),
+            )
     return 0
 
 
@@ -538,9 +670,9 @@ def lifecycle_stage_details(
         ),
         2: item.get("attendance_confirmed_at"),
         3: item.get("dispatch_at"),
-        4: item.get("fault_tag_generated_at") or item.get("return_exported_at"),
-        5: item.get("fault_tag_sent_at"),
-        6: item.get("warehouse_confirmed_at") or item.get("warehouse_candidate_at"),
+        4: item.get("replacement_confirmed_at"),
+        5: item.get("warehouse_candidate_at"),
+        6: item.get("completion_confirmed_at"),
     }
     sources = {
         0: "zeus",
@@ -549,13 +681,11 @@ def lifecycle_stage_details(
         ),
         2: item.get("attendance_source"),
         3: item.get("dispatch_source"),
-        4: item.get("fault_tag_generated_source") or (
-            "zeus_export" if item.get("return_exported_at") else None
-        ),
-        5: item.get("fault_tag_sent_source"),
-        6: item.get("warehouse_confirmation_source") or (
+        4: item.get("replacement_confirmation_source"),
+        5: item.get("warehouse_confirmation_source") or (
             "email" if item.get("warehouse_candidate_at") else None
         ),
+        6: item.get("completion_confirmation_source"),
     }
     return {
         "stage": stage,
@@ -576,9 +706,9 @@ def lifecycle_stage_details(
 
 
 def lifecycle_color(item: dict[str, Any], request: dict[str, Any]) -> str:
-    if item.get("dispatch_at"):
+    if _stage_reached(item, request, 3):
         return "green"
-    if item.get("attendance_confirmed_at") or request.get("spare_sr"):
+    if _stage_reached(item, request, 2):
         return "grey"
     return "black"
 
@@ -599,12 +729,15 @@ def dispatch_age_days(item: dict[str, Any], *, now: datetime | None = None) -> i
     return max(0, (current.date() - dispatched.date()).days)
 
 
-def aging_color(age_days: int | None) -> str | None:
+def aging_color(
+    age_days: int | None, *, red_days: int = 20, yellow_days: int | None = 15
+) -> str | None:
     if age_days is None:
         return None
-    if age_days >= 20:
+    # "More than 20 days" begins on day 21, not at the start of day 20.
+    if age_days > red_days:
         return "red"
-    if age_days >= 15:
+    if yellow_days is not None and age_days >= yellow_days:
         return "yellow"
     return None
 
@@ -615,7 +748,16 @@ def request_overall_status(request: dict[str, Any]) -> str:
         return "empty"
     if len(set(statuses)) == 1:
         return statuses[0]
-    dispatched = sum(status in {"dispatched", "awaiting_warehouse", "awaiting_user_confirmation", "warehouse_confirmed"} for status in statuses)
+    dispatched = sum(
+        status
+        in {
+            "dispatched",
+            "awaiting_return",
+            "awaiting_user_confirmation",
+            "complete",
+        }
+        for status in statuses
+    )
     confirmed = sum(status not in {"awaiting_confirmation", "awaiting_stock"} for status in statuses)
     if dispatched:
         return f"partial_dispatch_{dispatched}_of_{len(statuses)}"
@@ -731,7 +873,14 @@ def render_request_markdown(request: dict[str, Any]) -> str:
 
 
 def validate_request_record(request: dict[str, Any], directory_name: str | None = None) -> None:
-    if request.get("schema_version") != SPARE_REQUEST_SCHEMA_VERSION:
+    raw_schema = request.get("schema_version", 1)
+    if isinstance(raw_schema, bool):
+        raise SpareRequestError("Unsupported spare-request schema")
+    try:
+        schema_version = int(raw_schema)
+    except (TypeError, ValueError) as exc:
+        raise SpareRequestError("Unsupported spare-request schema") from exc
+    if not 1 <= schema_version <= SPARE_REQUEST_SCHEMA_VERSION:
         raise SpareRequestError("Unsupported spare-request schema")
     request_id = normalize_request_id(request.get("request_id"))
     if directory_name is not None and request_id != directory_name:
@@ -745,6 +894,9 @@ def validate_request_record(request: dict[str, Any], directory_name: str | None 
     if request.get("creation_method") not in {
         None,
         "zeus_export",
+        "zeus_create",
+        "legacy_manual_sent",
+        # Accepted only while a 3.1.6 record is waiting for maintenance.
         "manual_confirmation",
     }:
         raise SpareRequestError(f"Spare Request {request_id} has an invalid creation method")
@@ -768,9 +920,23 @@ def validate_request_record(request: dict[str, Any], directory_name: str | None 
             rmas.add(rma)
         if not isinstance(item.get("conflicts", []), list):
             raise SpareRequestError(f"Spare Request {request_id} has invalid conflicts")
+        if not isinstance(item.get("fault_tag_ids", []), list):
+            raise SpareRequestError(f"Spare Request {request_id} has invalid Fault Tag links")
+        if not isinstance(item.get("lifecycle_suppressions", []), list):
+            raise SpareRequestError(
+                f"Spare Request {request_id} has invalid lifecycle suppressions"
+            )
+        if not isinstance(item.get("warehouse_evidence", []), list):
+            raise SpareRequestError(
+                f"Spare Request {request_id} has invalid warehouse evidence"
+            )
     email = request.get("email", {})
     if not isinstance(email.get("messages", []), list):
         raise SpareRequestError(f"Spare Request {request_id} has invalid email messages")
+    if not isinstance(request.get("lifecycle_suppressions", []), list):
+        raise SpareRequestError(
+            f"Spare Request {request_id} has invalid lifecycle suppressions"
+        )
 
 
 def request_history(request: dict[str, Any], action: str, summary: dict[str, Any]) -> None:

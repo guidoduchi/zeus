@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -9,13 +10,26 @@ from .maintenance_windows import (
     MAINTENANCE_WINDOW_SCHEMA_VERSION,
     maintenance_window_summary,
 )
-from .spare_requests import render_request_markdown, validate_request_record
+from .fault_tags import (
+    create_fault_tag_record,
+    fault_tag_history,
+    next_fault_tag_id,
+    render_fault_tag_markdown,
+    validate_fault_tag_record,
+)
+from .spare_requests import (
+    SPARE_REQUEST_SCHEMA_VERSION,
+    ECUADOR_TIMEZONE,
+    render_request_markdown,
+    upgrade_request_record,
+    validate_request_record,
+)
 from .store import StoreError, ZeusStore, render_ticket_markdown
 from .tickets import normalize_local
-from .utils import atomic_write_json, atomic_write_text, iso_now
+from .utils import atomic_write_json, atomic_write_text, iso_now, parse_datetime
 
 
-CURRENT_DATABASE_SCHEMA_VERSION = 3
+CURRENT_DATABASE_SCHEMA_VERSION = 4
 
 
 def _schema_version(value: Any) -> int:
@@ -42,15 +56,147 @@ def _prepared_ticket(ticket: dict[str, Any]) -> dict[str, Any]:
     return prepared
 
 
+def _migrate_legacy_fault_tags(store: ZeusStore, staging: Path) -> int:
+    """Separate legacy return exports into independent Fault Tag documents.
+
+    A record is migrated only when every required fact already exists. Missing
+    or mixed facts remain on the request for human review; maintenance never
+    invents a site, RMA, Spare SR, or return condition.
+    """
+
+    requests = list(store.iter_spare_requests(staging))
+    grouped: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for request in requests:
+        for item in request.get("items", []):
+            if item.get("fault_tag_ids"):
+                continue
+            filename = str(
+                item.get("return_batch_id") or item.get("return_export_filename") or ""
+            ).strip()
+            if filename and item.get("return_exported_at"):
+                grouped.setdefault(filename, []).append((request, item))
+    occupied = {
+        *store.iter_fault_tag_ids(staging),
+        *store.iter_fault_tag_ids(staging, completed=True),
+    }
+    migrated = 0
+    for filename, pairs in grouped.items():
+        sites = {
+            (
+                str(request.get("profile", {}).get("site_code") or "").strip(),
+                str(request.get("profile", {}).get("site_address") or "").strip(),
+                str(request.get("profile", {}).get("cloud") or "").strip(),
+            )
+            for request, _ in pairs
+        }
+        if len(sites) != 1:
+            continue
+        site_code, site_address, cloud = next(iter(sites))
+        if not all(
+            request.get("spare_sr")
+            and item.get("rma")
+            and str(item.get("return_condition") or "").title() in {"Faulty", "New"}
+            and site_code
+            and site_address
+            and cloud
+            for request, item in pairs
+        ):
+            continue
+        parsed = parse_datetime(pairs[0][1].get("return_exported_at"))
+        identifier = next_fault_tag_id(
+            occupied,
+            now=(
+                parsed.replace(tzinfo=ECUADOR_TIMEZONE)
+                if parsed is not None and parsed.tzinfo is None
+                else parsed.astimezone(ECUADOR_TIMEZONE)
+                if parsed is not None
+                else datetime.now(ECUADOR_TIMEZONE)
+            ),
+        )
+        occupied.add(identifier)
+        export_path = None
+        export_subject = f"[LEGACY FAULT TAG {identifier}]"
+        for request, _ in pairs:
+            prior = next(
+                (
+                    entry
+                    for entry in request.get("export", {}).get("returns", [])
+                    if entry.get("filename") == filename
+                ),
+                None,
+            )
+            if prior:
+                export_path = prior.get("path") or export_path
+                export_subject = prior.get("subject") or export_subject
+        created_at = str(pairs[0][1].get("return_exported_at") or iso_now())
+        record = create_fault_tag_record(
+            fault_tag_id=identifier,
+            members=[
+                {
+                    "item_id": item.get("item_id"),
+                    "request_id": request.get("request_id"),
+                    "tt": request.get("tt"),
+                    "spare_sr": request.get("spare_sr"),
+                    "rma": item.get("rma"),
+                    "condition": str(item.get("return_condition")).title(),
+                    "source_site": request.get("profile", {}).get("site_code"),
+                    "requested_bom": item.get("requested_bom"),
+                    "new_sn": item.get("new_sn"),
+                    "warehouse_evidence_at": item.get("warehouse_candidate_at"),
+                    "warehouse_message_key": item.get("warehouse_message_key"),
+                    "user_confirmed_at": item.get("completion_confirmed_at"),
+                }
+                for request, item in pairs
+            ],
+            return_site={
+                "code": site_code,
+                "address": site_address,
+                "cloud": cloud,
+                "name": pairs[0][0].get("profile", {}).get("site_name"),
+            },
+            export={
+                "filename": filename,
+                "path": export_path,
+                "subject": export_subject,
+                "revisions": [
+                    {"filename": filename, "path": export_path, "created_at": created_at}
+                ],
+            },
+            created_at=created_at,
+        )
+        sent_at = next(
+            (item.get("fault_tag_sent_at") for _, item in pairs if item.get("fault_tag_sent_at")),
+            None,
+        )
+        if sent_at:
+            record["email"]["sent_at"] = sent_at
+            record["locked_at"] = sent_at
+            record["locked_source"] = "legacy-email-evidence"
+        fault_tag_history(
+            record,
+            "migrated-from-legacy-return-export",
+            {"legacyFilename": filename},
+        )
+        store.write_fault_tag(staging, record)
+        for request, item in pairs:
+            item.setdefault("fault_tag_ids", []).append(identifier)
+        for request in {pair[0]["request_id"]: pair[0] for pair in pairs}.values():
+            store.write_spare_request(staging, request)
+        migrated += 1
+    return migrated
+
+
 def inspect_database(store: ZeusStore) -> dict[str, Any]:
     """Read and compare every Markdown record without changing the store."""
 
     outdated_tickets: list[str] = []
+    outdated_requests: list[str] = []
     markdown_repairs: list[str] = []
     review_records: list[dict[str, str]] = []
     blocked_records: list[dict[str, str]] = []
     ticket_count = 0
     request_count = 0
+    fault_tag_count = 0
     state_path = store.current / "state.json"
     try:
         if not state_path.is_file():
@@ -174,18 +320,57 @@ def inspect_database(store: ZeusStore) -> dict[str, Any]:
         try:
             request = store.read_spare_request(request_id)
             validate_request_record(request, request_id)
-            canonical = render_request_markdown(request)
+            prepared_request = upgrade_request_record(request)
+            canonical = render_request_markdown(prepared_request)
             existing = path.read_text(encoding="utf-8")
         except Exception as exc:
             blocked_records.append(
                 {"path": _relative(store, path), "message": str(exc)}
             )
             continue
-        if existing != canonical:
+        try:
+            request_schema = _schema_version(request.get("schema_version", 1))
+        except (TypeError, ValueError):
+            blocked_records.append(
+                {
+                    "path": _relative(store, path),
+                    "message": "Spare Request schema_version must be a whole number",
+                }
+            )
+            continue
+        if request_schema < SPARE_REQUEST_SCHEMA_VERSION:
+            outdated_requests.append(request_id)
+        elif existing != canonical:
             markdown_repairs.append(_relative(store, path))
+        if any(item.get("lifecycle_review_required") for item in prepared_request.get("items", [])):
+            review_records.append(
+                {
+                    "path": _relative(store, path),
+                    "message": "Legacy return export was separated from replacement confirmation; review the lifecycle evidence.",
+                }
+            )
+
+    for completed in (False, True):
+        for fault_tag_id in store.iter_fault_tag_ids(completed=completed):
+            fault_tag_count += 1
+            path = store.fault_tag_file(fault_tag_id, completed=completed)
+            try:
+                record = store.read_fault_tag(fault_tag_id, completed=completed)
+                validate_fault_tag_record(record, fault_tag_id)
+                canonical = render_fault_tag_markdown(record)
+                existing = path.read_text(encoding="utf-8")
+            except Exception as exc:
+                blocked_records.append(
+                    {"path": _relative(store, path), "message": str(exc)}
+                )
+                continue
+            if existing != canonical:
+                markdown_repairs.append(_relative(store, path))
 
     upgrade_required = bool(
-        stored_version < CURRENT_DATABASE_SCHEMA_VERSION or outdated_tickets
+        stored_version < CURRENT_DATABASE_SCHEMA_VERSION
+        or outdated_tickets
+        or outdated_requests
     )
     repair_required = bool(markdown_repairs)
     if blocked_records:
@@ -202,8 +387,11 @@ def inspect_database(store: ZeusStore) -> dict[str, Any]:
         "storedSchemaVersion": stored_version,
         "ticketCount": ticket_count,
         "spareRequestCount": request_count,
+        "faultTagCount": fault_tag_count,
         "outdatedTicketCount": len(outdated_tickets),
         "outdatedTicketIds": outdated_tickets,
+        "outdatedSpareRequestCount": len(outdated_requests),
+        "outdatedSpareRequestIds": outdated_requests,
         "repairableMarkdownCount": len(markdown_repairs),
         "repairableMarkdown": markdown_repairs,
         "reviewCount": len(review_records),
@@ -231,6 +419,7 @@ def maintain_database(store: ZeusStore, *, confirmed: bool) -> dict[str, Any]:
         "from_schema_version": preview["storedSchemaVersion"],
         "to_schema_version": CURRENT_DATABASE_SCHEMA_VERSION,
         "tickets_upgraded": preview["outdatedTicketCount"],
+        "spare_requests_upgraded": preview.get("outdatedSpareRequestCount", 0),
         "markdown_records_repaired": preview["repairableMarkdownCount"],
         "review_records": preview["reviewCount"],
     }
@@ -244,10 +433,16 @@ def maintain_database(store: ZeusStore, *, confirmed: bool) -> dict[str, Any]:
             )
         for request_id in list(store.iter_spare_request_ids(current_path=staging)):
             request = store.read_spare_request(request_id, staging)
-            atomic_write_text(
-                store.spare_request_file(request_id, staging),
-                render_request_markdown(request),
-            )
+            store.write_spare_request(staging, upgrade_request_record(request))
+        summary["fault_tags_migrated"] = _migrate_legacy_fault_tags(store, staging)
+        for completed in (False, True):
+            for fault_tag_id in list(
+                store.iter_fault_tag_ids(staging, completed=completed)
+            ):
+                record = store.read_fault_tag(
+                    fault_tag_id, staging, completed=completed
+                )
+                store.write_fault_tag(staging, record, completed=completed)
         state = store.state(staging)
         state["database_schema_version"] = CURRENT_DATABASE_SCHEMA_VERSION
         state["last_database_maintenance_at"] = iso_now()
@@ -259,6 +454,8 @@ def maintain_database(store: ZeusStore, *, confirmed: bool) -> dict[str, Any]:
             "changed": True,
             "backup": summary.get("backup"),
             "upgradedTickets": preview["outdatedTicketCount"],
+            "upgradedSpareRequests": preview.get("outdatedSpareRequestCount", 0),
+            "migratedFaultTags": summary.get("fault_tags_migrated", 0),
             "repairedMarkdown": preview["repairableMarkdownCount"],
             "reviewRecords": preview["reviewRecords"],
         }

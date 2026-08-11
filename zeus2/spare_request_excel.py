@@ -447,20 +447,36 @@ def export_return_workbook(
     export_root: Path,
     selections: list[tuple[dict[str, Any], dict[str, Any], str]],
     *,
+    fault_tag_id: str | None = None,
+    return_site: dict[str, Any] | None = None,
     today: date | None = None,
 ) -> dict[str, Any]:
     if not selections:
         raise SpareRequestWorkbookError("Choose at least one RMA to return")
     first_request = selections[0][0]
     first_profile = first_request.get("profile", {})
-    site = str(first_profile.get("site_code") or "").strip()
-    cloud = str(first_profile.get("cloud") or "").strip()
+    supplied_site = return_site if isinstance(return_site, dict) else {}
+    site = str(supplied_site.get("code") or first_profile.get("site_code") or "").strip()
+    cloud = str(supplied_site.get("cloud") or first_profile.get("cloud") or "").strip()
+    address = str(
+        supplied_site.get("address") or first_profile.get("site_address") or ""
+    ).strip()
     if not site or not cloud:
         raise SpareRequestWorkbookError("Every return item requires a site and cloud")
+    if not address:
+        raise SpareRequestWorkbookError("Every return requires an actual return-site address")
+    source_sites = {
+        (
+            str(request.get("profile", {}).get("site_code") or "").strip(),
+            str(request.get("profile", {}).get("cloud") or "").strip(),
+        )
+        for request, _, _ in selections
+    }
+    if len(source_sites) > 1 and not return_site:
+        raise SpareRequestWorkbookError(
+            "Items come from different sites. Choose the actual return site before export."
+        )
     for request, item, condition in selections:
-        profile = request.get("profile", {})
-        if str(profile.get("site_code") or "").strip() != site or str(profile.get("cloud") or "").strip() != cloud:
-            raise SpareRequestWorkbookError("One return workbook can contain only one site and cloud")
         normalize_spare_sr(request.get("spare_sr"), required=True)
         normalize_rma(item.get("rma"), required=True)
         if condition not in {"Faulty", "New"}:
@@ -473,7 +489,7 @@ def export_return_workbook(
         worksheet = workbook.worksheets[0]
         contact = first_profile.get("contact", {})
         worksheet["A2"] = f"*Customer’s Name：{first_profile.get('customer_name') or ''}"
-        worksheet["B3"] = first_profile.get("site_address")
+        worksheet["B3"] = address
         worksheet["B4"] = contact.get("name")
         worksheet["B5"] = contact.get("phone")
         item_count = len(selections)
@@ -515,7 +531,8 @@ def export_return_workbook(
 
         day = today or datetime.now(ECUADOR_TIMEZONE).date()
         rmas = [str(item.get("rma")) for _, item, _ in selections]
-        filename = "–".join(["FT", cloud, day.strftime("%Y%m%d"), *rmas]) + ".xlsx"
+        tracking = str(fault_tag_id or f"FT-{day.strftime('%y%m%d')}000000")
+        filename = "–".join([tracking, cloud, day.strftime("%Y%m%d"), *rmas]) + ".xlsx"
         destination = export_root.expanduser().resolve() / "Returns" / filename
         final = _atomic_save(workbook, destination)
     finally:
@@ -534,7 +551,7 @@ def export_return_workbook(
     return {
         "path": str(final),
         "filename": final.name,
-        "subject": f"[FAULT TAG] [{site}] RMA " + " ".join(rmas),
+        "subject": f"[FAULT TAG {tracking}] [{site}] RMA " + " ".join(rmas),
         "warnings": warnings,
     }
 

@@ -16,6 +16,7 @@ from zeus2.application.serialization import (
 )
 from zeus2.application.service import ApplicationService
 from zeus2.config import load_config, save_config
+from zeus2.fault_tags import fault_tag_status
 from zeus2.spare_request_excel import (
     FAULTY_TAG_SHEET,
     REQUEST_SHEET,
@@ -24,6 +25,7 @@ from zeus2.spare_request_excel import (
     export_return_workbook,
 )
 from zeus2.spare_request_mail import (
+    _request_id_from_message,
     apply_spare_request_messages,
     parse_dispatch_notification,
 )
@@ -428,6 +430,21 @@ class SpareRequestDomainTests(unittest.TestCase):
 
 
 class SpareRequestMailTests(unittest.TestCase):
+    def test_fault_tag_timestamp_never_masquerades_as_a_request_id(self) -> None:
+        self.assertIsNone(
+            _request_id_from_message(
+                {"subject": "[FAULT TAG FT-260810120000] [UIO1] RMA C3209937826"}
+            )
+        )
+        self.assertEqual(
+            _request_id_from_message(
+                {
+                    "subject": "Request 260810115959 with Fault Tag FT-260810120000"
+                }
+            ),
+            "260810115959",
+        )
+
     def test_trusted_emails_advance_request_fault_tag_and_warehouse_stages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -527,11 +544,11 @@ class SpareRequestMailTests(unittest.TestCase):
             self.assertEqual(result["unmatched_messages"], 0)
             request = store.read_spare_request("260808123456")
             item = request["items"][0]
-            self.assertEqual(item["fault_tag_sent_source"], "email")
+            self.assertIsNone(item["fault_tag_sent_source"])
             self.assertEqual(item["warehouse_confirmation_source"], "email")
             self.assertEqual(item["rt"], "RT12345678")
-            self.assertEqual(lifecycle_stage(item, request), 6)
-            self.assertEqual(item_status(item, request), "warehouse_confirmed")
+            self.assertEqual(lifecycle_stage(item, request), 5)
+            self.assertEqual(item_status(item, request), "awaiting_user_confirmation")
 
     def test_out_of_order_dispatch_and_partial_stock_resolve_per_unit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -642,6 +659,272 @@ class SpareRequestApplicationTests(unittest.TestCase):
         self.service.stop()
         self.temporary.cleanup()
 
+    def detect_request_sent(
+        self, request: dict, *, message_key: str | None = None
+    ) -> None:
+        request_id = str(request.get("requestId") or request.get("request_id") or "")
+        message = {
+            "message_key": message_key or f"request-email-{request_id}",
+            "timestamp": "2026-08-08T13:00:00-05:00",
+            "direction": "sent",
+            "sender": "Zeus User",
+            "sender_address": "user@example.com",
+            "subject": f"[TT 39416095] [SPARE PARTS REQUEST] {request_id}",
+            "body": "Request attached",
+            "html_body": "",
+        }
+        with self.store.transaction("sent-request-email", {}) as staging:
+            apply_spare_request_messages(self.store, staging, [message])
+
+    def request_at_spare_replaced(self, amount: int = 1) -> dict:
+        request = self.service.export_spare_request(
+            {
+                "source": "manual",
+                "ticketId": "39416095",
+                "reportDate": "2026-07-01",
+                "profile": profile_input(),
+                "lines": lines_input(amount),
+            }
+        )["request"]
+        item_ids = [item["item_id"] for item in request["items"]]
+        self.detect_request_sent(request)
+        request = self.service.spare_request(request["requestId"])
+        request = self.service.edit_spare_request(
+            request["requestId"],
+            expected_revision=request["revision"],
+            changes={"spareSr": "SR4956964", "note": "Confirmed for test"},
+            item_updates=[
+                {
+                    "itemId": item_id,
+                    "rma": f"C32099378{26 + index:02d}",
+                    "newSn": f"NEW-{index + 1}",
+                }
+                for index, item_id in enumerate(item_ids)
+            ],
+        )["request"]
+        for _ in range(3):
+            self.service.bulk_spare_lifecycle(item_ids=item_ids, action="advance")
+        request = self.service.spare_request(request["requestId"])
+        self.assertTrue(
+            all(item["lifecycle"]["stage"] == 4 for item in request["items"])
+        )
+        return request
+
+    def test_shared_request_email_stage_requires_every_item(self) -> None:
+        request = self.service.export_spare_request(
+            {
+                "source": "manual",
+                "ticketId": "39416095",
+                "profile": profile_input(),
+                "lines": lines_input(2),
+            }
+        )["request"]
+        item_ids = [item["item_id"] for item in request["items"]]
+
+        with self.assertRaisesRegex(ValidationError, "stage is shared"):
+            self.service.bulk_spare_lifecycle(
+                item_ids=[item_ids[0]], action="advance"
+            )
+        request = self.service.spare_request(request["requestId"])
+        self.assertEqual([item["lifecycle"]["stage"] for item in request["items"]], [0, 0])
+        self.assertTrue(
+            all(
+                not row["canAdvance"]
+                for row in spare_requests_dashboard_payload(
+                    self.store, view="active"
+                )["spareRequests"]
+            )
+        )
+
+        with self.assertRaisesRegex(ValidationError, "outbound email evidence"):
+            self.service.bulk_spare_lifecycle(item_ids=item_ids, action="advance")
+        self.detect_request_sent(request)
+        request = self.service.spare_request(request["requestId"])
+        request = self.service.edit_spare_request(
+            request["requestId"],
+            expected_revision=request["revision"],
+            changes={"spareSr": "SR4956964"},
+            item_updates=[{"itemId": item_ids[0], "rma": "C3209937826"}],
+        )["request"]
+        self.service.bulk_spare_lifecycle(
+            item_ids=[item_ids[0]], action="advance"
+        )
+        with self.assertRaisesRegex(ValidationError, "later-stage item"):
+            self.service.bulk_spare_lifecycle(item_ids=item_ids, action="rollback")
+        self.service.bulk_spare_lifecycle(
+            item_ids=[item_ids[0]], action="rollback"
+        )
+        with self.assertRaisesRegex(ValidationError, "stage is shared"):
+            self.service.bulk_spare_lifecycle(
+                item_ids=[item_ids[0]], action="rollback"
+            )
+        self.service.bulk_spare_lifecycle(
+            item_ids=item_ids,
+            action="rollback",
+            email_override_confirmed=True,
+            note="The shared outbound email was linked to the wrong request.",
+        )
+        request = self.service.spare_request(request["requestId"])
+        self.assertEqual([item["lifecycle"]["stage"] for item in request["items"]], [0, 0])
+
+    def test_email_backed_rollback_suppresses_the_same_message_on_resync(self) -> None:
+        request = self.service.export_spare_request(
+            {
+                "source": "manual",
+                "ticketId": "39416095",
+                "profile": profile_input(),
+                "lines": lines_input(1),
+            }
+        )["request"]
+        message = {
+            "message_key": "request-email-sent",
+            "timestamp": "2026-08-08T13:00:00-05:00",
+            "direction": "sent",
+            "sender": "Zeus User",
+            "sender_address": "user@example.com",
+            "subject": f"[TT 39416095] [SPARE PARTS REQUEST] {request['requestId']}",
+            "body": "Request attached",
+            "html_body": "",
+        }
+        with self.store.transaction("sent-request-email", {}) as staging:
+            apply_spare_request_messages(self.store, staging, [message])
+        request = self.service.spare_request(request["requestId"])
+        item_id = request["items"][0]["item_id"]
+        self.assertEqual(request["items"][0]["lifecycle"]["stage"], 1)
+        self.assertEqual(request["email"]["total_sent"], 1)
+
+        with self.assertRaisesRegex(ValidationError, "second confirmation"):
+            self.service.bulk_spare_lifecycle(
+                item_ids=[item_id], action="rollback"
+            )
+        self.service.bulk_spare_lifecycle(
+            item_ids=[item_id],
+            action="rollback",
+            email_override_confirmed=True,
+            note="The outbound email used the wrong request attachment.",
+        )
+        rolled_back = self.store.read_spare_request(request["requestId"])
+        self.assertEqual(lifecycle_stage(rolled_back["items"][0], rolled_back), 0)
+        self.assertEqual(rolled_back["email"]["total_sent"], 1)
+        self.assertEqual(
+            rolled_back["lifecycle_suppressions"][0]["message_key"],
+            "request-email-sent",
+        )
+
+        with self.store.transaction("resync-same-request-email", {}) as staging:
+            apply_spare_request_messages(self.store, staging, [message])
+        resynced = self.store.read_spare_request(request["requestId"])
+        self.assertEqual(lifecycle_stage(resynced["items"][0], resynced), 0)
+        self.assertEqual(resynced["email"]["total_sent"], 1)
+        self.assertEqual(len(resynced["email"]["messages"]), 1)
+
+    def test_fault_tag_locks_reexports_and_can_be_deleted_without_lifecycle_change(self) -> None:
+        request = self.request_at_spare_replaced()
+        item_id = request["items"][0]["item_id"]
+        exported = self.service.export_spare_return(
+            [{"itemId": item_id, "condition": "Faulty"}]
+        )
+        fault_tag_id = exported["faultTagId"]
+        self.assertRegex(fault_tag_id, r"^FT-\d{12}$")
+        self.assertEqual(
+            self.service.spare_request(request["requestId"])["items"][0]["lifecycle"]["stage"],
+            4,
+        )
+
+        revised = self.service.reexport_fault_tag(fault_tag_id)
+        self.assertEqual(revised["faultTag"]["faultTagId"], fault_tag_id)
+        self.assertEqual(len(revised["faultTag"]["export"]["revisions"]), 2)
+        sent = {
+            "message_key": "fault-tag-sent",
+            "timestamp": "2026-08-09T09:00:00-05:00",
+            "direction": "sent",
+            "sender": "Zeus User",
+            "sender_address": "user@example.com",
+            "subject": f"Fault Tag {fault_tag_id}",
+            "body": f"Fault Tag batch {fault_tag_id}",
+            "html_body": "",
+        }
+        with self.store.transaction("fault-tag-email", {}) as staging:
+            apply_spare_request_messages(self.store, staging, [sent])
+        locked = self.service.fault_tag(fault_tag_id)
+        self.assertTrue(locked["locked"])
+        self.assertEqual(locked["email"]["message_key"], "fault-tag-sent")
+        self.assertEqual(
+            self.service.spare_request(request["requestId"])["items"][0]["lifecycle"]["stage"],
+            4,
+        )
+
+        with self.assertRaisesRegex(ValidationError, "Delete the active Fault Tag"):
+            self.service.archive_spare_items(
+                item_ids=[item_id],
+                reason="cancelled",
+                note="This item was linked to the wrong batch.",
+            )
+
+        deleted = self.service.delete_fault_tag(fault_tag_id)
+        self.assertFalse(deleted["lifecycleChanged"])
+        released = self.service.spare_request(request["requestId"])["items"][0]
+        self.assertEqual(released["fault_tag_ids"], [])
+        self.assertEqual(released["lifecycle"]["stage"], 4)
+
+    def test_partial_fault_tag_stays_active_until_every_member_is_confirmed(self) -> None:
+        config = self.store.config
+        config["email"]["warehouse_sender_domain"] = "@warehouse.example.test"
+        self.store.save_config(config)
+        request = self.request_at_spare_replaced(2)
+        first, second = request["items"]
+        fault_tag_id = self.service.export_spare_return(
+            [
+                {"itemId": first["item_id"], "condition": "Faulty"},
+                {"itemId": second["item_id"], "condition": "New"},
+            ]
+        )["faultTagId"]
+
+        def warehouse_message(item: dict, key: str) -> dict:
+            return {
+                "message_key": key,
+                "timestamp": "2026-08-10T09:00:00-05:00",
+                "direction": "received",
+                "sender": "Warehouse",
+                "sender_address": "agent@warehouse.example.test",
+                "subject": f"SR4956964 {item['rma']} RT12345678",
+                "body": f"SR4956964 {item['rma']} RT12345678",
+                "html_body": "",
+            }
+
+        with self.store.transaction("first-warehouse-evidence", {}) as staging:
+            apply_spare_request_messages(
+                self.store, staging, [warehouse_message(first, "warehouse-first")]
+            )
+        active_tag = self.store.read_fault_tag(fault_tag_id, completed=False)
+        self.assertEqual(fault_tag_status(active_tag), "partial_warehouse")
+        request = self.service.spare_request(request["requestId"])
+        stages = {item["item_id"]: item["lifecycle"]["stage"] for item in request["items"]}
+        self.assertEqual(stages[first["item_id"]], 5)
+        self.assertEqual(stages[second["item_id"]], 4)
+
+        self.service.bulk_spare_lifecycle(
+            item_ids=[first["item_id"]], action="advance"
+        )
+        active_tag = self.store.read_fault_tag(fault_tag_id, completed=False)
+        self.assertEqual(fault_tag_status(active_tag), "partial_warehouse")
+        self.assertTrue(active_tag["members"][0]["user_confirmed_at"])
+        self.assertEqual(
+            self.service.reexport_fault_tag(fault_tag_id)["faultTag"]["faultTagId"],
+            fault_tag_id,
+        )
+
+        with self.store.transaction("second-warehouse-evidence", {}) as staging:
+            apply_spare_request_messages(
+                self.store, staging, [warehouse_message(second, "warehouse-second")]
+            )
+        self.service.bulk_spare_lifecycle(
+            item_ids=[second["item_id"]], action="advance"
+        )
+        completed_tag = self.store.read_fault_tag(fault_tag_id, completed=True)
+        self.assertEqual(fault_tag_status(completed_tag), "completed")
+        self.assertFalse(self.store.spare_request_file(request["requestId"]).exists())
+
     def test_manual_export_persists_and_reexports_as_revision(self) -> None:
         lines = lines_input(2)
         lines[0].pop("reportDate")
@@ -689,11 +972,11 @@ class SpareRequestApplicationTests(unittest.TestCase):
         self.assertEqual([row["rowId"] for row in before["eligibleParts"]], ["39416095:1:1"])
         registered = self.service.register_spare_request(payload)["request"]
 
-        self.assertEqual(registered["creationMethod"], "manual_confirmation")
+        self.assertEqual(registered["creationMethod"], "zeus_create")
         self.assertIsNone(registered["spareSr"])
         self.assertIsNone(registered["items"][0]["rma"])
         self.assertIsNone(registered["export"]["request_filename"])
-        self.assertEqual(registered["history"][0]["action"], "request-registered-manually")
+        self.assertEqual(registered["history"][0]["action"], "request-created")
         self.assertFalse(self.exports.exists())
         self.assertEqual(
             spare_requests_dashboard_payload(self.store, view="eligible")["eligibleParts"],
@@ -898,7 +1181,7 @@ class SpareRequestApplicationTests(unittest.TestCase):
         source = self.store.read_ticket("39416095")["local"]["spare_parts"][0]["parts"][0]
         self.assertEqual(source["submitted_request_ids"], [legacy["request_id"]])
 
-    def test_manual_lifecycle_advances_zero_through_six_and_switches_tracking_id(self) -> None:
+    def test_lifecycle_requires_outbound_and_warehouse_evidence_and_switches_tracking_id(self) -> None:
         request = self.service.export_spare_request(
             {
                 "source": "manual",
@@ -920,12 +1203,15 @@ class SpareRequestApplicationTests(unittest.TestCase):
                 expected_revision=request["revision"],
             )
 
-        request = self.service.advance_spare_request_stage(
-            request["requestId"],
-            item_id=item_id,
-            target_stage=1,
-            expected_revision=request["revision"],
-        )["request"]
+        with self.assertRaisesRegex(ValidationError, "outbound email evidence"):
+            self.service.advance_spare_request_stage(
+                request["requestId"],
+                item_id=item_id,
+                target_stage=1,
+                expected_revision=request["revision"],
+            )
+        self.detect_request_sent(request)
+        request = self.service.spare_request(request["requestId"])
         self.assertEqual(request["items"][0]["lifecycle"]["stage"], 1)
         request = self.service.edit_spare_request(
             request["requestId"],
@@ -933,11 +1219,19 @@ class SpareRequestApplicationTests(unittest.TestCase):
             changes={"spareSr": "SR4956964", "note": "Confirmed manually"},
             item_updates=[{"itemId": item_id, "rma": "C3209937826"}],
         )["request"]
-        self.assertEqual(request["items"][0]["lifecycle"]["stage"], 2)
+        self.assertEqual(request["items"][0]["lifecycle"]["stage"], 1)
         self.assertEqual(request["trackingId"], "SR4956964")
         self.assertFalse(request["trackingIdProvisional"])
 
-        for stage in range(3, 7):
+        request = self.service.advance_spare_request_stage(
+            request["requestId"],
+            item_id=item_id,
+            target_stage=2,
+            expected_revision=request["revision"],
+        )["request"]
+        self.assertEqual(request["items"][0]["lifecycle"]["stage"], 2)
+
+        for stage in range(3, 5):
             request = self.service.advance_spare_request_stage(
                 request["requestId"],
                 item_id=item_id,
@@ -952,19 +1246,35 @@ class SpareRequestApplicationTests(unittest.TestCase):
                 ),
                 stage,
             )
-        self.assertEqual(
-            [entry["stage"] for entry in request["items"][0]["lifecycle"]["stages"]],
-            list(range(7)),
+        with self.assertRaisesRegex(ValidationError, "warehouse email evidence"):
+            self.service.advance_spare_request_stage(
+                request["requestId"],
+                item_id=item_id,
+                target_stage=5,
+                expected_revision=request["revision"],
+            )
+        with self.store.transaction("warehouse-evidence", {}) as staging:
+            persisted = self.store.read_spare_request(request["requestId"], staging)
+            item = persisted["items"][0]
+            item["warehouse_candidate_at"] = "2026-08-10T09:00:00-05:00"
+            item["warehouse_confirmation_source"] = "email"
+            item["warehouse_message_key"] = "warehouse-evidence"
+            item["warehouse_evidence"] = [{
+                "message_key": "warehouse-evidence",
+                "timestamp": "2026-08-10T09:00:00-05:00",
+                "rt": "RT12345678",
+            }]
+            self.store.write_spare_request(staging, persisted)
+        request = self.service.spare_request(request["requestId"])
+        self.assertEqual(request["items"][0]["lifecycle"]["stage"], 5)
+        completed = self.service.advance_spare_request_stage(
+            request["requestId"],
+            item_id=item_id,
+            target_stage=6,
+            expected_revision=request["revision"],
         )
-        self.assertTrue(all(entry["reached"] for entry in request["items"][0]["lifecycle"]["stages"]))
-        self.assertEqual(request["items"][0]["status"], "warehouse_confirmed")
-        archived = self.service.archive_spare_items(
-            item_ids=[item_id],
-            reason="returned",
-            note="",
-            manual_override=False,
-        )
-        self.assertEqual(archived["archived"], [item_id])
+        self.assertIsNone(completed["request"])
+        self.assertEqual(completed["completed"], [item_id])
 
     def test_rma_is_immutable_and_return_archive_requires_confirmation(self) -> None:
         result = self.service.export_spare_request(
@@ -999,15 +1309,21 @@ class SpareRequestApplicationTests(unittest.TestCase):
                 changes={},
                 item_updates=[{"itemId": item_id, "rma": "C3209937827"}],
             )
-        with self.assertRaisesRegex(ValidationError, "warehouse email"):
+        with self.assertRaisesRegex(ValidationError, "Warehouse email evidence"):
             self.service.archive_spare_items(
                 item_ids=[item_id], reason="returned", note="", manual_override=False
             )
+        with self.assertRaisesRegex(ValidationError, "cannot replace"):
+            self.service.archive_spare_items(
+                item_ids=[item_id],
+                reason="returned",
+                note="Verified by warehouse call",
+                manual_override=True,
+            )
         archived = self.service.archive_spare_items(
             item_ids=[item_id],
-            reason="returned",
-            note="Verified by warehouse call",
-            manual_override=True,
+            reason="cancelled",
+            note="Request cancelled after the return could not be verified.",
         )
         self.assertEqual(archived["archived"], [item_id])
         self.assertFalse(self.store.spare_request_file(saved["requestId"]).exists())

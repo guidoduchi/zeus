@@ -85,7 +85,9 @@ function serviceSummary(ticketId: string): TicketSummary {
     lastEmailDirection: null,
     received: 0,
     sent: 0,
+    spareBadges: { eligible: 0, active: 0, activeColor: "green", completed: 0 },
     summary: `Ticket ${ticketId}`,
+    customerOrganization: "Organization",
     customerContact: `Customer ${ticketId}`,
     severity: "Minor",
     product: "Product",
@@ -137,6 +139,7 @@ function spareSummary(index: number): SpareRequestItemSummary {
   return {
     rowId: `${requestId}-0001`,
     requestId,
+    revision: `revision-${requestId}`,
     itemId: `${requestId}-0001`,
     ticketId: `3941609${index}`,
     rma: `C320993782${index}`,
@@ -155,6 +158,8 @@ function spareSummary(index: number): SpareRequestItemSummary {
     emailLabel: "No email",
     emailColor: "grey",
     emailCount: 0,
+    received: 0,
+    sent: 0,
     requestedBom: `BOM-${index}`,
     deliveredBom: "",
     part: "Controller board",
@@ -163,6 +168,9 @@ function spareSummary(index: number): SpareRequestItemSummary {
     slot: `1/0/${index}`,
     faultySn: `FAULTY-${index}`,
     newSn: "",
+    returnCondition: null,
+    faultTagIds: [],
+    faultTagId: null,
     site: "UIO",
     cloud: "Cloud",
     conflictCount: 0,
@@ -248,7 +256,7 @@ function spareDetail(row: SpareRequestItemSummary): SpareRequestDetail {
         source: row.lifecycleStageSource,
         stages: Array.from({ length: 7 }, (_, stage) => ({
           stage,
-          label: ["Added to Zeus", "Request email sent", "SR and RMA confirmed", "Spare Parts dispatched", "Replaced / Fault Tag generated", "Fault Tag email sent", "Warehouse confirmed"][stage],
+          label: ["Added to Zeus", "Request email sent", "SR and RMA confirmed", "Spare parts dispatched", "Spare replaced", "Warehouse evidence received", "Complete"][stage],
           reached: stage <= row.lifecycleStage,
           timestamp: stage <= row.lifecycleStage ? "2026-08-08T12:02:00" : null,
           source: stage <= row.lifecycleStage ? "email" : null,
@@ -360,6 +368,7 @@ const spareDashboard: SpareRequestsDashboardPayload = {
   },
   spareRequests: spareRows,
   eligibleParts: [],
+  faultTags: [],
 };
 
 function mockEligibleRequestFlow(requestReady: boolean) {
@@ -466,7 +475,7 @@ describe("workspace selection and detail focus", () => {
 
     const second = await screen.findByRole("row", { name: /20000002/ });
     const third = screen.getByRole("row", { name: /20000003/ });
-    await user.click(second);
+    await user.dblClick(second);
     await screen.findByRole("complementary", { name: "SR 20000002 detail" });
 
     apiMocks.getTicket.mockClear();
@@ -493,7 +502,7 @@ describe("workspace selection and detail focus", () => {
     await user.click(screen.getByRole("button", { name: "Spare Requests" }));
     const first = await screen.findByRole("row", { name: /C3209937821/ });
     const second = screen.getByRole("row", { name: /C3209937822/ });
-    await user.click(first);
+    await user.dblClick(first);
     await screen.findByRole("complementary", { name: `Spare Request ${spareRows[0].requestId} detail` });
 
     apiMocks.getSpareRequest.mockClear();
@@ -515,7 +524,7 @@ describe("workspace selection and detail focus", () => {
     render(<App />);
 
     const second = await screen.findByRole("row", { name: /20000002/ });
-    await user.click(second);
+    await user.dblClick(second);
     await user.keyboard("{ArrowDown}");
     resolveThird?.(serviceDetail("20000003"));
     await screen.findByRole("complementary", { name: "SR 20000003 detail" });
@@ -566,42 +575,42 @@ describe("workspace selection and detail focus", () => {
 
     await screen.findByRole("row", { name: /20000001/ });
     await user.click(screen.getByRole("button", { name: "Spare Requests" }));
-    await user.click(screen.getByRole("button", { name: "Manual request" }));
-    expect(await screen.findByRole("dialog", { name: "Export Spare Request" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "New Request" }));
+    expect(await screen.findByRole("dialog", { name: "New Request" })).toBeVisible();
     expect(screen.queryByRole("dialog", { name: "Zeus configuration" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
 
     await user.click(screen.getByRole("tab", { name: "Eligible SR Parts" }));
     const eligible = await screen.findByRole("row", { name: /20000001/ });
-    await user.click(eligible);
-    const requestEditor = await screen.findByRole("dialog", { name: "Export Spare Request" });
+    await user.dblClick(eligible);
+    const requestEditor = await screen.findByRole("dialog", { name: "New Request" });
     expect(requestEditor).toBeVisible();
     expect(screen.queryByRole("dialog", { name: "Zeus configuration" })).not.toBeInTheDocument();
 
-    const exportButton = within(requestEditor).getByRole("button", { name: "Export XLSX & create request" });
+    const exportButton = within(requestEditor).getByRole("button", { name: "Export" });
     await waitFor(() => expect(exportButton).toBeEnabled());
     await user.click(exportButton);
     const configuration = await screen.findByRole("dialog", { name: "Zeus configuration" });
-    expect(screen.queryByRole("dialog", { name: "Export Spare Request" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New Request" })).not.toBeInTheDocument();
     await user.click(within(configuration).getByRole("button", { name: /^Close$/ }));
 
-    const restoredEditor = await screen.findByRole("dialog", { name: "Export Spare Request" });
+    const restoredEditor = await screen.findByRole("dialog", { name: "New Request" });
     expect(within(restoredEditor).getByLabelText("TT · 8 digits")).toHaveValue(eligiblePart.ticketId);
     expect(within(restoredEditor).getByLabelText("Customer name *")).toHaveValue("Juan Piguave");
   });
 
-  it("registers an already-sent eligible part without export configuration", async () => {
+  it("creates an eligible request at stage zero without export configuration", async () => {
     const user = userEvent.setup();
     mockEligibleRequestFlow(false);
     const manuallyRegistered = {
       ...spareDetail(spareRows[0]),
-      creationMethod: "manual_confirmation" as const,
+      creationMethod: "zeus_create" as const,
       spareSr: null,
       items: spareDetail(spareRows[0]).items.map((item) => ({ ...item, rma: null })),
     };
     apiMocks.registerSpareRequest.mockResolvedValue({
       request: manuallyRegistered,
-      subject: "Manual request already sent",
+      subject: "New stage-zero request",
       warnings: [],
     });
     apiMocks.getSpareRequest.mockResolvedValue(manuallyRegistered);
@@ -610,9 +619,9 @@ describe("workspace selection and detail focus", () => {
     await screen.findByRole("row", { name: /20000001/ });
     await user.click(screen.getByRole("button", { name: "Spare Requests" }));
     await user.click(screen.getByRole("tab", { name: "Eligible SR Parts" }));
-    await user.click(await screen.findByRole("row", { name: /20000001/ }));
-    const editor = await screen.findByRole("dialog", { name: "Export Spare Request" });
-    const manual = within(editor).getByRole("button", { name: "Already sent manually" });
+    await user.dblClick(await screen.findByRole("row", { name: /20000001/ }));
+    const editor = await screen.findByRole("dialog", { name: "New Request" });
+    const manual = within(editor).getByRole("button", { name: "Create" });
     await waitFor(() => expect(manual).toBeEnabled());
     await user.click(manual);
 
@@ -623,7 +632,7 @@ describe("workspace selection and detail focus", () => {
       lines: [{ deviceNumber: 1, partNumber: 1, bom: "BOM-1" }],
     });
     expect(await screen.findByRole("complementary", { name: `Spare Request ${manuallyRegistered.requestId} detail` })).toBeVisible();
-    expect(screen.getByText(/Registered as already sent manually/i)).toBeVisible();
+    expect(screen.getByText(/Created in Zeus at Added to Zeus/i)).toBeVisible();
     expect(screen.queryByRole("dialog", { name: "Spare Request created" })).not.toBeInTheDocument();
   });
 
@@ -643,14 +652,14 @@ describe("workspace selection and detail focus", () => {
     await screen.findByRole("row", { name: /20000001/ });
     await user.click(screen.getByRole("button", { name: "Spare Requests" }));
     await user.click(screen.getByRole("tab", { name: "Eligible SR Parts" }));
-    await user.click(await screen.findByRole("row", { name: /20000001/ }));
-    const editor = await screen.findByRole("dialog", { name: "Export Spare Request" });
-    const exportButton = within(editor).getByRole("button", { name: "Export XLSX & create request" });
+    await user.dblClick(await screen.findByRole("row", { name: /20000001/ }));
+    const editor = await screen.findByRole("dialog", { name: "New Request" });
+    const exportButton = within(editor).getByRole("button", { name: "Export" });
     await waitFor(() => expect(exportButton).toBeEnabled());
     await user.click(exportButton);
 
     const reminder = await screen.findByRole("dialog", { name: "Spare Request created" });
-    expect(screen.queryByRole("dialog", { name: "Export Spare Request" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New Request" })).not.toBeInTheDocument();
     expect(within(reminder).getByText(/do not forget to attach it and send the email/i)).toBeVisible();
     await user.click(within(reminder).getByRole("button", { name: "OK" }));
     expect(screen.queryByRole("dialog", { name: "Spare Request created" })).not.toBeInTheDocument();
@@ -666,7 +675,7 @@ describe("workspace selection and detail focus", () => {
     expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Scheduled 0");
     expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("Incomplete 0");
     expect(screen.getByLabelText("Service Requests summary")).toHaveTextContent("No visibility 0");
-    await user.click(second);
+    await user.dblClick(second);
     const detail = await screen.findByRole("complementary", { name: "SR 20000002 detail" });
     await user.click(screen.getByRole("button", { name: "Work fields" }));
     await user.click(screen.getByLabelText("Notes"));
@@ -709,7 +718,7 @@ describe("workspace selection and detail focus", () => {
     await screen.findByRole("row", { name: /20000001/ });
     await user.click(screen.getByRole("button", { name: "Spare Requests" }));
     const second = await screen.findByRole("row", { name: /C3209937822/ });
-    await user.click(second);
+    await user.dblClick(second);
     await screen.findByRole("complementary", { name: `Spare Request ${spareRows[1].requestId} detail` });
     await user.click(screen.getByLabelText("Spare SR"));
 

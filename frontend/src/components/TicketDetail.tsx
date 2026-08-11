@@ -90,6 +90,8 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
   const [deviceStale, setDeviceStale] = useState(false);
   const [saving, setSaving] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<{ kind: "discard" | "remove-device"; deviceNumber?: number } | null>(null);
+  const [deviceBatch, setDeviceBatch] = useState({ names: "", model: "", notes: "" });
 
   useEffect(() => {
     if (saving) return;
@@ -266,6 +268,22 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
     }
   }
 
+  function addDeviceBatch() {
+    const names = [...new Set(deviceBatch.names.split(/\r?\n/).map((value) => value.trim()).filter(Boolean))];
+    if (!names.length) return;
+    updateDevices((current) => {
+      let nextNumber = nextDeviceNumber(current);
+      const added = names.map((name) => ({
+        ...emptyDevice(nextNumber++),
+        device: name,
+        model: deviceBatch.model,
+        notes: deviceBatch.notes,
+      }));
+      return [...current, ...added];
+    });
+    setDeviceBatch({ names: "", model: "", notes: "" });
+  }
+
   return <>
     <div className="bounded-edit-tab">
       <div className="edit-tab-scroll">
@@ -347,6 +365,12 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
               <strong>Affected / intervened devices</strong>
               <span>Device work does not require a spare part.</span>
             </header>
+            {!ticket.readOnly && <div className="device-batch-entry">
+              <label className="form-field full"><span>Device names · one per line</span><textarea rows={3} value={deviceBatch.names} onChange={(event) => setDeviceBatch((current) => ({ ...current, names: event.target.value }))} placeholder={"router-01\nrouter-02\nrouter-03"} /></label>
+              <label className="form-field"><span>Shared model</span><input value={deviceBatch.model} onChange={(event) => setDeviceBatch((current) => ({ ...current, model: event.target.value }))} /></label>
+              <label className="form-field"><span>Shared intervention notes</span><input value={deviceBatch.notes} onChange={(event) => setDeviceBatch((current) => ({ ...current, notes: event.target.value }))} /></label>
+              <button type="button" className="secondary-button" disabled={!deviceBatch.names.trim()} onClick={addDeviceBatch}>Add independent device cards</button>
+            </div>}
             {!devices.length && <div className="empty-spares"><strong>No affected devices registered.</strong><span>Add the equipment being investigated or intervened; a BOM is optional.</span></div>}
             <div className="affected-device-list">
               {devices.map((device, deviceIndex) => {
@@ -361,7 +385,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
                       className="text-button danger-text"
                       disabled={removalBlocked}
                       title={removalBlocked ? "Remove its BOM records in Spare Parts first; Active Request ownership must also be cleared." : "Remove this affected device from both views"}
-                      onClick={() => updateDevices((current) => current.filter((candidate) => candidate.device_number !== device.device_number))}
+                      onClick={() => setConfirmAction({ kind: "remove-device", deviceNumber: device.device_number })}
                     >Remove device</button>}
                   </header>
                   <div className="device-fields">
@@ -372,7 +396,6 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
                 </article>;
               })}
             </div>
-            {!ticket.readOnly && <button type="button" className="secondary-button add-device" onClick={() => updateDevices((current) => [...current, emptyDevice(nextDeviceNumber(current))])}>+ Add affected device</button>}
           </section>
         </div>
       </div>
@@ -380,7 +403,7 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
         <span>{ticket.readOnly ? "Closed SR · read-only archive" : changedCount ? `${changedCount} unsaved field(s) · draft protected` : "No unsaved changes"}</span>
         {!ticket.readOnly && (
           <div className="inline-actions">
-            {changedCount > 0 && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}
+            {changedCount > 0 && <button type="button" className="text-button danger-text" disabled={saving} onClick={() => setConfirmAction({ kind: "discard" })}>Discard draft</button>}
             {stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore work changes</button>}
             {deviceStale && <button type="button" className="secondary-button" disabled={saving} onClick={restoreDeviceDraft}>Restore device changes</button>}
             <button type="button" className="primary-button" disabled={!changedCount || saving || stale || deviceStale} onClick={save}>
@@ -391,6 +414,8 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
       </div>
     </div>
     {restoreOpen && <ConfirmationDialog title={`Restore protected SR ${ticket.ticketId} changes?`} message="The protected Work Fields will be reapplied over the latest Zeus values for review. This action does not save anything to the database." confirmLabel="Restore for review" onCancel={() => setRestoreOpen(false)} onConfirm={restoreDraft} />}
+    {confirmAction?.kind === "discard" && <ConfirmationDialog title={`Discard SR ${ticket.ticketId} draft?`} message="This removes the protected Work Fields and affected-device changes from this browser. Zeus database values remain unchanged." confirmLabel="Discard draft" tone="danger" onCancel={() => setConfirmAction(null)} onConfirm={() => { discardDraft(); setConfirmAction(null); }} />}
+    {confirmAction?.kind === "remove-device" && <ConfirmationDialog title="Remove affected device?" message="This removes the device card and its device-specific data from the protected draft. The change reaches Zeus only after Save to Zeus." confirmLabel="Remove device" tone="danger" onCancel={() => setConfirmAction(null)} onConfirm={() => { const deviceNumber = confirmAction.deviceNumber; updateDevices((current) => current.filter((candidate) => candidate.device_number !== deviceNumber)); setConfirmAction(null); }} />}
   </>;
 }
 
@@ -444,6 +469,12 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest, onRegisterSpareRe
   const [stale, setStale] = useState(false);
   const [saving, setSaving] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState<
+    | { kind: "discard" }
+    | { kind: "device"; deviceNumber: number }
+    | { kind: "part"; deviceNumber: number; partNumber: number }
+    | null
+  >(null);
   useEffect(() => {
     if (saving) return;
     const current = cleanSpareParts(ticket.spareParts);
@@ -586,7 +617,7 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest, onRegisterSpareRe
               return <article className="spare-device" key={`device-${device.device_number}`}>
                 <header>
                   <strong>Affected device {deviceIndex + 1}</strong>
-                  {!ticket.readOnly && <button type="button" className="text-button danger-text" disabled={removalBlocked} title={removalBlocked ? "Delete this device's part records first. An Active Request must be deleted or completed before removing its device." : "Remove this device from Spare Parts and Work Fields"} onClick={() => updateDevices((current) => current.filter((candidate) => candidate.device_number !== device.device_number))}>Remove device</button>}
+                  {!ticket.readOnly && <button type="button" className="text-button danger-text" disabled={removalBlocked} title={removalBlocked ? "Delete this device's part records first. An Active Request must be deleted or completed before removing its device." : "Remove this device from Spare Parts and Work Fields"} onClick={() => setDeleteConfirmation({ kind: "device", deviceNumber: device.device_number })}>Remove device</button>}
                 </header>
                 <div className="device-fields">
                   <label className="form-field">
@@ -605,11 +636,11 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest, onRegisterSpareRe
                 </div>
                 {submitted.length > 0 && <section className="submitted-parts-group">
                   <header><strong>Submitted parts</strong><span>Delete allowed · editing locked</span></header>
-                  <div className="part-list">{submitted.map((part) => <SparePartEditor key={part.part_number} deviceIndex={deviceIndex} part={part} readOnly={ticket.readOnly} onUpdate={(field, value) => updatePart(deviceIndex, part.part_number, field, value)} onRemove={() => updateDevices((current) => current.map((candidate) => candidate.device_number !== device.device_number ? candidate : ({ ...candidate, parts: candidate.parts.filter((entry) => entry.part_number !== part.part_number) })))} />)}</div>
+                  <div className="part-list">{submitted.map((part) => <SparePartEditor key={part.part_number} deviceIndex={deviceIndex} part={part} readOnly={ticket.readOnly} onUpdate={(field, value) => updatePart(deviceIndex, part.part_number, field, value)} onRemove={() => setDeleteConfirmation({ kind: "part", deviceNumber: device.device_number, partNumber: part.part_number })} />)}</div>
                 </section>}
                 <section className="new-parts-group">
                   <header><strong>New eligible parts</strong><span>{editable.length} unsent BOM record(s)</span></header>
-                  <div className="part-list">{editable.map((part) => <SparePartEditor key={part.part_number} deviceIndex={deviceIndex} part={part} readOnly={ticket.readOnly} onUpdate={(field, value) => updatePart(deviceIndex, part.part_number, field, value)} onRemove={() => updateDevices((current) => current.map((candidate) => candidate.device_number !== device.device_number ? candidate : ({ ...candidate, parts: candidate.parts.filter((entry) => entry.part_number !== part.part_number) })))} />)}</div>
+                  <div className="part-list">{editable.map((part) => <SparePartEditor key={part.part_number} deviceIndex={deviceIndex} part={part} readOnly={ticket.readOnly} onUpdate={(field, value) => updatePart(deviceIndex, part.part_number, field, value)} onRemove={() => setDeleteConfirmation({ kind: "part", deviceNumber: device.device_number, partNumber: part.part_number })} />)}</div>
                 </section>
                 {!ticket.readOnly && <button type="button" className="secondary-button add-part" onClick={() => updateDevices((current) => current.map((candidate) => candidate.device_number === device.device_number ? ({ ...candidate, next_part_number: candidate.next_part_number + 1, parts: [...candidate.parts, emptyPart(candidate.next_part_number)] }) : candidate))}>+ Add new spare part</button>}
               </article>;
@@ -620,10 +651,13 @@ function SparePartsTab({ ticket, onSave, onExportSpareRequest, onRegisterSpareRe
       </div>
       <div className="inline-actions edit-actions">
         <span>{ticket.readOnly ? `${cleaned.length} device(s), ${partCount} BOM group(s), ${requestedUnits} unit(s) · closed SR archive` : changed ? `${cleaned.length} device(s), ${partCount} BOM group(s), ${requestedUnits} unit(s) · unsaved draft protected` : `${cleaned.length} device(s), ${partCount} BOM group(s), ${requestedUnits} unit(s)`}</span>
-        {!ticket.readOnly && <div className="inline-actions">{changed && <button type="button" className="text-button danger-text" disabled={saving} onClick={discardDraft}>Discard draft</button>}{stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore changes</button>}{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!eligiblePartCount || changed} title={changed ? "Save Spare Parts before exporting" : eligiblePartCount ? "Create an independent request from a new BOM/slot record" : "Add a new unsent BOM/slot record first"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Spare Request</button>}{onRegisterSpareRequest && <button type="button" className="secondary-button" disabled={!eligiblePartCount || changed} title={changed ? "Save Spare Parts before registering the request" : eligiblePartCount ? "Register a Spare Request that was already sent outside Zeus" : "Add a new unsent BOM/slot record first"} onClick={() => onRegisterSpareRequest(ticket.ticketId)}>Already sent manually</button>}<button type="button" className="primary-button" disabled={!changed || saving || stale} onClick={save}>{saving ? "Saving…" : "Save to Zeus"}</button></div>}
+        {!ticket.readOnly && <div className="inline-actions">{changed && <button type="button" className="text-button danger-text" disabled={saving} onClick={() => setDeleteConfirmation({ kind: "discard" })}>Discard draft</button>}{stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore changes</button>}{onExportSpareRequest && <button type="button" className="secondary-button" disabled={!eligiblePartCount || changed} title={changed ? "Save Spare Parts before exporting" : eligiblePartCount ? "Create and export an independent request from a new BOM/slot record" : "Add a new unsent BOM/slot record first"} onClick={() => onExportSpareRequest(ticket.ticketId)}>Export Request</button>}{onRegisterSpareRequest && <button type="button" className="secondary-button" disabled={!eligiblePartCount || changed} title={changed ? "Save Spare Parts before creating the request" : eligiblePartCount ? "Create a stage-zero request without exporting" : "Add a new unsent BOM/slot record first"} onClick={() => onRegisterSpareRequest(ticket.ticketId)}>Create Request</button>}<button type="button" className="primary-button" disabled={!changed || saving || stale} onClick={save}>{saving ? "Saving…" : "Save to Zeus"}</button></div>}
       </div>
     </div>
     {restoreOpen && <ConfirmationDialog title={`Restore protected SR ${ticket.ticketId} Spare Parts?`} message="The protected device, serial, slot, BOM, and notes changes will be reapplied over the latest Zeus record for review. This action does not save to the database." confirmLabel="Restore for review" onCancel={() => setRestoreOpen(false)} onConfirm={restoreDraft} />}
+    {deleteConfirmation?.kind === "discard" && <ConfirmationDialog title={`Discard SR ${ticket.ticketId} Spare Parts draft?`} message="This removes the protected device, serial, slot, BOM, and notes changes from this browser. Zeus database values remain unchanged." confirmLabel="Discard draft" tone="danger" onCancel={() => setDeleteConfirmation(null)} onConfirm={() => { discardDraft(); setDeleteConfirmation(null); }} />}
+    {deleteConfirmation?.kind === "device" && <ConfirmationDialog title="Remove affected device?" message="This removes the device and its data from the protected Spare Parts draft. The database changes only after Save to Zeus." confirmLabel="Remove device" tone="danger" onCancel={() => setDeleteConfirmation(null)} onConfirm={() => { const deviceNumber = deleteConfirmation.deviceNumber; updateDevices((current) => current.filter((candidate) => candidate.device_number !== deviceNumber)); setDeleteConfirmation(null); }} />}
+    {deleteConfirmation?.kind === "part" && <ConfirmationDialog title="Remove spare-part record?" message="This removes the part, slot, BOM, serial linkage, and notes in this box from the protected draft. The database changes only after Save to Zeus." confirmLabel="Remove part" tone="danger" onCancel={() => setDeleteConfirmation(null)} onConfirm={() => { const { deviceNumber, partNumber } = deleteConfirmation; updateDevices((current) => current.map((candidate) => candidate.device_number !== deviceNumber ? candidate : ({ ...candidate, parts: candidate.parts.filter((entry) => entry.part_number !== partNumber) }))); setDeleteConfirmation(null); }} />}
   </>;
 }
 

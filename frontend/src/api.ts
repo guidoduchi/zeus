@@ -5,6 +5,7 @@ import type {
   DatabaseMaintenanceStatus,
   BomCatalogPayload,
   GlobalReferenceData,
+  FaultTagDetail,
   Job,
   SpareReferenceData,
   SpareRequestDetail,
@@ -205,15 +206,51 @@ export function saveSpareRequest(
   });
 }
 
-export function exportSpareReturn(selections: Array<{ itemId: string; condition: "Faulty" | "New" }>): Promise<{
+export function exportSpareReturn(
+  selections: Array<{ itemId: string; condition: "Faulty" | "New" }>,
+  returnSite?: { code: string; name?: string; address: string; cloud: string },
+): Promise<{
   filename: string;
   path: string;
   subject: string;
   warnings: string[];
+  faultTagId: string;
+  faultTag: FaultTagDetail;
 }> {
   return request("/api/spare-requests/returns/export", {
     method: "POST",
-    body: JSON.stringify({ selections }),
+    body: JSON.stringify({ selections, ...(returnSite ? { returnSite } : {}) }),
+  });
+}
+
+export function getFaultTag(faultTagId: string): Promise<FaultTagDetail> {
+  return request<FaultTagDetail>(`/api/spare-requests/fault-tags/${faultTagId}`);
+}
+
+export function reexportFaultTag(faultTagId: string): Promise<{ faultTag: FaultTagDetail; filename: string; path: string; subject: string }> {
+  return request(`/api/spare-requests/fault-tags/${faultTagId}/re-export`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function deleteFaultTag(faultTagId: string): Promise<{ deleted: string; itemsReleased: string[]; lifecycleChanged: false }> {
+  return request(`/api/spare-requests/fault-tags/${faultTagId}/delete`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function bulkSpareLifecycle(payload: {
+  itemIds: string[];
+  action: "advance" | "rollback";
+  revisions?: Record<string, string>;
+  emailOverrideConfirmed?: boolean;
+  note?: string;
+}): Promise<{ action: string; items: string[]; completed: string[]; closedPath: string | null }> {
+  return request("/api/spare-requests/lifecycle/bulk", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

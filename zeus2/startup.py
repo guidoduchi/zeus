@@ -15,7 +15,7 @@ from .excel_import import WorkbookValidationError
 from .mail import (
     MailFetchCancelled,
     fetch_and_commit_outlook,
-    interval_due,
+    interval_due_minutes,
     synchronize_staged_email,
 )
 from .reconcile import (
@@ -207,8 +207,8 @@ def run_startup(
         new_ticket_ids = list(
             result.operations.get("advanced_search", {}).get("added_ids", [])
         )
-        fetch_due = interval_due(
-            int(config.get("fetch_interval_days", 7)),
+        fetch_due = interval_due_minutes(
+            int(config.get("fetch_interval_minutes", 60)),
             state.get("last_successful_full_email_fetch_at"),
         )
         fetch_succeeded = False
@@ -253,8 +253,8 @@ def run_startup(
         # when today's newer fetch was cancelled or failed.
         if config.get("sync_mode") == "scheduled":
             refreshed_state = store.state().get("email_state", {})
-            if interval_due(
-                int(config.get("sync_interval_days", 7)),
+            if interval_due_minutes(
+                int(config.get("sync_interval_minutes", 60)),
                 refreshed_state.get("last_successful_email_sync_at"),
             ):
                 try:

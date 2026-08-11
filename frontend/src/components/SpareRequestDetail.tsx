@@ -1,16 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  advanceSpareRequestStage,
-  archiveSpareItems,
   deleteSpareRequest,
-  exportSpareReturn,
-  getSpareRequest,
   reexportSpareRequest,
   resolveSpareConflict,
   saveSpareRequest,
 } from "../api";
 import { isEditingArea } from "../hooks/useGlobalCommands";
-import type { SpareRequestDetail as Detail, SpareRequestItem } from "../types";
+import type { SpareRequestDetail as Detail } from "../types";
 import { ConfirmationDialog } from "./ConfirmationDialog";
 
 interface Props {
@@ -29,9 +25,6 @@ interface ItemDraft {
   newSn: string;
   dispatchAt: string;
   notes: string;
-  attended: boolean;
-  selected: boolean;
-  condition: "Faulty" | "New";
 }
 
 interface PendingResolution {
@@ -55,13 +48,10 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
   const [spareSr, setSpareSr] = useState("");
   const [note, setNote] = useState("");
   const [drafts, setDrafts] = useState<Record<string, ItemDraft>>({});
-  const [archiveReason, setArchiveReason] = useState<"returned" | "cancelled">("returned");
-  const [manualOverride, setManualOverride] = useState(false);
   const [working, setWorking] = useState(false);
   const [pendingResolution, setPendingResolution] = useState<PendingResolution | null>(null);
   const [resolutionNote, setResolutionNote] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [advancingItemId, setAdvancingItemId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!request) return;
@@ -74,9 +64,6 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
       newSn: item.new_sn || "",
       dispatchAt: datetimeInput(item.dispatch_at),
       notes: item.notes || "",
-      attended: Boolean(item.rma || request.spareSr),
-      selected: false,
-      condition: item.return_condition === "New" ? "New" : "Faulty",
     }])));
   }, [request?.requestId, request?.revision]);
 
@@ -105,8 +92,6 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const selected = useMemo(() => Object.entries(drafts).filter(([, value]) => value.selected).map(([key]) => key), [drafts]);
-
   if (loading && !request) return <aside className="detail-panel"><div className="detail-loading">Reading Spare Request…</div></aside>;
   if (!request) return null;
   const currentRequest = request;
@@ -129,7 +114,6 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
         if (draft.newSn !== (item.new_sn || "")) update.newSn = draft.newSn;
         if (draft.dispatchAt !== datetimeInput(item.dispatch_at)) update.dispatchAt = draft.dispatchAt;
         if (draft.notes !== (item.notes || "")) update.notes = draft.notes;
-        if (draft.attended && !item.attendance_confirmed_at) update.attended = true;
         return Object.keys(update).length > 1 ? [update] : [];
       });
       const result = await saveSpareRequest(
@@ -156,68 +140,6 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
       await onRefresh();
       onNotice(`Exported ${result.filename}. Subject: ${result.subject}`);
     } catch (error) { onError(error); } finally { setWorking(false); }
-  }
-
-  async function exportReturn() {
-    setWorking(true);
-    try {
-      const result = await exportSpareReturn(selected.map((itemId) => ({ itemId, condition: drafts[itemId].condition })));
-      onChanged(await getSpareRequest(currentRequest.requestId));
-      await onRefresh();
-      onNotice(`Exported ${result.filename}. ${result.subject}${result.warnings.length ? ` · ${result.warnings.join(" ")}` : ""}`);
-    } catch (error) { onError(error); } finally { setWorking(false); }
-  }
-
-  async function archive() {
-    setWorking(true);
-    try {
-      const result = await archiveSpareItems({ itemIds: selected, reason: archiveReason, note, manualOverride });
-      onChanged(null);
-      await onRefresh();
-      onNotice(`${result.archived.length} item(s) archived as ${result.reason} in Closed.xlsx.`);
-    } catch (error) { onError(error); } finally { setWorking(false); }
-  }
-
-  async function advanceLifecycle(item: SpareRequestItem) {
-    const targetStage = item.lifecycle.stage + 1;
-    if (targetStage > 6) return;
-    const draft = drafts[item.item_id];
-    if (
-      targetStage === 2
-      && (!/^(?:SR)?\d{7}$/i.test(spareSr.trim()) || !/^C\d{10}$/i.test(draft?.rma.trim() || ""))
-    ) {
-      onError(new Error("Stage 2 requires a seven-digit Spare SR and this unit's C-prefixed RMA."));
-      return;
-    }
-    setWorking(true);
-    setAdvancingItemId(item.item_id);
-    try {
-      const result = targetStage === 2
-        ? await saveSpareRequest(
-          currentRequest.requestId,
-          currentRequest.revision,
-          { note, spareSr: spareSr.trim().toUpperCase() },
-          [{ itemId: item.item_id, rma: draft.rma.trim().toUpperCase(), attended: true }],
-        )
-        : await advanceSpareRequestStage(
-          currentRequest.requestId,
-          currentRequest.revision,
-          item.item_id,
-          targetStage,
-        );
-      const reached = result.request.items.find((candidate) => candidate.item_id === item.item_id)?.lifecycle;
-      if (!reached || reached.stage < targetStage) {
-        throw new Error(`Zeus did not confirm lifecycle stage ${targetStage}. Reload and try again.`);
-      }
-      onChanged(result.request);
-      await onRefresh();
-      onNotice(`Stage ${targetStage} confirmed: ${reached.label}.`);
-    } catch (error) {
-      onError(error);
-    } finally {
-      setAdvancingItemId(null);
-      setWorking(false);
-    }
   }
 
   async function removeUnconfirmedRequest() {
@@ -286,9 +208,11 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
           <div className="source-contract">
             <strong>Independent persistent request.</strong>
             <span>Requested BOMs stay separate from delivered substitutions. One RMA belongs to one unit item and is immutable.</span>
-            <span className="request-entry-guidance">{request.creationMethod === "manual_confirmation"
-              ? "Registered as already sent manually. Add the Spare SR and RMA when they arrive, or let email synchronization fill them."
-              : "Exported through Zeus. Prefer email synchronization for Spare SR and RMA; manual entry remains available when independently verified."}</span>
+            <span className="request-entry-guidance">{request.creationMethod === "zeus_create"
+              ? "Created in Zeus at Added to Zeus. Email synchronization advances it only after the matching sent request email is detected."
+              : request.creationMethod === "zeus_export"
+                ? "The workbook was exported, but lifecycle still waits for matching sent-email evidence."
+                : "Legacy evidence is preserved. Review the history before changing manual facts."}</span>
           </div>
           <div className="request-identity-form">
             <label className="form-field"><span>Original TT</span><input value={ticketId} disabled={!request.ttEditable} maxLength={8} onChange={(event) => setTicketId(event.target.value.replace(/\D/g, ""))} /></label>
@@ -299,17 +223,16 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
           </div>
           {allConflicts.length > 0 && <section className="conflict-panel"><header><strong>{allConflicts.length} unresolved conflict(s)</strong><span>Nothing was overwritten</span></header>{allConflicts.map(({ conflict, index, itemId }, position) => { const field = String(conflict.field || ""); const canAccept = ["spare_sr", "delivered_bom", "new_sn"].includes(field); return <article key={`${itemId}-${index}-${position}`}><div><strong>{field || "field"}</strong><span>{itemId || "request"}</span><p>Existing: {conflictValue(conflict, "existing")} · Incoming: {conflictValue(conflict, "incoming")}</p></div><div><button type="button" className="secondary-button" onClick={() => beginResolution(itemId, index, "keep-existing")}>Keep existing</button>{canAccept && <button type="button" className="secondary-button" onClick={() => beginResolution(itemId, index, "accept-incoming")}>Accept incoming</button>}</div></article>; })}</section>}
           <div className="request-item-list">
-            {request.items.map((item: SpareRequestItem) => {
+            {request.items.map((item) => {
               const draft = drafts[item.item_id];
               if (!draft) return null;
               return <article className="request-item-card" data-lifecycle={item.lifecycleColor} key={item.item_id}>
-                <header><label className="item-selector"><input type="checkbox" checked={draft.selected} onChange={(event) => updateItem(item.item_id, { selected: event.target.checked })} /><strong>Unit {item.ordinal}</strong></label><span className={`status-chip lifecycle-${item.lifecycleColor}`}>{item.statusLabel}</span><span>{item.dispatchAgeDays === null ? "Timer not started" : `${item.dispatchAgeDays} day(s)`}</span></header>
+                <header><strong>Unit {item.ordinal}</strong><span className={`status-chip lifecycle-${item.lifecycleColor}`}>{item.statusLabel}</span><span>{item.dispatchAgeDays === null ? "Timer not started" : `${item.dispatchAgeDays} day(s)`}</span></header>
                 <div className="lifecycle-quest">
-                  <div className="lifecycle-quest-heading"><strong>Lifecycle · Stage {item.lifecycle.stage}/6</strong><span>{item.lifecycle.label}{item.lifecycle.source ? ` · ${item.lifecycle.source}` : ""}</span></div>
+                  <div className="lifecycle-quest-heading"><strong>Lifecycle · {item.lifecycle.label}</strong><span>{item.lifecycle.source || "Zeus"}</span></div>
                   <ol aria-label={`Unit ${item.ordinal} lifecycle`}>
-                    {item.lifecycle.stages.map((stage) => <li className={stage.reached ? "reached" : ""} aria-current={stage.stage === item.lifecycle.stage ? "step" : undefined} title={`${stage.label}${stage.timestamp ? ` · ${stage.timestamp}` : ""}`} key={stage.stage}><i>{stage.stage}</i><span>{stage.label}</span></li>)}
+                    {item.lifecycle.stages.map((stage) => <li className={stage.reached ? "reached" : ""} aria-current={stage.stage === item.lifecycle.stage ? "step" : undefined} title={`${stage.label}${stage.timestamp ? ` · ${stage.timestamp}` : ""}`} key={stage.stage}><i aria-hidden="true">{stage.reached ? "✓" : "·"}</i><span>{stage.label}</span></li>)}
                   </ol>
-                  {item.lifecycle.stage < 6 && <button type="button" className="secondary-button lifecycle-advance" disabled={working} onClick={() => void advanceLifecycle(item)}>{advancingItemId === item.item_id ? "Confirming…" : `Confirm next · S${item.lifecycle.stage + 1}`}</button>}
                 </div>
                 <div className="item-bom-pair"><div><span>Requested BOM</span><strong>{item.requested_bom}</strong></div><div><span>Delivered / substitute BOM</span><strong>{item.delivered_bom || "—"}</strong></div></div>
                 <div className="form-grid four">
@@ -317,17 +240,16 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
                   <label className="form-field"><span>Delivered BOM</span><input value={draft.deliveredBom} onChange={(event) => updateItem(item.item_id, { deliveredBom: event.target.value })} /></label>
                   <label className="form-field"><span>New SN</span><input value={draft.newSn} onChange={(event) => updateItem(item.item_id, { newSn: event.target.value })} /></label>
                   <label className="form-field"><span>Manual dispatch time</span><input type="datetime-local" value={draft.dispatchAt} onChange={(event) => updateItem(item.item_id, { dispatchAt: event.target.value })} /></label>
-                  <label className="check-field"><input type="checkbox" checked={draft.attended} onChange={(event) => updateItem(item.item_id, { attended: event.target.checked })} /><span>Manually attended</span></label>
-                  <label className="form-field"><span>Return condition</span><select value={draft.condition} onChange={(event) => updateItem(item.item_id, { condition: event.target.value as "Faulty" | "New" })}><option>Faulty</option><option>New</option></select></label>
                   <label className="form-field wide"><span>Item notes</span><input value={draft.notes} onChange={(event) => updateItem(item.item_id, { notes: event.target.value })} /></label>
                 </div>
-                <footer><span>{item.rma || "RMA pending"} · {item.new_sn || "New SN pending"}</span>{(item.warehouse_confirmed_at || item.warehouse_candidate_at) && <strong className="green-text">Warehouse confirmed · {item.warehouse_confirmation_source || "email"}</strong>}</footer>
+                <footer><span>{item.rma || "RMA pending"} · {item.new_sn || "New SN pending"}{item.return_condition ? ` · ${item.return_condition}` : ""}</span>{(item.warehouse_confirmed_at || item.warehouse_candidate_at) && <strong className="green-text">Warehouse evidence received · explicit user confirmation still required</strong>}</footer>
               </article>;
             })}
           </div>
           <section className="archive-controls">
-            <label className="form-field full"><span>Audit / cancellation / override note</span><textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} /></label>
-            <div><button type="button" className="primary-button" disabled={working} onClick={save}>{working ? "Working…" : "Save manual facts"}</button><button type="button" className="secondary-button" disabled={!selected.length || working} onClick={exportReturn}>Export return XLSX</button><select value={archiveReason} onChange={(event) => setArchiveReason(event.target.value as "returned" | "cancelled")}><option value="returned">Returned</option><option value="cancelled">Cancelled</option></select><label className="check-field"><input type="checkbox" checked={manualOverride} onChange={(event) => setManualOverride(event.target.checked)} /><span>Manual warehouse override</span></label><button type="button" className="danger-button" disabled={!selected.length || working} onClick={archive}>Confirm & archive selected</button>{request.canDelete && <button type="button" className="danger-button delete-request-button" disabled={working} onClick={() => setDeleteOpen(true)}>Delete unconfirmed request</button>}</div>
+            <label className="form-field full"><span>Audit note</span><textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} /></label>
+            <div><button type="button" className="primary-button" disabled={working} onClick={save}>{working ? "Working…" : "Save manual facts"}</button>{request.canDelete && <button type="button" className="danger-button delete-request-button" disabled={working} onClick={() => setDeleteOpen(true)}>Delete unconfirmed request</button>}</div>
+            <small>Lifecycle confirmation, rollback, Fault Tag export, and warehouse completion are bulk actions in the Active Requests dashboard.</small>
           </section>
         </div>}
         {tab === "emails" && <div className="tab-content spare-email-list">{request.email.messages.length ? request.email.messages.map((message, index) => <article key={String(message.message_key || index)}><header><strong>{String(message.subject || "(no subject)")}</strong><span>{String(message.timestamp || "")}</span></header><small>{String(message.direction || "")} · {String(message.sender || "")}</small><pre>{String(message.latest_reply_body || message.body || "Body purged or unavailable.")}</pre></article>) : <div className="empty-panel">No spare-related email retained for this request.</div>}</div>}

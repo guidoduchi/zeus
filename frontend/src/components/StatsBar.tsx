@@ -13,7 +13,7 @@ export function StatsBar({ dashboard }: { dashboard: DashboardPayload | null }) 
         <span>Awaiting dispatch <strong>{stats.awaitingDispatch}</strong></span>
         <span>Dispatched <strong>{stats.dispatched}</strong></span>
         <span className="stat-separator">|</span>
-        <span>Warehouse confirmed <strong className={stats.warehouseCandidates ? "green-text" : ""}>{stats.warehouseCandidates}</strong></span>
+        <span>Awaiting user confirmation <strong className={stats.warehouseCandidates ? "green-text" : ""}>{stats.warehouseCandidates}</strong></span>
         <span>Conflicts <strong className={stats.conflicts ? "red-text" : ""}>{stats.conflicts}</strong></span>
         <span>Eligible <strong>{stats.eligibleParts}</strong></span>
         <span>Completed <strong>{stats.completedItems}</strong></span>

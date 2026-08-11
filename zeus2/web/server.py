@@ -33,6 +33,13 @@ SPARE_REQUEST_REEXPORT_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/re-exp
 SPARE_REQUEST_RESOLVE_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/conflicts/resolve$")
 SPARE_REQUEST_ADVANCE_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/lifecycle/advance$")
 SPARE_REQUEST_DELETE_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/delete$")
+FAULT_TAG_ROUTE = re.compile(r"^/api/spare-requests/fault-tags/(FT-\d{12})$")
+FAULT_TAG_REEXPORT_ROUTE = re.compile(
+    r"^/api/spare-requests/fault-tags/(FT-\d{12})/re-export$"
+)
+FAULT_TAG_DELETE_ROUTE = re.compile(
+    r"^/api/spare-requests/fault-tags/(FT-\d{12})/delete$"
+)
 
 
 class ZeusWebServer(ThreadingHTTPServer):
@@ -226,6 +233,13 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 HTTPStatus.OK,
                 self.server.service.spare_request(spare_request_match.group(1)),
+            )
+            return
+        fault_tag_match = FAULT_TAG_ROUTE.fullmatch(path)
+        if fault_tag_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.fault_tag(fault_tag_match.group(1)),
             )
             return
         ticket_match = TICKET_ROUTE.fullmatch(path)
@@ -427,7 +441,54 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 raise ValidationError("Return selections must be a list")
             self._send_json(
                 HTTPStatus.CREATED,
-                self.server.service.export_spare_return(selections),
+                self.server.service.export_spare_return(
+                    selections,
+                    return_site=(
+                        payload.get("returnSite")
+                        if isinstance(payload.get("returnSite"), dict)
+                        else None
+                    ),
+                ),
+            )
+            return
+        if path == "/api/spare-requests/lifecycle/bulk":
+            item_ids = payload.get("itemIds")
+            if not isinstance(item_ids, list):
+                raise ValidationError("Lifecycle item IDs must be a list")
+            revisions = payload.get("revisions") or {}
+            if not isinstance(revisions, dict):
+                raise ValidationError("Lifecycle revisions must be an object")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.bulk_spare_lifecycle(
+                    item_ids=item_ids,
+                    action=str(payload.get("action") or ""),
+                    expected_revisions={
+                        str(key): str(value) for key, value in revisions.items()
+                    },
+                    email_override_confirmed=bool(
+                        payload.get("emailOverrideConfirmed")
+                    ),
+                    note=str(payload.get("note") or ""),
+                ),
+            )
+            return
+        fault_tag_reexport_match = FAULT_TAG_REEXPORT_ROUTE.fullmatch(path)
+        if fault_tag_reexport_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.reexport_fault_tag(
+                    fault_tag_reexport_match.group(1)
+                ),
+            )
+            return
+        fault_tag_delete_match = FAULT_TAG_DELETE_ROUTE.fullmatch(path)
+        if fault_tag_delete_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.delete_fault_tag(
+                    fault_tag_delete_match.group(1)
+                ),
             )
             return
         if path == "/api/spare-requests/archive":

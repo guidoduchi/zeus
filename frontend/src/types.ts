@@ -1,6 +1,6 @@
 export type Risk = "none" | "grey" | "yellow" | "red";
 export type WorkspaceKey = "service-requests" | "spare-requests";
-export type SpareRequestView = "active" | "eligible" | "completed";
+export type SpareRequestView = "active" | "eligible" | "fault-tags" | "completed";
 
 export interface ColumnDefinition {
   key: string;
@@ -50,7 +50,14 @@ export interface TicketSummary {
   lastEmailDirection: string | null;
   received: number;
   sent: number;
+  spareBadges: {
+    eligible: number;
+    active: number;
+    activeColor: "green" | "red";
+    completed: number;
+  };
   summary: string;
+  customerOrganization: string;
   customerContact: string;
   severity: string;
   product: string;
@@ -148,6 +155,7 @@ export interface SparePartsDashboardPayload extends DashboardPayloadBase {
 export interface SpareRequestItemSummary {
   rowId: string;
   requestId: string;
+  revision: string | null;
   itemId: string;
   ticketId: string;
   rma: string;
@@ -166,6 +174,8 @@ export interface SpareRequestItemSummary {
   emailLabel: string;
   emailColor: Risk | null;
   emailCount: number;
+  received: number;
+  sent: number;
   requestedBom: string;
   deliveredBom: string;
   part: string;
@@ -174,7 +184,11 @@ export interface SpareRequestItemSummary {
   slot: string;
   faultySn: string;
   newSn: string;
+  returnCondition: "Faulty" | "New" | null;
+  faultTagIds: string[];
+  faultTagId: string | null;
   site: string;
+  siteAddress?: string;
   cloud: string;
   conflictCount: number;
   risk: Risk;
@@ -183,6 +197,50 @@ export interface SpareRequestItemSummary {
   archivedAt?: string | null;
   archiveReason?: string | null;
   notes?: string | null;
+  canAdvance?: boolean;
+  canRollback?: boolean;
+  nextStageLabel?: string | null;
+  rollbackRequiresDoubleConfirmation?: boolean;
+}
+
+export interface FaultTagSummary {
+  rowId: string;
+  faultTagId: string;
+  status: string;
+  statusLabel: string;
+  memberCount: number;
+  coveredCount: number;
+  confirmedCount: number;
+  returnSite: string;
+  rmas: string;
+  locked: boolean;
+  createdAt: string | null;
+}
+
+export interface FaultTagDetail {
+  faultTagId: string;
+  status: string;
+  returnSite: { code: string; name: string | null; address: string; cloud: string };
+  mixedSourceSites: boolean;
+  members: Array<{
+    itemId: string;
+    requestId: string;
+    ticketId: string;
+    spareSr: string;
+    rma: string;
+    condition: "Faulty" | "New";
+    sourceSite: string | null;
+    requestedBom: string | null;
+    newSn: string | null;
+    warehouseEvidenceAt: string | null;
+    userConfirmedAt: string | null;
+  }>;
+  export: { filename: string | null; path: string | null; subject: string; revisions: Array<Record<string, unknown>> };
+  email: { sent_at: string | null; message_key: string | null; subject: string | null };
+  lockedAt: string | null;
+  locked: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SpareRequestStats {
@@ -203,6 +261,7 @@ export interface SpareRequestsDashboardPayload extends DashboardPayloadBase {
   stats: SpareRequestStats;
   spareRequests: SpareRequestItemSummary[];
   eligibleParts: SparePartSummary[];
+  faultTags: FaultTagSummary[];
 }
 
 export type DashboardPayload = ServiceRequestsDashboardPayload | SpareRequestsDashboardPayload;
@@ -297,7 +356,7 @@ export interface SpareRequestDetail {
   reportDate: string | null;
   ttEditable: boolean;
   source: "ticket" | "manual" | "recovered";
-  creationMethod: "zeus_export" | "manual_confirmation" | "legacy";
+  creationMethod: "zeus_export" | "zeus_create" | "legacy_manual_sent" | "manual_confirmation" | "legacy";
   spareSr: string | null;
   trackingId: string;
   trackingIdProvisional: boolean;
@@ -540,6 +599,13 @@ export interface BootstrapPayload {
     stagedMessageCount: number;
   };
   polling: { intervalMinutes: number; enabled: boolean };
+  emailSchedule?: {
+    fetchIntervalMinutes: number;
+    syncMode: "scheduled" | "after_fetch";
+    syncIntervalMinutes: number;
+    fetchScheduled: boolean;
+    syncScheduled: boolean;
+  };
   appearance: { fontScale: "compact" | "standard" | "large" };
 }
 

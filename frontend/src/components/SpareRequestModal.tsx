@@ -13,6 +13,7 @@ import type {
 import { requestedQuantity } from "../ticketDraftModel";
 import { AutocompleteField } from "./AutocompleteField";
 import { Modal } from "./Modal";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 
 interface LineDraft {
   bom: string;
@@ -82,6 +83,7 @@ export function SpareRequestModal({ initialTicketId, initialPart, initialAction 
   const [importing, setImporting] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
   const [references, setReferences] = useState<SpareReferenceData | null>(null);
+  const [globalSaveConfirmation, setGlobalSaveConfirmation] = useState(false);
 
   const requestReady = Boolean(references?.exportSetup.requestReady);
   const canAttemptExport = useMemo(() => (
@@ -293,7 +295,8 @@ export function SpareRequestModal({ initialTicketId, initialPart, initialAction 
         },
       });
       setReferences(await getSpareReferenceData());
-      setWarning("Customer organization and contact imported into Global data.");
+      setWarning(null);
+      setGlobalSaveConfirmation(true);
     } catch (error) {
       onError(error);
     } finally {
@@ -350,24 +353,24 @@ export function SpareRequestModal({ initialTicketId, initialPart, initialAction 
 
   const setupRequired = Boolean(references && !requestReady);
 
-  return <Modal title="Export Spare Request" subtitle="Review the request once, then export it through Zeus or register a file that was already sent manually." onClose={onClose} wide actions={<>
+  return <Modal title="New Request" subtitle="Create a stage-zero request in Zeus, or create it and export the request workbook in one action." onClose={onClose} wide actions={<>
     <span className="modal-action-note">{source === "ticket" ? "TT inherited from active SR" : "Manual TT · warning allowed"}</span>
     <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
     {onRegisterManual && <button
       type="button"
       className="secondary-button manual-registration-button"
       disabled={!references || saving || !canAttemptExport}
-      title="Register this request in Active Requests without creating another XLSX"
+      title="Create this request at Added to Zeus without exporting an XLSX"
       autoFocus={initialAction === "manual"}
       onClick={() => void submit("manual")}
-    >{savingAction === "manual" ? "Registering…" : "Already sent manually"}</button>}
+    >{savingAction === "manual" ? "Creating…" : "Create"}</button>}
     <button
       type="button"
       className={setupRequired ? "danger-button export-setup-button" : "primary-button"}
       disabled={!references || saving || (!setupRequired && !canAttemptExport)}
       title={setupRequired ? `Configure ${references?.exportSetup.requestMissing.map((item) => item.label).join(" and ") || "the Spare Request export paths"}` : undefined}
       onClick={() => void submit("export")}
-    >{savingAction === "export" ? "Exporting…" : "Export XLSX & create request"}</button>
+    >{savingAction === "export" ? "Exporting…" : "Export"}</button>
   </>}>
     <div className="spare-request-form">
       <section className="form-section">
@@ -380,7 +383,7 @@ export function SpareRequestModal({ initialTicketId, initialPart, initialAction 
           <label className="form-field"><span>Customer phone *</span><input type="tel" required value={profile.contactPhone} onChange={(event) => updateProfile("contactPhone", event.target.value)} /></label>
           <label className="form-field"><span>Original TT report date *</span><input type="date" required value={reportDate} readOnly={source === "ticket" && Boolean(reportDate)} onChange={(event) => setReportDate(event.target.value)} /></label>
           <button type="button" className="secondary-button field-button" disabled={loading || !/^\d{8}$/.test(ticketId)} onClick={() => void loadTicket(true)}>{loading ? "Loading…" : "Load active SR"}</button>
-          {source === "ticket" && profile.customerName && profile.customerOrganization && <button type="button" className="secondary-button field-button" disabled={importing || !profile.contactEmail.trim() || !profile.contactPhone.trim()} title={!profile.contactEmail.trim() || !profile.contactPhone.trim() ? "Customer email and phone are required before saving globally" : undefined} onClick={() => void importCustomer()}>{importing ? "Importing…" : "Save customer globally"}</button>}
+          {source === "ticket" && profile.customerName && profile.customerOrganization && <button type="button" className="secondary-button field-button global-save-button" disabled={importing || !profile.contactEmail.trim() || !profile.contactPhone.trim()} title={!profile.contactEmail.trim() || !profile.contactPhone.trim() ? "Customer email and phone are required before saving globally" : undefined} onClick={() => void importCustomer()}><span aria-hidden="true">◆</span>{importing ? "Importing…" : "Save customer globally"}</button>}
         </div>
         {warning && <p className="inline-warning">{warning}</p>}
       </section>
@@ -412,5 +415,6 @@ export function SpareRequestModal({ initialTicketId, initialPart, initialAction 
         <button type="button" className="secondary-button" onClick={() => setLines((current) => [...current, { ...EMPTY_LINE }])}>+ Add another BOM</button>
       </section>
     </div>
+    {globalSaveConfirmation && <ConfirmationDialog title="Customer saved to Global Data" message="This organization and customer contact are now reusable. Manage them anytime from Global Data in the top bar." confirmLabel="Got it" cancelLabel="Close" onCancel={() => setGlobalSaveConfirmation(false)} onConfirm={() => setGlobalSaveConfirmation(false)} />}
   </Modal>;
 }

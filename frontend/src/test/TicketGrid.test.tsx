@@ -43,7 +43,9 @@ function ticket(ticketId: string): TicketSummary {
     lastEmailDirection: null,
     received: 0,
     sent: 0,
+    spareBadges: { eligible: 0, active: 0, activeColor: "green", completed: 0 },
     summary: `Ticket ${ticketId}`,
+    customerOrganization: "Organization",
     customerContact: `Customer ${ticketId}`,
     severity: "Minor",
     product: "Product",
@@ -78,10 +80,13 @@ function renderGrid(selectedRowId: string | null = null) {
 }
 
 describe("TicketGrid", () => {
-  it("uses click and Enter to open rows while arrows only move the highlight", async () => {
+  it("uses one click to highlight and double click or Enter to open", async () => {
     const user = userEvent.setup();
     const { onHighlight, onOpen } = renderGrid("12345678");
     await user.click(screen.getByRole("row", { name: /12345678/i }));
+    expect(onHighlight).toHaveBeenCalledWith("12345678");
+    expect(onOpen).not.toHaveBeenCalled();
+    await user.dblClick(screen.getByRole("row", { name: /12345678/i }));
     expect(onOpen).toHaveBeenCalledWith("12345678");
 
     const grid = screen.getByRole("grid");
@@ -179,9 +184,11 @@ describe("TicketGrid", () => {
     expect(screen.queryByText("Incomplete")).not.toBeInTheDocument();
   });
 
-  it("encloses email totals in semantic zero and positive badges", () => {
+  it("shows received and sent triangular badges without a total badge", () => {
     const positive = ticket("12345678");
-    const zero = { ...ticket("87654321"), emailCount: 0 };
+    positive.received = 4;
+    positive.sent = 3;
+    const zero = { ...ticket("87654321"), emailCount: 0, received: 0, sent: 0 };
     render(
       <TicketGrid
         tickets={[positive, zero]}
@@ -194,13 +201,12 @@ describe("TicketGrid", () => {
       />,
     );
 
-    expect(screen.getByLabelText("7 total emails")).toHaveClass("email-count-positive");
-    expect(screen.getByLabelText("7 total emails")).toHaveTextContent("7");
-    expect(screen.getByLabelText("0 total emails")).toHaveClass("email-count-zero");
-    expect(screen.getByLabelText("0 total emails")).toHaveTextContent("0");
-    expect(screen.queryByText("[7]")).not.toBeInTheDocument();
-    expect(styles).toMatch(/\.email-count-zero\s*\{[^}]*background:\s*var\(--red\)/s);
-    expect(styles).toMatch(/\.email-count-positive\s*\{[^}]*background:\s*var\(--grey\)/s);
+    expect(screen.getByLabelText("4 received email(s)")).toHaveClass("received");
+    expect(screen.getByLabelText("3 sent email(s)")).toHaveClass("sent");
+    expect(screen.getAllByLabelText("0 received email(s)")).not.toHaveLength(0);
+    expect(screen.queryByLabelText("7 total emails")).not.toBeInTheDocument();
+    expect(styles).toMatch(/\.email-direction-badge\.received\s*\{[^}]*color:\s*var\(--green\)/s);
+    expect(styles).toMatch(/\.email-direction-badge\.sent\s*\{[^}]*color:\s*var\(--cyan\)/s);
   });
 
   it("marks protected SR drafts without confusing them with row selection", () => {

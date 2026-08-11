@@ -3,7 +3,7 @@ import { getTicket, saveTicketDraftBatch } from "../api";
 import {
   clearTicketDraft,
   listTicketDrafts,
-  writeTicketDraft,
+  setDraftUndo,
   type TicketDraftKind,
   type TicketDraftRecord,
 } from "../drafts";
@@ -11,7 +11,7 @@ import { analyzeTicketDraft, displayDraftField, WORK_FIELDS, type DraftAnalysis 
 import type { TicketDetail } from "../types";
 import { Modal } from "./Modal";
 
-type Action = "save" | "restore" | "discard";
+type Action = "save" | "discard";
 
 interface DraftGroup {
   ticketId: string;
@@ -62,11 +62,6 @@ function actionCopy(action: Action, count: number): { title: string; body: strin
     title: `Save ${count} selected SR${count === 1 ? "" : "s"} to Zeus?`,
     body: "Zeus will validate every current revision and commit all selected records in one database transaction.",
     confirm: "Confirm save to Zeus",
-  };
-  if (action === "restore") return {
-    title: `Restore ${count} selected draft${count === 1 ? "" : "s"}?`,
-    body: "The protected values will be reapplied over the latest database values for review. Nothing will be saved to Zeus yet.",
-    confirm: "Confirm restore",
   };
   return {
     title: `Discard ${count} selected draft${count === 1 ? "" : "s"}?`,
@@ -182,23 +177,21 @@ export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: P
     setWorking(true);
     try {
       if (pendingAction === "discard") {
+        setDraftUndo({
+          action: "discard",
+          records: selectedGroups.flatMap((group) => group.records),
+          inverseEdits: [],
+          ticketCount: selectedGroups.length,
+        });
         for (const group of selectedGroups) {
           for (const record of group.records) clearTicketDraft(record.ticketId, record.kind);
         }
         onNotice(`Discarded protected drafts for ${selectedGroups.length} SR(s).`);
-      } else if (pendingAction === "restore") {
-        const refreshed = await Promise.all(selectedGroups.map(currentAnalyses));
-        for (const item of refreshed) {
-          for (const analysis of item.analyses) {
-            writeTicketDraft(item.ticket.ticketId, analysis.kind, analysis.rebased);
-          }
-        }
-        onNotice(`Restored ${selectedGroups.length} SR draft(s) over the latest values for review. Nothing was saved yet.`);
       } else {
         const refreshed = await Promise.all(selectedGroups.map(currentAnalyses));
         const conflicts = refreshed.flatMap((item) => item.analyses.flatMap((analysis) => analysis.conflictFields));
         if (conflicts.length) {
-          throw new Error("One or more selected SRs changed again. Restore those drafts before saving; no SR was updated.");
+          throw new Error("One or more selected SRs changed again. Review those drafts before saving; no SR was updated.");
         }
         const edits = refreshed.map((item) => ({
           ticketId: item.ticket.ticketId,
@@ -206,6 +199,23 @@ export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: P
           changes: Object.assign({}, ...item.analyses.map((analysis) => analysis.changes)),
         }));
         const result = await saveTicketDraftBatch(edits);
+        setDraftUndo({
+          action: "save",
+          records: selectedGroups.flatMap((group) => group.records),
+          inverseEdits: refreshed.map((item) => ({
+            ticketId: item.ticket.ticketId,
+            revision: result.tickets[item.ticket.ticketId].revision,
+            changes: Object.assign({}, ...item.analyses.map((analysis) => (
+              analysis.kind === "spares"
+                ? { "Spare Parts": item.ticket.spareParts }
+                : Object.fromEntries(analysis.changedFields.map((field) => [
+                  field,
+                  item.ticket.localFields[field] ?? null,
+                ]))
+            ))),
+          })),
+          ticketCount: selectedGroups.length,
+        });
         for (const group of selectedGroups) {
           for (const record of group.records) clearTicketDraft(record.ticketId, record.kind);
         }
@@ -226,15 +236,14 @@ export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: P
   return (
     <Modal
       title="Protected drafts"
-      subtitle="Review, restore, save, or discard browser-protected SR changes without losing track of their ticket."
+      subtitle="Review, save, or discard browser-protected SR changes without losing track of their ticket."
       onClose={onClose}
       wide
       actions={<>
         <span>{selected.size} of {groups.length} SR(s) selected</span>
         <button type="button" className="secondary-button" disabled={working} onClick={onClose}>Close</button>
         <button type="button" className="text-button danger-text" disabled={!selectedGroups.length || working} onClick={() => setPendingAction("discard")}>Discard selected</button>
-        <button type="button" className="secondary-button" disabled={!selectedGroups.length || selectedHasUnavailable || working} title={selectedHasUnavailable ? "Unavailable SR drafts can only be discarded" : ""} onClick={() => setPendingAction("restore")}>Restore selected changes</button>
-        <button type="button" className="primary-button" disabled={!selectedGroups.length || selectedHasConflict || selectedHasUnavailable || working} title={selectedHasUnavailable ? "Deselect or discard unavailable SR drafts" : selectedHasConflict ? "Restore conflicting drafts before saving" : ""} onClick={() => setPendingAction("save")}>Save selected to Zeus</button>
+        <button type="button" className="primary-button" disabled={!selectedGroups.length || selectedHasConflict || selectedHasUnavailable || working} title={selectedHasUnavailable ? "Deselect or discard unavailable SR drafts" : selectedHasConflict ? "Review conflicting drafts before saving" : ""} onClick={() => setPendingAction("save")}>Save Selected</button>
       </>}
     >
       {pendingAction && copy && (
@@ -250,7 +259,7 @@ export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: P
       )}
       <div className="source-contract">
         <strong>Drafts are local safety copies, not database saves.</strong>
-        <span>Restore rebases selected changes for review. Save is the only action that writes to Zeus, and a batch is committed all-or-nothing.</span>
+        <span>Save is the only action that writes to Zeus, and a batch is committed all-or-nothing. The latest Save or Discard can be undone once.</span>
       </div>
       {loading ? <div className="detail-loading">Checking protected SR drafts…</div> : groups.length ? (
         <div className="draft-manager-list">
@@ -267,7 +276,7 @@ export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: P
                 <span><strong>SR {group.ticketId}</strong><small>{group.ticket?.summary || "Record unavailable"}</small></span>
               </label>
               <span>{group.fields.join(", ")}</span>
-              <span>{group.unavailable ? <em>{group.unavailable}</em> : group.conflicts.length ? <em>Restore required · {group.conflicts.join(", ")}</em> : "Ready to save"}</span>
+              <span>{group.unavailable ? <em>{group.unavailable}</em> : group.conflicts.length ? <em>Review required · {group.conflicts.join(", ")}</em> : "Ready to save"}</span>
               <span>{formatTimestamp(group.updatedAt)}<button type="button" className="text-button" disabled={Boolean(group.unavailable)} onClick={() => onReview(group.ticketId, group.records[0].kind)}>Review</button></span>
             </article>
           ))}

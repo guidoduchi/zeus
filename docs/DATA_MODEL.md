@@ -14,7 +14,8 @@
 | `global/user_profile.json` | explicit local profile setup/edit |
 | `global/reference_data.json` | structured Global data manager |
 | `global/spare_request_boms.json` | Spare Requests BOM catalog |
-| `current/spare_requests/active` | explicit Zeus exports, already-sent manual registrations, configured-mail facts, and manual lifecycle transactions |
+| `current/spare_requests/active` | explicit Create/Export actions, configured-mail facts, and revision-safe lifecycle transactions |
+| `current/spare_requests/fault_tags` | Fault Tag export/re-export, linked sent/warehouse email evidence, and explicit member confirmation |
 | Completed Spare Request rows/email | dedicated `Closed.xlsx` tabs; never copied back to active Markdown |
 
 Every current ticket lives at `current/tickets/<SRNo>/<SRNo>.md`. The first
@@ -65,8 +66,8 @@ Part #. It remains in the SR database but is withheld from eligibility while an
 Active Request owns that identity, then becomes eligible again after the active
 units are completed or cancelled.
 
-The request ID is a unique Ecuador `YYMMDDHHmmss` allocated at initial XLSX
-export or already-sent manual registration. One request carries one eight-digit TT, one original TT report date, at
+The request ID is a unique Ecuador `YYMMDDHHmmss` allocated at initial Create
+or Export. One request carries one eight-digit TT, one original TT report date, at
 most one `SR` plus seven-digit Spare SR, a profile snapshot, original BOM groups,
 and quantity-expanded unit items. The report date is captured once at TT level
 and propagated to unit/Fault Tag output; it is not independently edited per BOM.
@@ -77,11 +78,36 @@ slotless manual group retains an explicit multiplier. Those serials are
 device-level evidence, not positional unit
 assignments: one whole-server BOM can retain the serials of several damaged
 internal parts, and every unit's single Faulty SN cell contains the whole list.
-Each unit item owns at most one immutable `C`
-plus ten-digit RMA. It stores requested and delivered BOM separately, plus New
-SN, attendance, dispatch, return export, warehouse candidate, conflicts, and
-audit history. Partial confirmation assigns available RMAs and leaves remaining
-units in Awaiting stock under the same request.
+Each unit item owns at most one immutable `C` plus ten-digit RMA. It stores
+requested and delivered BOM separately, plus New SN, attendance, dispatch,
+replacement confirmation, linked Fault Tag IDs, warehouse evidence, lifecycle
+suppressions, conflicts, and audit history. Partial confirmation assigns
+available RMAs and leaves remaining units in Awaiting stock under the same
+request.
+
+Lifecycle is contiguous and uses Added to Zeus, Request email sent, SR and RMA
+confirmed, Spare parts dispatched, Spare replaced, Warehouse evidence received,
+and Complete. A request-level sent-email fact is shared by every unit; changing
+that stage requires selecting all active units in the request. A rollback of an
+email-backed stage retains the message and appends a suppression keyed by exact
+message identity, so replay cannot restore the lifecycle effect.
+
+## Fault Tag records
+
+Each active Fault Tag lives at
+`current/spare_requests/fault_tags/active/<FT-ID>/<FT-ID>.md`; completed batches
+move to the sibling `completed` collection. Its ID is an Ecuador
+`FT-YYMMDDHHmmss`, independent from request IDs. A record snapshots the actual
+return site, export revisions, sent-email identity, lock state, and one or more
+members with request/item identity, Faulty/New condition, warehouse evidence,
+and explicit-user-confirmation time.
+
+Export and re-export do not change request lifecycle. The first detected sent
+Fault Tag email sets the immutable membership lock. Only one active Fault Tag
+may own an item. Deleting a mistaken batch removes its links from active items
+without changing their stages. A confirmed member can leave active request
+Markdown while a partial batch remains active; stored member snapshots keep
+same-ID re-export possible. The final confirmed member archives the batch.
 
 ## Local profile and global reference data
 
@@ -102,8 +128,8 @@ exports.
 Outlook facts are applied in confirmation-before-dispatch order irrespective of
 message arrival. Existing contradictory TT, Spare SR, RMA, delivered BOM, or New
 SN facts are never silently overwritten. Warehouse messages with exact RMA +
-Spare SR matches create candidates only; archive remains an explicit user
-action.
+Spare SR matches create evidence only. One explicit user confirmation completes
+that item; manual evidence cannot bypass the warehouse match.
 
 The configured export directory and local request/return templates are outside
 the authority graph. Request output retains the supplied two sheets and return
@@ -142,7 +168,7 @@ are generated on export. Planned dates cross the browser boundary as
 
 ### Maintenance Window schema
 
-Zeus 3.1.6 stores MW truth under `local.maintenance_window`:
+Zeus 3.1.6 introduced MW truth under `local.maintenance_window`:
 
 ```json
 {
@@ -191,8 +217,9 @@ old tree.
 
 ## Transaction boundary
 
-Ticket and Spare Request Markdown records, `state.json`, `closed_index.json`, and email staging form the
-`current/` transaction boundary. A mutation copies this tree below the same
+Ticket, Spare Request, and Fault Tag Markdown records, `state.json`,
+`closed_index.json`, and email staging form the `current/` transaction boundary.
+A mutation copies this tree below the same
 writable data root, validates it, swaps it atomically, and appends a local audit
 event. Keeping staging below the data root preserves Windows ACL inheritance
 and avoids cross-volume replacement failures.

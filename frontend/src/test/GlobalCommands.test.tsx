@@ -6,7 +6,7 @@ function Harness({ queryDisabled = false }: { queryDisabled?: boolean }) {
   useGlobalCommands({
     queryDisabled,
     onSearch: handlers.search,
-    onSort: handlers.sort,
+    onSync: handlers.sync,
     onOperations: handlers.operations,
     onQuery: handlers.query,
   });
@@ -15,7 +15,7 @@ function Harness({ queryDisabled = false }: { queryDisabled?: boolean }) {
 
 const handlers = {
   search: vi.fn(),
-  sort: vi.fn(),
+  sync: vi.fn(),
   operations: vi.fn(),
   query: vi.fn(),
 };
@@ -30,7 +30,7 @@ describe("global Zeus commands", () => {
     fireEvent.keyDown(window, { key: "r" });
     fireEvent.keyDown(window, { key: "f", ctrlKey: true });
 
-    expect(handlers.sort).toHaveBeenCalledOnce();
+    expect(handlers.sync).toHaveBeenCalledOnce();
     expect(handlers.operations).toHaveBeenCalledOnce();
     expect(handlers.query).toHaveBeenCalledOnce();
     expect(handlers.search).toHaveBeenCalledOnce();
@@ -43,7 +43,7 @@ describe("global Zeus commands", () => {
     fireEvent.keyDown(input, { key: "s" });
     fireEvent.keyDown(input, { key: "m" });
     fireEvent.keyDown(input, { key: "r" });
-    expect(handlers.sort).not.toHaveBeenCalled();
+    expect(handlers.sync).not.toHaveBeenCalled();
     expect(handlers.operations).not.toHaveBeenCalled();
     expect(handlers.query).not.toHaveBeenCalled();
 

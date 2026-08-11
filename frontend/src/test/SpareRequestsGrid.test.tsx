@@ -19,6 +19,7 @@ function row(overrides: Partial<SpareRequestItemSummary> = {}): SpareRequestItem
   return {
     rowId: "260808123456-0001",
     requestId: "260808123456",
+    revision: "request-revision",
     itemId: "260808123456-0001",
     ticketId: "39416095",
     rma: "C3209937826",
@@ -37,6 +38,8 @@ function row(overrides: Partial<SpareRequestItemSummary> = {}): SpareRequestItem
     emailLabel: "2d inactive",
     emailColor: null,
     emailCount: 3,
+    received: 2,
+    sent: 1,
     requestedBom: "02312RCC",
     deliveredBom: "02540255",
     part: "Controller board",
@@ -45,6 +48,9 @@ function row(overrides: Partial<SpareRequestItemSummary> = {}): SpareRequestItem
     slot: "1/0/1",
     faultySn: "FAULTY-1",
     newSn: "NEW-1",
+    returnCondition: null,
+    faultTagIds: [],
+    faultTagId: null,
     site: "UIO1",
     cloud: "Ecuador Cloud",
     conflictCount: 0,
@@ -75,7 +81,7 @@ describe("SpareRequestsGrid", () => {
     expect(screen.getAllByRole("columnheader")[0]).toHaveTextContent("TT");
     expect(screen.getByText("Awaiting dispatch")).toHaveClass("tone-grey");
     expect(screen.getByText("16")).toHaveClass("tone-yellow");
-    await user.click(screen.getByRole("row", { name: /C3209937826/ }));
+    await user.dblClick(screen.getByRole("row", { name: /C3209937826/ }));
     expect(onOpen).toHaveBeenCalledWith(requestItem);
   });
 
@@ -103,10 +109,10 @@ describe("SpareRequestsGrid", () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 
-  it("uses the same enclosed email-count badge in Active Requests", () => {
+  it("uses received and sent triangular badges in Active Requests", () => {
     render(
       <SpareRequestsGrid
-        rows={[row(), row({ rowId: "260808123456-0002", itemId: "260808123456-0002", emailCount: 0 })]}
+        rows={[row(), row({ rowId: "260808123456-0002", itemId: "260808123456-0002", emailCount: 0, received: 0, sent: 0 })]}
         columns={columns}
         selectedRowId={null}
         detailOpen={false}
@@ -116,8 +122,9 @@ describe("SpareRequestsGrid", () => {
       />,
     );
 
-    expect(screen.getByLabelText("3 total emails")).toHaveClass("email-count-positive");
-    expect(screen.getByLabelText("0 total emails")).toHaveClass("email-count-zero");
+    expect(screen.getByLabelText("2 received email(s)")).toHaveClass("received");
+    expect(screen.getByLabelText("1 sent email(s)")).toHaveClass("sent");
+    expect(screen.queryByLabelText("3 total emails")).not.toBeInTheDocument();
   });
 
   it("shows the provisional Zeus tracking ID in red and a seven-step lifecycle meter", () => {

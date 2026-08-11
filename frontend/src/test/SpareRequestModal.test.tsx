@@ -214,7 +214,7 @@ describe("SpareRequestModal", () => {
     expect(screen.queryByText("Export configuration required")).not.toBeInTheDocument();
     expect(onExportSetupRequired).not.toHaveBeenCalled();
 
-    const setupButton = screen.getByRole("button", { name: "Export XLSX & create request" });
+    const setupButton = screen.getByRole("button", { name: "Export" });
     expect(setupButton).toBeEnabled();
     expect(setupButton).toHaveClass("export-setup-button");
     await user.click(setupButton);
@@ -224,7 +224,7 @@ describe("SpareRequestModal", () => {
     ]);
     expect(onExport).not.toHaveBeenCalled();
 
-    const manualButton = screen.getByRole("button", { name: "Already sent manually" });
+    const manualButton = screen.getByRole("button", { name: "Create" });
     expect(manualButton).toBeEnabled();
     await user.click(manualButton);
     expect(onRegisterManual).toHaveBeenCalledTimes(1);
@@ -245,13 +245,13 @@ describe("SpareRequestModal", () => {
     });
     rerender(<SpareRequestModal {...modalProps} configurationRevision={1} suspended />);
     await waitFor(() => expect(api.getSpareReferenceData).toHaveBeenCalledTimes(2));
-    expect(screen.queryByRole("dialog", { name: "Export Spare Request" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New Request" })).not.toBeInTheDocument();
 
     rerender(<SpareRequestModal {...modalProps} configurationRevision={1} />);
     expect(screen.getByLabelText("Requester *")).toHaveValue("Nebby Operator");
     expect(screen.getByLabelText("Customer name *")).toHaveValue("Juan Piguave");
 
-    await user.click(screen.getByRole("button", { name: "Export XLSX & create request" }));
+    await user.click(screen.getByRole("button", { name: "Export" }));
     expect(onExport).toHaveBeenCalledTimes(1);
   });
 
@@ -304,7 +304,7 @@ describe("SpareRequestModal", () => {
       "CPU-SN-001{enter}MEMORY,SN,002{enter}MEZZ-SN-003",
     );
     await user.type(screen.getByLabelText("Notes"), "Diagnostics completed");
-    await user.click(screen.getByRole("button", { name: "Export XLSX & create request" }));
+    await user.click(screen.getByRole("button", { name: "Export" }));
 
     expect(onExport).toHaveBeenCalledTimes(1);
     const payload = onExport.mock.calls[0][0];

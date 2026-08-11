@@ -1,4 +1,4 @@
-# Zeus 3.1.6 release scope
+# Zeus 3.1.7 release scope
 
 Included:
 
@@ -23,18 +23,25 @@ Included:
 - independent active Spare Request Markdown records, unit-level items, partial
   stock, requested/delivered BOM separation, immutable RMAs, and visible
   conflict handling;
-- Active Requests, Eligible SR Parts that are reserved only while their exact
-  source part is active, and Completed archive subviews;
-- an **Already sent manually** path that creates the same Active Request without
-  requiring an export folder, template, Spare SR, or RMA;
+- Active Requests, Eligible SR Parts, independent Fault Tags, and Completed
+  archive subviews; archived source records remain reserved so a later
+  replacement uses a new part record;
+- one **New Request** flow with Cancel, Create, and Export; Create needs no
+  workbook configuration, Export writes XLSX, and both begin at Added to Zeus;
 - a post-export acknowledgement reminding the user to attach and send the XLSX;
 - configurable local request/return XLSX templates and a one-way export root,
   with exact sheet preservation, dynamic row extension, and revision-safe names;
 - locally configured confirmation sender, dispatch/substitution sender, and
   warehouse domain parsing from HTML with plain-text fallback and out-of-order
   replay;
-- explicit partial return export, user-confirmed archive, mandatory cancellation
-  reasons, manual-override notes, and dedicated Closed.xlsx archive/email tabs;
+- independent multi-item Fault Tag export with timestamp IDs, per-item return
+  condition, mixed-site destination entry, same-ID re-export, sent-email
+  membership lock, safe deletion, partial warehouse visibility, and archive
+  after every member has evidence plus explicit confirmation;
+- seven fully named Spare Request stages, bulk one-stage advance/rollback, shared
+  request-email selection enforcement, and exact-message lifecycle suppression
+  after a confirmed email-backed rollback;
+- mandatory cancellation reasons and dedicated Closed.xlsx archive/email tabs;
 - local-only structured Global data and BOM managers that ship empty plus fixed
   180-day active-email and completed-archive retention;
 - bundled React/TypeScript master-detail interface served by Python;
@@ -49,26 +56,27 @@ Included:
 - independent ticket-list and detail scrolling; no whole-page scrolling;
 - fixed-width columns with locally persisted visibility and order controls;
 - native wheel scrolling inside dense tables without wheel-driven row changes,
-  plus click/Enter-only opening, arrow-driven refresh of an already-open detail,
+  plus click-to-highlight and double-click/Enter opening, arrow-driven refresh of an already-open detail,
   and closed-detail customer-contact context;
 - a bounded, themed SR-number-prefix autocomplete in Global data and persisted
   Compact, Standard, and Large interface typography presets;
 - severity in the default dense dashboard, one structured MW field with legacy
-  workbook projections, and Last Email combining age plus count without a
-  separate count column;
-- one date-first MW column and editor, with past-date outcome prompts, complete
-  and incomplete transitions, new-date rescheduling, and durable attempt history;
-- preview-first Database Maintenance with full backup, staged 3.1.6 migration,
+  workbook projections, Last Email age plus directional received/sent triangles,
+  and unit-count Spare Parts badges with day-21 active escalation;
+- one date-first MW column and editor, with batched overdue outcomes, complete
+  and incomplete transitions, optional new-date rescheduling, and durable attempt history;
+- preview-first Database Maintenance with full backup, staged 3.1.7 migration,
   readable-Markdown repair, blocked-record review, validation, and atomic swap;
 - locally persisted dark/light theme, filters, sort field, and
   ascending/descending direction;
-- page-level `S`, `M`, `R`, Ctrl+F, and navigation arrows outside editable
-  controls; ↑/↓ follows filtered order and ←/→ changes detail tabs without wrap;
+- page-level `S` fetch-and-sync, `M` Operations, `R` Advanced Search, Ctrl+F,
+  and navigation arrows outside editable controls; ↑/↓ follows filtered order
+  and ←/→ changes detail tabs without wrap;
 - browser-persisted Work/Spare drafts, row-move notices, stale-draft recovery,
   and reload protection until a draft is saved or discarded;
 - visible protected-draft row markers plus a selectable Drafts manager for
-  review, explicit restore, selective discard, and confirmed all-or-nothing
-  multi-SR database saves;
+  review, selective discard, confirmed all-or-nothing multi-SR saves, and
+  one-level undo for the latest Save or Discard;
 - overlap-aware three-way draft rebasing, so unrelated database changes do not
   create false conflicts and a successful save cannot recreate its own draft;
 - keyboard focus that follows the selected row and active detail tab instead of
@@ -85,15 +93,16 @@ Included:
   and one-row-per-part compatibility output with legacy scalar migration;
 - prefetched browser workspaces and revision/date-aware server dashboard caching
   so Service Requests and Spare Requests switch without a repeated boot screen;
-- service filters for unified MW state/Severity and Spare Request filters for Status,
+- service filters for unified MW state, Severity, and Customer Organization,
+  an optional Customer Org. field, and Spare Request filters for Status,
   dispatch risk, Site, Cloud, conflicts, and RMA state, using OR-within/AND-across;
 - visible serialized startup, scheduled, and manual Advanced Search checks;
 - page refreshes that never trigger a source query and cannot silently discard
   protected drafts;
 - Advanced Search checks that discover/refresh tickets and defer missing-record
   deletion until the next successful explicit export;
-- optional Outlook behavior that is disabled clearly and nonfatally when no
-  valid store exists;
+- hourly fetch-and-sync by default when an Outlook store is available, linked
+  interval configuration, and clear nonfatal disablement when no valid store exists;
 - the full Advanced Search, closure, Outlook, publishing, recovery, MOP, aging,
   and Markdown transaction behavior inherited from 2.0.3;
 - retained non-interactive command-line automation;

@@ -22,10 +22,10 @@ const labels = [
   "Added to Zeus",
   "Request email sent",
   "SR and RMA confirmed",
-  "Spare Parts dispatched",
-  "Replaced / Fault Tag generated",
-  "Fault Tag email sent",
-  "Warehouse confirmed",
+  "Spare parts dispatched",
+  "Spare replaced",
+  "Warehouse evidence received",
+  "Complete",
 ];
 
 function detail(stage = 0, confirmed = false): Detail {
@@ -160,30 +160,32 @@ describe("SpareRequestDetail", () => {
     expect(screen.getByLabelText("Tracking ID")).toHaveClass("provisional-tracking-input");
     const lifecycle = screen.getByRole("list", { name: "Unit 1 lifecycle" });
     expect(within(lifecycle).getAllByRole("listitem")).toHaveLength(7);
-    expect(screen.getByRole("button", { name: "Confirm next · S1" })).toBeEnabled();
+    expect(screen.getByText("Lifecycle · Added to Zeus")).toBeVisible();
+    expect(screen.queryByText(/Stage \d|S\d/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Confirm next/ })).not.toBeInTheDocument();
   });
 
-  it("confirms S2 by saving the manually entered SR and unit RMA", async () => {
+  it("saves SR and RMA facts without a per-item lifecycle action", async () => {
     const user = userEvent.setup();
     const request = detail(1);
-    const confirmed = detail(2, true);
+    const confirmed = detail(1, true);
     apiMocks.saveSpareRequest.mockResolvedValue({ request: confirmed });
     const handlers = props(request);
     render(<SpareRequestDetail {...handlers} />);
 
     await user.type(screen.getByLabelText("Spare SR"), "SR4956964");
     await user.type(screen.getByLabelText(/RMA · immutable once set/), "C3209937826");
-    await user.click(screen.getByRole("button", { name: "Confirm next · S2" }));
+    await user.click(screen.getByRole("button", { name: "Save manual facts" }));
 
     await waitFor(() => expect(apiMocks.saveSpareRequest).toHaveBeenCalledWith(
       request.requestId,
       request.revision,
       { note: "", spareSr: "SR4956964" },
-      [{ itemId: request.items[0].item_id, rma: "C3209937826", attended: true }],
+      [{ itemId: request.items[0].item_id, rma: "C3209937826" }],
     ));
     expect(apiMocks.advanceSpareRequestStage).not.toHaveBeenCalled();
     expect(handlers.onChanged).toHaveBeenCalledWith(confirmed);
-    expect(handlers.onNotice).toHaveBeenCalledWith("Stage 2 confirmed: SR and RMA confirmed.");
+    expect(handlers.onNotice).toHaveBeenCalledWith(expect.stringContaining("Spare Request saved"));
   });
 
   it("deletes an unconfirmed active request only after the explicit confirmation", async () => {

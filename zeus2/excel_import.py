@@ -19,6 +19,7 @@ from .tickets import (
     SPARE_PART_COLUMNS,
     SPARE_PARTS_EXPORT_MARKER,
     SPARE_PARTS_SHEET,
+    REQUIRED_UPSTREAM_COLUMNS,
     UPSTREAM_COLUMNS,
     empty_local,
     normalize_local,
@@ -151,8 +152,8 @@ def _validate_headers(
 ) -> tuple[list[str], dict[str, int]]:
     headers, mapping = _trimmed_headers(worksheet)
     if kind == "advanced_search":
-        required = set(UPSTREAM_COLUMNS)
-        allowed = required
+        required = set(REQUIRED_UPSTREAM_COLUMNS)
+        allowed = set(UPSTREAM_COLUMNS)
     elif kind == "pendings":
         required = set(PENDING_COLUMNS)
         allowed = required

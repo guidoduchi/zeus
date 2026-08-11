@@ -1,4 +1,4 @@
-# Zeus 3.1.6
+# Zeus 3.1.7
 
 Zeus is a strictly local ticket workstation. Its Python backend runs in the
 background, serves a bundled React interface on `127.0.0.1`, and opens that
@@ -42,6 +42,7 @@ Zeus deliberately keeps separate sources of truth:
 | Finalized closed rows | generated/append-only `Closed.xlsx` | Only when requested |
 | Private email history | one configured Classic Outlook `.ost`/`.pst` store | No |
 | Active Spare Requests | independent Markdown under `current/spare_requests/active` | No |
+| Active/completed Fault Tag batches | independent Markdown under `current/spare_requests/fault_tags` | No |
 | Completed/cancelled Spare Request items | dedicated tabs in `Closed.xlsx` | No |
 | Request/return workbooks | one-way exports built from configured local templates | No |
 
@@ -50,9 +51,10 @@ The Markdown database is the source of truth for all current Zeus work.
 startup, query, and save paths neither import nor rewrite them. **Export
 Pendings + Closed** generates both from one committed database snapshot.
 
-If Outlook is disabled or the configured store is unavailable, Zeus runs no
-email fetch or synchronization work. The dashboard says why. Database editing,
-exports, reports, MOP generation, and non-email operations remain usable.
+When an Outlook store is available, Zeus defaults to a real hourly fetch and
+synchronization. Configuration can unlink synchronization from fetch and give
+it its own interval. If Outlook is disabled or unavailable, Zeus runs no email
+work and the dashboard says why; every non-email operation remains usable.
 
 ## Query behavior
 
@@ -60,6 +62,8 @@ Starting Zeus queues one visible source query. After that:
 
 - the configured **Data query interval** checks for the newest Advanced Search
   workbook in the background; `0` disables scheduled checks;
+- available Outlook stores fetch new mail hourly by default and synchronize it
+  immediately after each fetch;
 - **Check Advanced Search** runs that discovery manually;
 - the activity banner shows queued/running stage, message, progress, and safe
   cancellation where supported;
@@ -85,32 +89,32 @@ The blue title rail switches seamlessly between two management workspaces:
   lifecycle, the unified date-first MW, age, Last Email, severity, and summary;
 - **Spare Requests** manages independent replacement requests and their
   per-unit RMA lifecycle. It contains **Active Requests**, reusable **Eligible
-  SR Parts**, and read-only **Completed** archive views.
+  SR Parts**, independent **Fault Tags**, and read-only **Completed** archive
+  views.
 
-Last Email combines age and cumulative count in one cell: the age remains text,
-while the total is enclosed in a compact badge. Zero is red and every positive
-total uses the same neutral color; there is no separate email-count column. Lifecycle attendance
-is a separate black/gray/green signal; the
-dispatch timer is normal through day 14, amber on days 15–19, and red from day
-20 until the item is confirmed returned and archived. Selecting an eligible SR
-part opens the export form; selecting an active unit opens its independent
-request, spare-only email, conflict, return, and archive history.
+Last Email shows days plus separate colored triangular received and sent counts;
+there is no total badge or separate count column. Beside it, Service Request
+rows show individual-unit Spare Parts badges: yellow eligible, green active,
+red active after 20 full days (day 21), and gray completed. Zero-count badges
+are hidden. Lifecycle and dispatch aging remain separate signals.
 
 The damaged-device **Spare Parts** editor remains inside SR detail and saves
-directly to the database. Exporting from that editor immediately writes a
-template-based XLSX and creates an independent request. If the XLSX was prepared
-and sent outside Zeus, **Already sent manually** creates the same Active Request
-without needing export configuration, a Spare SR, or an RMA. The exact source
-part leaves Eligible SR Parts while active and returns after completion or
-cancellation.
+directly to the database. **New Request** offers Cancel, Create, and Export.
+Create records an independent request without writing XLSX; Export writes the
+template-based XLSX. Both begin at **Added to Zeus**, and only detected outbound
+email advances **Request email sent**. The exact source part leaves eligibility
+while active and remains reserved after archival so a new replacement requires
+a new part record.
 
 The gear beside **Fields** can show/hide and reorder every available field.
 Each workspace remembers its own search, filters, sort field,
 ascending/descending direction, visible fields, and field order in the browser
 profile. Multiple values are OR within a filter category and categories are
-ANDed together. The dark/light theme is shared. Column resizing is intentionally
-not supported. Configuration offers Compact, Standard, and Large interface text
-presets; every view derives its typography from the same semantic scale.
+ANDed together. Service Requests includes a Customer Organization filter and
+an optional Advanced Search-backed **Customer Org.** column. The dark/light
+theme is shared. Column resizing is intentionally not supported. Configuration
+offers Compact, Standard, and Large interface text presets; every view derives
+its typography from the same semantic scale.
 
 The page itself never scrolls. The ticket list owns its wheel and keyboard
 scrolling; the ticket detail panel has a separate scroll area. A row opens in a
@@ -126,10 +130,11 @@ master/detail panel with:
 Keyboard shortcuts preserve the useful CLI grammar: ↑/↓ follows the visible
 server-sorted and filtered row order, while ←/→ moves among detail tabs without
 wrapping. Moving rows preserves the active tab and any draft, and reports that
-the draft remains safe. Page Up/Down selects rows, Enter opens, and Escape
-closes. Anywhere in the active Zeus page outside an input, textarea, selector,
-or editable region, Ctrl+F searches, `S` cycles the sort field, `M` opens
-Operations, and `R` checks Advanced Search.
+the draft remains safe. One click highlights; double-click or Enter opens; Page
+Up/Down selects and Escape closes. Anywhere in the active Zeus page outside an
+input, textarea, selector, or editable region, Ctrl+F searches, `S` fetches and
+synchronizes email, `M` opens Operations, and `R` checks Advanced Search. `S`
+is disabled when the configured Outlook store is unavailable.
 
 ## Safe browser editing
 
@@ -152,11 +157,12 @@ leave-page warning until the user saves or discards the draft.
 
 Rows with protected changes carry an amber edit marker, and the command strip
 opens a **Protected drafts** manager. That manager groups changes by SR, shows
-the pending fields, lets the user select exactly which SRs to restore, save, or
-discard, and lists every selected SR before confirmation. A multi-SR save is a
-single database transaction: every reviewed revision commits or none do.
-**Restore changes** reapplies protected values over the latest database values
-for review; it never implies that the values have already been saved.
+the pending fields, lets the user select exactly which SRs to save or discard,
+and lists every selected SR before confirmation. A multi-SR save is a single
+database transaction: every reviewed revision commits or none do. The latest
+Save or Discard has one-level undo beside the protected-draft count. Reloading
+while that undo is available produces a themed warning because reload would
+lose the undo state.
 
 Browser-editable database-owned fields are:
 
@@ -170,7 +176,9 @@ After the date passes, Zeus asks whether the MW succeeded. Success changes the
 display to `Complete`; failure records an `Incomplete` attempt, clears the
 current date, and waits for another date. `Unplanned` and `No visibility`
 remain distinct undated states. Every completed or failed attempt remains in
-the structured local history.
+the structured local history. When several windows are overdue, Zeus presents
+one batch dialog where each can be marked Successful, Incomplete/Postponed, or
+Later; an incomplete result can receive its next planned date immediately.
 
 For operational-workbook compatibility, Zeus still generates `Planned Date`
 as a real Excel date plus `Done?` (`Y`, `N`, `P`, or `?`). Those columns are
@@ -181,7 +189,9 @@ contain zero or more damaged devices; every device has its own model and zero
 or more parts with Slot, Part, BOM (part number), Faulty SN, and New SN. The
 same hierarchy is emitted to a normalized `Spare Parts` worksheet, one row per
 part, without packing nested data into one cell. Historical single-device
-records migrate automatically.
+records migrate automatically. Affected-device entry can add several newline-
+separated device names at once with shared model and notes; Zeus creates an
+independent card for every name.
 
 The original flat Model/Device/Slot/Part/BOM/Old SN/New SN cells remain derived
 compatibility columns in the primary worksheet. `Spare` is export-only and is
@@ -195,11 +205,11 @@ sheet set, extends item rows in place, verifies generated values, and writes
 numbered revisions under `Requests` and `Returns`; it never imports these
 outputs as authority.
 
-Zeus opens the request form even when export paths are missing. Only an explicit
-Zeus export redirects to Configuration; manual registration remains available.
-After a successful XLSX export, Zeus advances to Active Requests and displays a
-reminder to attach and send the file. Customer, site, requester, and BOM inputs autocomplete from
-local data. The top-bar **Global data** manager owns the workstation profile,
+Zeus opens the request form even when export paths are missing. **Create**
+persists the request without an XLSX; only **Export** requires configured paths
+and templates. A successful export displays a reminder to attach and send the
+file, but does not mark the request email sent. Customer, site, requester, and
+BOM inputs autocomplete from local data. The top-bar **Global data** manager owns the workstation profile,
 customer organizations, customer contacts, sites, and additional requesters;
 favorite requesters can be pinned. The **BOM catalog** remains in the Spare
 Requests toolbar.
@@ -228,8 +238,25 @@ requested BOM, and one New SN. Out-of-order request-confirmation and
 dispatch-notification messages
 are reconciled; contradictory facts become visible conflicts instead of
 overwrites. Trusted senders and any warehouse domain are configured locally.
-Warehouse candidates still require both an exact RMA and Spare SR match, and a
-user must confirm the return or provide a noted manual override.
+The seven stages are **Added to Zeus**, **Request email sent**, **SR and RMA
+confirmed**, **Spare parts dispatched**, **Spare replaced**, **Warehouse
+evidence received**, and **Complete**. Dashboard bulk controls advance one
+stage or roll back one stage. Rolling back an email-backed stage keeps the email
+as evidence but suppresses that exact message's lifecycle effect after a second
+confirmation and required audit note.
+
+Fault Tag export is an independent batch operation available at **Spare
+replaced**. One `FT-YYMMDDHHmmss` batch can contain several items with separate
+Faulty/New conditions and an explicit actual return site when source sites are
+mixed. Export and re-export keep lifecycle unchanged. Detection of the first
+sent Fault Tag email locks membership; later additions require a new batch.
+Deleting a mistaken batch releases its items without changing their stages.
+
+Warehouse evidence requires an exact RMA plus Spare SR match. Evidence advances
+only that item to **Warehouse evidence received**; one explicit user
+confirmation then completes and archives it. Partial Fault Tags remain active
+and re-exportable until all members are confirmed, then archive with the final
+member. There is no manual-evidence override for completion.
 
 Protected fields are:
 
@@ -267,7 +294,10 @@ Configuration and generated data live under `%LOCALAPPDATA%\Zeus`:
     │   ├── email_staging\messages.ndjson
     │   ├── spare_requests\
     │   │   ├── unmatched_messages.ndjson
-    │   │   └── active\<YYMMDDHHmmss>\<YYMMDDHHmmss>.md
+    │   │   ├── active\<YYMMDDHHmmss>\<YYMMDDHHmmss>.md
+    │   │   └── fault_tags\
+    │   │       ├── active\<FT-YYMMDDHHmmss>\<FT-YYMMDDHHmmss>.md
+    │   │       └── completed\<FT-YYMMDDHHmmss>\<FT-YYMMDDHHmmss>.md
     │   └── tickets\<SRNo>\
     │       ├── <SRNo>.md
     │       └── mops\*.docx

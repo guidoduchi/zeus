@@ -12,7 +12,7 @@ flowchart TD
     Service --> Jobs["Jobs + scheduler"]
     Service --> Edit["Database edit transaction"]
     Service --> Core["Reconcile / publish / mail / MOP"]
-    Service --> Spare["Spare request / XLSX / mail"]
+    Service --> Spare["Spare request / Fault Tag / XLSX / mail"]
     Core --> Store["Transactional Markdown store"]
     Store --> Export["Explicit workbook export"]
     Export --> Books["Pendings.xlsx + Closed.xlsx"]
@@ -42,6 +42,7 @@ publication, mail, and MOP generation.
 | `zeus2/reference_data.py` | mandatory profile, global structured managers, legacy-manager migration, and BOM catalog |
 | `zeus2/storage_migration.py` | capacity checks, verified clone/restart handoff, rollback, and original cleanup |
 | `zeus2/spare_requests.py` | independent request schema, validation, status, identity, and fault-evidence grouping |
+| `zeus2/fault_tags.py` | independent batch identity, member snapshots, status, validation, and Markdown rendering |
 | `zeus2/spare_request_excel.py` | template-preserving request/return exports and Closed archive tabs |
 | `zeus2/spare_request_mail.py` | configured confirmation, dispatch, and warehouse parsing, replay, association, conflicts, and retention |
 | `zeus2/web/server.py` | loopback HTTP/static/API boundary and security headers |
@@ -62,9 +63,10 @@ browser-edit mutations.
 
 The dashboard endpoint accepts a validated workspace key. Each workspace owns
 its schema and sort vocabulary. Service Request rows resolve to ticket detail;
-active Spare Request rows resolve to their independent request detail; eligible
-rows intentionally resolve through the originating ticket before export. This
-boundary allows future workspaces without conflating their persistence models.
+active Spare Request rows resolve to their independent request detail; Fault Tag
+rows resolve to their independent batch record; eligible rows intentionally
+resolve through the originating ticket before export. This boundary allows
+future workspaces without conflating their persistence models.
 
 Server-Sent Events are short local long-polls containing job/configuration/data
 events. The UI updates visible activity immediately and rereads committed data
@@ -104,16 +106,17 @@ Python module directly; they do not install or execute frontend tooling.
 ## Verification layers
 
 - core regression tests preserve the 2.0.3 data and recovery contracts;
-- Spare Request tests cover quantity-only unit/Fault Tag expansion, combined
-  multi-serial evidence cells, immutable identities, partial/out-of-order mail,
-  template sheet preservation, return output, archive gating, and retention;
+- Spare Request tests cover slot/quantity unit expansion, combined multi-serial
+  evidence cells, immutable identities, seven-stage lifecycle, exact-message
+  rollback suppression, independent Fault Tag lock/delete/re-export, partial
+  member completion, out-of-order mail, template preservation, and retention;
 - profile/reference/storage tests cover setup validation, relationship
   integrity, capacity rejection, clone verification, rollback, and cleanup retry;
 - application tests cover database-first startup and saves, explicit paired
   export/finalization, legacy recovery journals, serialized jobs, local HTTP
   security, no-query GETs, and safe stale records;
 - Vitest covers field/filter preference persistence, OR/AND filter semantics,
-  wheel ownership, protected draft restoration, bounded tab navigation,
+  wheel ownership, protected draft undo, bulk lifecycle/Fault Tag dialogs, bounded tab navigation,
   command suppression, safe email rendering, and minimal edit payloads;
 - Playwright drives Chrome and Microsoft Edge against a real Python server to
   verify list scrolling, no page scrolling, ticket panels, persisted fields and

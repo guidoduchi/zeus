@@ -26,11 +26,18 @@ from .maintenance_windows import (
     maintenance_window_summary,
     validate_maintenance_window_record,
 )
+from .fault_tags import (
+    decode_fault_tag_record,
+    normalize_fault_tag_id,
+    render_fault_tag_markdown,
+    validate_fault_tag_record,
+)
 from .reference_data import ensure_reference_layout
 from .spare_requests import (
     decode_request_record,
     normalize_request_id,
     render_request_markdown,
+    upgrade_request_record,
     validate_request_record,
 )
 from .tickets import LOCAL_COLUMNS, UPSTREAM_COLUMNS, empty_email, normalize_local
@@ -256,6 +263,10 @@ class ZeusStore:
         self.tickets = self.current / "tickets"
         self.staging = self.current / "email_staging"
         self.spare_requests = self.current / "spare_requests" / "active"
+        self.fault_tags = self.current / "spare_requests" / "fault_tags" / "active"
+        self.completed_fault_tags = (
+            self.current / "spare_requests" / "fault_tags" / "completed"
+        )
         self.backups = self.root / "backups"
         self.audit_dir = self.root / "audit"
         self.audit_file = self.audit_dir / "events.ndjson"
@@ -285,6 +296,8 @@ class ZeusStore:
             # Additive 3.1.1 migration: existing Zeus 2/3 stores gain the
             # independent Spare Request tree without rewriting ticket data.
             self.spare_requests.mkdir(parents=True, exist_ok=True)
+            self.fault_tags.mkdir(parents=True, exist_ok=True)
+            self.completed_fault_tags.mkdir(parents=True, exist_ok=True)
             unmatched = self.unmatched_spare_messages_file()
             if not unmatched.exists():
                 atomic_write_text(unmatched, "")
@@ -293,7 +306,7 @@ class ZeusStore:
     def _empty_state() -> dict[str, Any]:
         return {
             "schema_version": 2,
-            "database_schema_version": 3,
+            "database_schema_version": 4,
             "created_at": iso_now(),
             "updated_at": iso_now(),
             "advanced_search_state": None,
@@ -317,6 +330,12 @@ class ZeusStore:
         (path / "email_staging").mkdir(parents=True, exist_ok=True)
         atomic_write_text(path / "email_staging" / "messages.ndjson", "")
         (path / "spare_requests" / "active").mkdir(parents=True, exist_ok=True)
+        (path / "spare_requests" / "fault_tags" / "active").mkdir(
+            parents=True, exist_ok=True
+        )
+        (path / "spare_requests" / "fault_tags" / "completed").mkdir(
+            parents=True, exist_ok=True
+        )
         atomic_write_text(path / "spare_requests" / "unmatched_messages.ndjson", "")
         atomic_write_json(path / "closed_index.json", {
             "schema_version": 1,
@@ -371,6 +390,142 @@ class ZeusStore:
     def unmatched_spare_messages_file(self, current_path: Path | None = None) -> Path:
         return self.spare_request_root(current_path) / "unmatched_messages.ndjson"
 
+    def fault_tag_root(self, current_path: Path | None = None) -> Path:
+        return self.spare_request_root(current_path) / "fault_tags"
+
+    def fault_tag_collection(
+        self, current_path: Path | None = None, *, completed: bool = False
+    ) -> Path:
+        return self.fault_tag_root(current_path) / ("completed" if completed else "active")
+
+    def fault_tag_dir(
+        self,
+        fault_tag_id: str,
+        current_path: Path | None = None,
+        *,
+        completed: bool = False,
+    ) -> Path:
+        return self.fault_tag_collection(current_path, completed=completed) / normalize_fault_tag_id(
+            fault_tag_id
+        )
+
+    def fault_tag_file(
+        self,
+        fault_tag_id: str,
+        current_path: Path | None = None,
+        *,
+        completed: bool = False,
+    ) -> Path:
+        identifier = normalize_fault_tag_id(fault_tag_id)
+        return self.fault_tag_dir(
+            identifier, current_path, completed=completed
+        ) / f"{identifier}.md"
+
+    def read_fault_tag(
+        self,
+        fault_tag_id: str,
+        current_path: Path | None = None,
+        *,
+        completed: bool | None = None,
+    ) -> dict[str, Any]:
+        candidates = (
+            [completed] if completed is not None else [False, True]
+        )
+        for archived in candidates:
+            path = self.fault_tag_file(
+                fault_tag_id, current_path, completed=bool(archived)
+            )
+            if not path.is_file():
+                continue
+            with path.open("r", encoding="utf-8") as handle:
+                first_line = handle.readline().rstrip("\n")
+            try:
+                return decode_fault_tag_record(first_line, path)
+            except ValueError as exc:
+                raise StoreError(str(exc)) from exc
+        raise StoreError(f"Fault Tag not found: {normalize_fault_tag_id(fault_tag_id)}")
+
+    def iter_fault_tag_ids(
+        self,
+        current_path: Path | None = None,
+        *,
+        completed: bool = False,
+    ) -> Iterator[str]:
+        base = self.fault_tag_collection(current_path, completed=completed)
+        if not base.exists():
+            return
+        for directory in sorted(
+            base.iterdir(), key=lambda item: item.name, reverse=True
+        ):
+            if not directory.is_dir():
+                continue
+            try:
+                identifier = normalize_fault_tag_id(directory.name)
+            except ValueError:
+                continue
+            if (directory / f"{identifier}.md").is_file():
+                yield identifier
+
+    def iter_fault_tags(
+        self,
+        current_path: Path | None = None,
+        *,
+        completed: bool = False,
+    ) -> Iterator[dict[str, Any]]:
+        for identifier in self.iter_fault_tag_ids(
+            current_path, completed=completed
+        ):
+            yield self.read_fault_tag(
+                identifier, current_path, completed=completed
+            )
+
+    def write_fault_tag(
+        self,
+        current_path: Path,
+        record: dict[str, Any],
+        *,
+        completed: bool = False,
+    ) -> Path:
+        prepared = deepcopy(record)
+        identifier = normalize_fault_tag_id(prepared.get("fault_tag_id"))
+        prepared["fault_tag_id"] = identifier
+        prepared["updated_at"] = iso_now()
+        try:
+            validate_fault_tag_record(prepared, identifier)
+        except ValueError as exc:
+            raise StoreError(str(exc)) from exc
+        directory = self.fault_tag_dir(
+            identifier, current_path, completed=completed
+        )
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{identifier}.md"
+        atomic_write_text(path, render_fault_tag_markdown(prepared))
+        return path
+
+    def delete_fault_tag(
+        self,
+        fault_tag_id: str,
+        current_path: Path,
+        *,
+        completed: bool = False,
+    ) -> None:
+        directory = self.fault_tag_dir(
+            fault_tag_id, current_path, completed=completed
+        )
+        if directory.exists():
+            shutil.rmtree(directory)
+
+    def archive_fault_tag(self, fault_tag_id: str, current_path: Path) -> None:
+        identifier = normalize_fault_tag_id(fault_tag_id)
+        source = self.fault_tag_dir(identifier, current_path, completed=False)
+        if not source.is_dir():
+            raise StoreError(f"Active Fault Tag not found: {identifier}")
+        destination = self.fault_tag_dir(identifier, current_path, completed=True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            raise StoreError(f"Completed Fault Tag already exists: {identifier}")
+        os.replace(source, destination)
+
     def read_spare_request(
         self, request_id: str, current_path: Path | None = None
     ) -> dict[str, Any]:
@@ -406,7 +561,7 @@ class ZeusStore:
     def write_spare_request(
         self, current_path: Path, request: dict[str, Any]
     ) -> Path:
-        prepared = deepcopy(request)
+        prepared = upgrade_request_record(request)
         request_id = normalize_request_id(prepared.get("request_id"))
         prepared["request_id"] = request_id
         prepared["updated_at"] = iso_now()
@@ -588,6 +743,44 @@ class ZeusStore:
                     raise StoreError(f"RMA {rma} belongs to more than one active Spare Request")
                 if rma:
                     global_rmas.add(str(rma))
+        active_item_ids = {
+            str(item.get("item_id"))
+            for request in self.iter_spare_requests(current_path)
+            for item in request.get("items", [])
+            if item.get("item_id")
+        }
+        active_fault_tag_members: set[str] = set()
+        for completed in (False, True):
+            fault_tag_root = self.fault_tag_collection(
+                current_path, completed=completed
+            )
+            if not fault_tag_root.is_dir():
+                raise StoreError("Fault Tag directory is missing")
+            for directory in fault_tag_root.iterdir():
+                if not directory.is_dir():
+                    continue
+                record = self.read_fault_tag(
+                    directory.name, current_path, completed=completed
+                )
+                try:
+                    validate_fault_tag_record(record, directory.name)
+                except ValueError as exc:
+                    raise StoreError(str(exc)) from exc
+                if completed:
+                    continue
+                for member in record.get("members", []):
+                    item_id = str(member.get("item_id") or "")
+                    if item_id not in active_item_ids and not member.get(
+                        "user_confirmed_at"
+                    ):
+                        raise StoreError(
+                            f"Active Fault Tag {directory.name} references missing item {item_id}"
+                        )
+                    if item_id in active_fault_tag_members:
+                        raise StoreError(
+                            f"Active item {item_id} belongs to more than one Fault Tag"
+                        )
+                    active_fault_tag_members.add(item_id)
         index = self.closed_index(current_path)
         ids = index.get("ticket_ids", [])
         if not isinstance(ids, list) or len(ids) != len(set(ids)):

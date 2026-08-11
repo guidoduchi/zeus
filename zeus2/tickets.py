@@ -8,7 +8,7 @@ from .maintenance_windows import synchronize_maintenance_window
 from .utils import iso_now, normalize_ticket_id
 
 
-UPSTREAM_COLUMNS = [
+REQUIRED_UPSTREAM_COLUMNS = [
     "SRNo",
     "Problem Summary",
     "Report Date",
@@ -20,6 +20,11 @@ UPSTREAM_COLUMNS = [
     "ResolveBy",
     "Resolve By Suspend",
 ]
+
+# New Advanced Search exports may include this extra field.  It is optional so
+# older exports remain valid, while arbitrary schema drift is still rejected.
+OPTIONAL_UPSTREAM_COLUMNS = ["Customer Org."]
+UPSTREAM_COLUMNS = REQUIRED_UPSTREAM_COLUMNS + OPTIONAL_UPSTREAM_COLUMNS
 
 LOCAL_COLUMNS = [
     "Planned Date",

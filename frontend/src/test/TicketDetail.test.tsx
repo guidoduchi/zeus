@@ -24,7 +24,9 @@ const detail: TicketDetailType = {
   lastEmailDirection: "received",
   received: 1,
   sent: 0,
+  spareBadges: { eligible: 0, active: 0, activeColor: "green", completed: 0 },
   summary: "A compact detail",
+  customerOrganization: "Customer Org",
   customerContact: "Customer Contact",
   severity: "Minor",
   product: "Product",
@@ -90,7 +92,7 @@ describe("TicketDetail", () => {
     expect(screen.getByRole("button", { name: /^Spare Parts/ })).toHaveClass("active");
   });
 
-  it("offers manual registration beside export for saved Spare Parts", async () => {
+  it("offers stage-zero creation beside export for saved Spare Parts", async () => {
     const user = userEvent.setup();
     const onExportSpareRequest = vi.fn();
     const onRegisterSpareRequest = vi.fn();
@@ -117,9 +119,9 @@ describe("TicketDetail", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Already sent manually" }));
+    await user.click(screen.getByRole("button", { name: "Create Request" }));
     expect(onRegisterSpareRequest).toHaveBeenCalledWith("12345678");
-    expect(screen.getByRole("button", { name: "Export Spare Request" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Export Request" })).toBeEnabled();
     expect(styles).toMatch(/\.edit-actions, \.edit-actions > \.inline-actions\s*\{[^}]*flex-wrap:\s*wrap/s);
   });
 
@@ -358,10 +360,10 @@ describe("TicketDetail", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(<TicketDetail ticket={detail} loading={false} initialTab="work" templates={[]} onClose={vi.fn()} onSave={onSave} onGenerateMop={vi.fn()} />);
 
-    await user.click(screen.getByRole("button", { name: /add affected device/i }));
-    await user.type(screen.getByLabelText("Device"), "server-no-bom");
-    await user.type(screen.getByLabelText("Model"), "FusionServer");
-    await user.type(screen.getByLabelText("Intervention notes"), "Firmware checks only");
+    await user.type(screen.getByLabelText(/Device names · one per line/), "server-no-bom");
+    await user.type(screen.getByLabelText("Shared model"), "FusionServer");
+    await user.type(screen.getByLabelText("Shared intervention notes"), "Firmware checks only");
+    await user.click(screen.getByRole("button", { name: "Add independent device cards" }));
     expect(screen.queryByText("Spare parts involved")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/BOM/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /save to zeus/i }));
@@ -383,9 +385,9 @@ describe("TicketDetail", () => {
     const user = userEvent.setup();
     render(<TicketDetail ticket={detail} loading={false} initialTab="work" templates={[]} onClose={vi.fn()} onSave={vi.fn()} onGenerateMop={vi.fn()} />);
 
-    await user.click(screen.getByRole("button", { name: /add affected device/i }));
-    await user.type(screen.getByLabelText("Device"), "shared-server");
-    await user.type(screen.getByLabelText("Model"), "2288H V5");
+    await user.type(screen.getByLabelText(/Device names · one per line/), "shared-server");
+    await user.type(screen.getByLabelText("Shared model"), "2288H V5");
+    await user.click(screen.getByRole("button", { name: "Add independent device cards" }));
     await user.click(screen.getByRole("button", { name: /^Spare Parts/ }));
 
     expect(screen.getByLabelText("Device 1 name")).toHaveValue("shared-server");

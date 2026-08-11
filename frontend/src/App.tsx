@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
+  bulkSpareLifecycle,
   cancelJob,
   confirmMaintenanceWindow,
   exportSpareRequest,
+  exportSpareReturn,
   getBootstrap,
   getDashboard,
+  getFaultTag,
   getSpareRequest,
   getTemplates,
   getTicket,
   purgeSpareArchive,
   registerSpareRequest,
+  saveTicketDraftBatch,
   saveUserProfile,
   saveTicket,
   startJob,
@@ -20,10 +24,12 @@ import { ColumnChooser } from "./components/ColumnChooser";
 import { ConfirmationDialog } from "./components/ConfirmationDialog";
 import { DraftsModal } from "./components/DraftsModal";
 import { FilterBar } from "./components/FilterBar";
+import { FaultTagDetail } from "./components/FaultTagDetail";
+import { FaultTagsGrid } from "./components/FaultTagsGrid";
 import { GlobalDataModal } from "./components/GlobalDataModal";
 import { JobBanner } from "./components/JobBanner";
 import { Modal } from "./components/Modal";
-import { MaintenanceWindowPrompt } from "./components/MaintenanceWindowPrompt";
+import { MaintenanceWindowPrompt, type MaintenanceWindowDecision } from "./components/MaintenanceWindowPrompt";
 import { NoticeStrip } from "./components/NoticeStrip";
 import { OperationsModal } from "./components/OperationsModal";
 import { ProfileSetup } from "./components/ProfileSetup";
@@ -32,14 +38,20 @@ import { SparePartsGrid } from "./components/SparePartsGrid";
 import { SpareRequestDetail } from "./components/SpareRequestDetail";
 import { SpareRequestModal } from "./components/SpareRequestModal";
 import { SpareRequestsGrid } from "./components/SpareRequestsGrid";
+import { FaultTagExportDialog, SpareLifecycleBulkDialog } from "./components/SpareBulkDialogs";
 import { StatsBar } from "./components/StatsBar";
 import { TicketDetail } from "./components/TicketDetail";
 import { TicketGrid } from "./components/TicketGrid";
 import { TopBar } from "./components/TopBar";
 import {
   countUnsavedDrafts,
+  clearDraftUndo,
+  DRAFT_UNDO_CHANGED_EVENT,
   DRAFTS_CHANGED_EVENT,
+  getDraftUndo,
+  hasDraftUndo,
   ticketIdsWithDrafts,
+  writeTicketDraft,
   type TicketDraftKind,
 } from "./drafts";
 import { useColumnPreferences } from "./hooks/useColumnPreferences";
@@ -49,6 +61,8 @@ import { maintenanceWindowStatusLabel } from "./maintenanceWindow";
 import type {
   BootstrapPayload,
   DashboardPayload,
+  FaultTagDetail as FaultTagDetailType,
+  FaultTagSummary,
   Job,
   SparePartSummary,
   SpareRequestDetail as SpareRequestDetailType,
@@ -123,6 +137,7 @@ const SERVICE_FILTERS: Array<RowFilterBlueprint<TicketSummary>> = [
     optionLabel: maintenanceWindowStatusLabel,
   },
   { key: "severity", label: "Severity", values: (row) => row.severity || "—" },
+  { key: "customer-org", label: "Customer Org.", values: (row) => row.customerOrganization || "—" },
 ];
 
 const SPARE_REQUEST_FILTERS: Array<RowFilterBlueprint<SpareRequestItemSummary>> = [
@@ -226,7 +241,7 @@ export default function App() {
   }));
   const [spareView, setSpareView] = useState<SpareRequestView>(() => {
     const saved = readPreference("zeus3.spare-requests.view", "active");
-    return saved === "eligible" || saved === "completed" ? saved : "active";
+    return saved === "eligible" || saved === "fault-tags" || saved === "completed" ? saved : "active";
   });
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
@@ -235,6 +250,8 @@ export default function App() {
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [spareRequest, setSpareRequest] = useState<SpareRequestDetailType | null>(null);
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+  const [faultTag, setFaultTag] = useState<FaultTagDetailType | null>(null);
+  const [selectedFaultTagId, setSelectedFaultTagId] = useState<string | null>(null);
   const [ticketLoading, setTicketLoading] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [theme, setTheme] = useState(() => readPreference("zeus3.theme", "dark"));
@@ -251,17 +268,23 @@ export default function App() {
   const [spareExportPart, setSpareExportPart] = useState<SparePartSummary | null>(null);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [purgeConfirmationOpen, setPurgeConfirmationOpen] = useState(false);
+  const [selectedSpareItemIds, setSelectedSpareItemIds] = useState<Set<string>>(() => new Set());
+  const [spareBulkDialog, setSpareBulkDialog] = useState<"advance" | "rollback" | "fault-tag" | null>(null);
+  const [spareBulkBusy, setSpareBulkBusy] = useState(false);
   const [dismissedMaintenanceWindows, setDismissedMaintenanceWindows] = useState<Set<string>>(() => new Set());
   const [maintenanceWindowBusy, setMaintenanceWindowBusy] = useState(false);
   const [templates, setTemplates] = useState<Array<{ name: string; path: string }>>([]);
   const [toast, setToast] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(null);
   const [draftCount, setDraftCount] = useState(countUnsavedDrafts);
+  const [draftUndoAvailable, setDraftUndoAvailable] = useState(hasDraftUndo);
+  const [reloadUndoPrompt, setReloadUndoPrompt] = useState(false);
   const [draftTicketIds, setDraftTicketIds] = useState<Set<string>>(ticketIdsWithDrafts);
   const [ticketInitialTab, setTicketInitialTab] = useState<"overview" | "work" | "spares">("overview");
   const searchRef = useRef<HTMLInputElement>(null);
   const dashboardRequest = useRef(0);
   const ticketDetailRequest = useRef(0);
   const spareRequestDetailRequest = useRef(0);
+  const faultTagDetailRequest = useRef(0);
   const dashboardCache = useRef(new Map<string, DashboardPayload>());
   const dashboardPrefetches = useRef(new Set<string>());
   const preference = workspacePreferences[workspace];
@@ -384,6 +407,24 @@ export default function App() {
     }
   }, [reportError]);
 
+  const loadFaultTag = useCallback(async (faultTagId: string) => {
+    const detailRequestId = ++faultTagDetailRequest.current;
+    setTicketLoading(true);
+    setFaultTag((current) => current?.faultTagId === faultTagId ? current : null);
+    try {
+      const result = await getFaultTag(faultTagId);
+      if (detailRequestId === faultTagDetailRequest.current) setFaultTag(result);
+    } catch (error) {
+      if (detailRequestId !== faultTagDetailRequest.current) return;
+      reportError(error);
+      setFaultTag(null);
+      setSelectedFaultTagId(null);
+      setSelectedRowId(null);
+    } finally {
+      if (detailRequestId === faultTagDetailRequest.current) setTicketLoading(false);
+    }
+  }, [reportError]);
+
   useEffect(() => {
     loadBootstrap().catch(reportError);
   }, []); // initial connection only
@@ -443,24 +484,31 @@ export default function App() {
       setDraftCount(countUnsavedDrafts());
       setDraftTicketIds(ticketIdsWithDrafts());
     };
+    const refreshUndo = () => setDraftUndoAvailable(hasDraftUndo());
     window.addEventListener(DRAFTS_CHANGED_EVENT, refreshDraftCount);
+    window.addEventListener(DRAFT_UNDO_CHANGED_EVENT, refreshUndo);
     window.addEventListener("storage", refreshDraftCount);
     return () => {
       window.removeEventListener(DRAFTS_CHANGED_EVENT, refreshDraftCount);
+      window.removeEventListener(DRAFT_UNDO_CHANGED_EVENT, refreshUndo);
       window.removeEventListener("storage", refreshDraftCount);
     };
   }, []);
 
   useEffect(() => {
     function protectDrafts(event: BeforeUnloadEvent) {
-      if (!countUnsavedDrafts()) return;
+      if (!countUnsavedDrafts() && !hasDraftUndo()) return;
       event.preventDefault();
       event.returnValue = "";
     }
     function blockKeyboardReload(event: KeyboardEvent) {
       const reload = event.key === "F5" || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r");
-      if (!reload || !countUnsavedDrafts()) return;
+      if (!reload || (!countUnsavedDrafts() && !hasDraftUndo())) return;
       event.preventDefault();
+      if (hasDraftUndo()) {
+        setReloadUndoPrompt(true);
+        return;
+      }
       setToast({
         tone: "info",
         message: "Reload blocked: save or discard the protected draft first.",
@@ -473,6 +521,34 @@ export default function App() {
       window.removeEventListener("keydown", blockKeyboardReload, { capture: true });
     };
   }, []);
+
+  const undoDraftAction = useCallback(async () => {
+    const undo = getDraftUndo();
+    if (!undo) return;
+    try {
+      let tickets: Record<string, TicketDetailType> = {};
+      if (undo.action === "save") {
+        const result = await saveTicketDraftBatch(undo.inverseEdits);
+        tickets = result.tickets;
+      }
+      for (const record of undo.records) {
+        writeTicketDraft(record.ticketId, record.kind, record.draft);
+      }
+      clearDraftUndo();
+      if (selectedTicketId && tickets[selectedTicketId]) {
+        setTicket(tickets[selectedTicketId]);
+      }
+      await loadDashboard();
+      setToast({
+        tone: "success",
+        message: undo.action === "save"
+          ? `Undid the last Save for ${undo.ticketCount} SR(s); their protected drafts are back.`
+          : `Restored the last discarded drafts for ${undo.ticketCount} SR(s).`,
+      });
+    } catch (error) {
+      reportError(error);
+    }
+  }, [loadDashboard, reportError, selectedTicketId]);
 
   useEffect(() => {
     if (!bootstrap || bootstrap.onboarding.required) return;
@@ -491,6 +567,7 @@ export default function App() {
           loadBootstrap().catch(reportError);
           if (selectedTicketId) loadTicket(selectedTicketId);
           if (selectedRequestId) loadSpareRequest(selectedRequestId);
+          if (selectedFaultTagId) loadFaultTag(selectedFaultTagId);
         } else if (envelope.type === "configuration") {
           loadBootstrap().catch(reportError);
         }
@@ -502,7 +579,7 @@ export default function App() {
     source.addEventListener("dataset", receive);
     source.addEventListener("configuration", receive);
     return () => source.close();
-  }, [bootstrap?.instanceId, bootstrap?.onboarding.required, loadBootstrap, loadDashboard, loadSpareRequest, loadTicket, reportError, selectedRequestId, selectedTicketId]);
+  }, [bootstrap?.instanceId, bootstrap?.onboarding.required, loadBootstrap, loadDashboard, loadFaultTag, loadSpareRequest, loadTicket, reportError, selectedFaultTagId, selectedRequestId, selectedTicketId]);
 
   useEffect(() => {
     if (!selectedTicketId) {
@@ -521,6 +598,15 @@ export default function App() {
     }
     loadSpareRequest(selectedRequestId);
   }, [loadSpareRequest, selectedRequestId]);
+
+  useEffect(() => {
+    if (!selectedFaultTagId) {
+      faultTagDetailRequest.current += 1;
+      setFaultTag(null);
+      return;
+    }
+    loadFaultTag(selectedFaultTagId);
+  }, [loadFaultTag, selectedFaultTagId]);
 
   useEffect(() => {
     if (!toast) return;
@@ -586,17 +672,80 @@ export default function App() {
     if (dashboard?.workspace !== "spare-requests" || dashboard.view !== "eligible") return null;
     return dashboard.eligibleParts.find((row) => row.rowId === selectedRowId) || null;
   }, [dashboard, selectedRowId]);
-  const overdueMaintenanceWindow = useMemo(() => {
+  const selectedActiveSpareItems = useMemo(() => {
+    if (dashboard?.workspace !== "spare-requests" || dashboard.view !== "active") return [];
+    return dashboard.spareRequests.filter((row) => selectedSpareItemIds.has(row.itemId));
+  }, [dashboard, selectedSpareItemIds]);
+
+  const toggleBulkSpareItem = useCallback((row: SpareRequestItemSummary) => {
+    setSelectedSpareItemIds((current) => {
+      const next = new Set(current);
+      if (next.has(row.itemId)) next.delete(row.itemId);
+      else next.add(row.itemId);
+      return next;
+    });
+  }, []);
+
+  async function runBulkSpareLifecycle(
+    action: "advance" | "rollback",
+    emailOverrideConfirmed: boolean,
+    note: string,
+  ) {
+    setSpareBulkBusy(true);
+    try {
+      const result = await bulkSpareLifecycle({
+        itemIds: selectedActiveSpareItems.map((row) => row.itemId),
+        action,
+        revisions: Object.fromEntries(
+          selectedActiveSpareItems
+            .filter((row) => row.revision)
+            .map((row) => [row.requestId, row.revision as string]),
+        ),
+        emailOverrideConfirmed,
+        note,
+      });
+      setSpareBulkDialog(null);
+      setSelectedSpareItemIds(new Set());
+      if (result.completed.includes(selectedRowId || "")) closeDetail();
+      dashboardCache.current.clear();
+      await Promise.all([loadDashboard(), loadBootstrap()]);
+      setToast({ tone: "success", message: `${action === "advance" ? "Advanced" : "Rolled back"} ${result.items.length} item(s) one stage.` });
+    } catch (error) {
+      reportError(error);
+    } finally {
+      setSpareBulkBusy(false);
+    }
+  }
+
+  async function createFaultTagFromSelection(
+    selections: Array<{ itemId: string; condition: "Faulty" | "New" }>,
+    returnSite?: { code: string; address: string; cloud: string },
+  ) {
+    setSpareBulkBusy(true);
+    try {
+      const result = await exportSpareReturn(selections, returnSite);
+      setSpareBulkDialog(null);
+      setSelectedSpareItemIds(new Set());
+      dashboardCache.current.clear();
+      await loadDashboard();
+      setToast({ tone: "success", message: `${result.faultTagId} exported. Active Request lifecycle stages were unchanged.` });
+    } catch (error) {
+      reportError(error);
+    } finally {
+      setSpareBulkBusy(false);
+    }
+  }
+  const overdueMaintenanceWindows = useMemo(() => {
     const candidates = dashboard?.workspace === "service-requests"
       ? dashboard.tickets
       : bootstrap?.maintenanceWindowsDue || [];
-    return candidates.find((candidate) => {
+    return candidates.filter((candidate) => {
       const date = candidate.maintenanceWindow?.date;
       return candidate.maintenanceWindow?.confirmationRequired
         && Boolean(date)
         && !draftTicketIds.has(candidate.ticketId)
         && !dismissedMaintenanceWindows.has(`${candidate.ticketId}:${date}`);
-    }) || null;
+    });
   }, [bootstrap?.maintenanceWindowsDue, dashboard, dismissedMaintenanceWindows, draftTicketIds]);
 
   function dismissMaintenanceWindow(ticket: TicketSummary) {
@@ -604,26 +753,39 @@ export default function App() {
     setDismissedMaintenanceWindows((current) => new Set([...current, key]));
   }
 
-  async function recordMaintenanceWindowOutcome(ticket: TicketSummary, successful: boolean) {
-    const plannedDate = ticket.maintenanceWindow?.date;
-    if (!plannedDate) return;
+  async function recordMaintenanceWindowBatch(decisions: MaintenanceWindowDecision[]) {
     setMaintenanceWindowBusy(true);
     try {
-      const result = await confirmMaintenanceWindow(
-        ticket.ticketId,
-        ticket.revision,
-        plannedDate,
-        successful,
-      );
-      dismissMaintenanceWindow(ticket);
-      if (selectedTicketId === ticket.ticketId) setTicket(result.ticket);
+      let saved = 0;
+      for (const decision of decisions) {
+        if (decision.outcome === "later") {
+          dismissMaintenanceWindow(decision.ticket);
+          continue;
+        }
+        const plannedDate = decision.ticket.maintenanceWindow?.date;
+        if (!plannedDate) continue;
+        let result = await confirmMaintenanceWindow(
+          decision.ticket.ticketId,
+          decision.ticket.revision,
+          plannedDate,
+          decision.outcome === "successful",
+        );
+        if (decision.outcome === "incomplete" && decision.rescheduleDate) {
+          result = await saveTicket(
+            decision.ticket.ticketId,
+            result.ticket.revision,
+            { "Planned Date": decision.rescheduleDate, "Done?": "N" },
+          );
+        }
+        dismissMaintenanceWindow(decision.ticket);
+        if (selectedTicketId === decision.ticket.ticketId) setTicket(result.ticket);
+        saved += 1;
+      }
       dashboardCache.current.clear();
       await Promise.all([loadDashboard(), loadBootstrap()]);
       setToast({
         tone: "success",
-        message: successful
-          ? `SR ${ticket.ticketId} MW marked Complete.`
-          : `SR ${ticket.ticketId} MW marked Incomplete. Add the next date when it is agreed.`,
+        message: `Saved ${saved} Maintenance Window outcome${saved === 1 ? "" : "s"}. Failed dates remain in attempt history.`,
       });
     } catch (error) {
       reportError(error);
@@ -640,20 +802,21 @@ export default function App() {
       direction: workspaceConfig.defaultDirections[next],
     });
   }, [updateWorkspacePreference, workspaceConfig]);
-  const cycleSort = useCallback(() => {
-    const values = workspaceConfig.sorts.map((option) => option.value);
-    const next = values[(values.indexOf(sort) + 1) % values.length];
-    chooseSort(next);
-  }, [chooseSort, sort, workspaceConfig.sorts]);
   const queryData = useCallback(() => {
     if (!activeJob) void runJob("query");
   }, [activeJob, runJob]);
+  const syncEmail = useCallback(() => {
+    if (!activeJob && bootstrap?.outlook.configuredPathAvailable) {
+      void runJob("email-fetch", { synchronize: true });
+    }
+  }, [activeJob, bootstrap?.outlook.configuredPathAvailable, runJob]);
 
   const closeDetail = useCallback(() => {
-    if (!selectedTicketId && !selectedRequestId) return;
+    if (!selectedTicketId && !selectedRequestId && !selectedFaultTagId) return;
     const rowId = selectedRowId;
     setSelectedTicketId(null);
     setSelectedRequestId(null);
+    setSelectedFaultTagId(null);
     setTicketInitialTab("overview");
     window.requestAnimationFrame(() => {
       const selectedRow = Array.from(document.querySelectorAll<HTMLElement>("[data-row-id]"))
@@ -665,7 +828,7 @@ export default function App() {
       }
       document.querySelector<HTMLElement>('[role="grid"]')?.focus({ preventScroll: true });
     });
-  }, [selectedRequestId, selectedRowId, selectedTicketId]);
+  }, [selectedFaultTagId, selectedRequestId, selectedRowId, selectedTicketId]);
 
   const chooseWorkspace = useCallback((next: WorkspaceKey) => {
     if (next === workspace) return;
@@ -682,9 +845,12 @@ export default function App() {
     setDashboard(cached || null);
     setTicket(null);
     setSpareRequest(null);
+    setFaultTag(null);
     setSelectedTicketId(null);
     setSelectedRequestId(null);
+    setSelectedFaultTagId(null);
     setSelectedRowId(null);
+    setSelectedSpareItemIds(new Set());
     setColumnsOpen(false);
     setTicketInitialTab(next === "spare-requests" ? "spares" : "overview");
   }, [spareView, workspace, workspacePreferences]);
@@ -705,6 +871,7 @@ export default function App() {
   const selectServiceRequest = useCallback((ticketId: string) => {
     informProtectedTicketMove(ticketId);
     setSelectedRequestId(null);
+    setSelectedFaultTagId(null);
     setSelectedTicketId(ticketId);
     setSelectedRowId(ticketId);
   }, [informProtectedTicketMove]);
@@ -720,6 +887,7 @@ export default function App() {
   const selectSparePart = useCallback((row: SparePartSummary) => {
     informProtectedTicketMove(row.ticketId);
     setSelectedRequestId(null);
+    setSelectedFaultTagId(null);
     setSelectedTicketId(row.ticketId);
     setSelectedRowId(row.rowId);
     setTicketInitialTab("spares");
@@ -736,9 +904,22 @@ export default function App() {
 
   const selectSpareRequest = useCallback((row: SpareRequestItemSummary) => {
     setSelectedTicketId(null);
+    setSelectedFaultTagId(null);
     setSelectedRequestId(row.readOnly ? null : row.requestId);
     setSelectedRowId(row.rowId);
   }, []);
+
+  const selectFaultTag = useCallback((row: FaultTagSummary) => {
+    setSelectedTicketId(null);
+    setSelectedRequestId(null);
+    setSelectedFaultTagId(row.faultTagId);
+    setSelectedRowId(row.rowId);
+  }, []);
+
+  const highlightFaultTag = useCallback((row: FaultTagSummary) => {
+    setSelectedRowId(row.rowId);
+    if (selectedFaultTagId) setSelectedFaultTagId(row.faultTagId);
+  }, [selectedFaultTagId]);
 
   const highlightSpareRequest = useCallback((row: SpareRequestItemSummary) => {
     setSelectedRowId(row.rowId);
@@ -762,9 +943,12 @@ export default function App() {
     if (cached) setDashboard(cached);
     setSelectedTicketId(null);
     setSelectedRequestId(null);
+    setSelectedFaultTagId(null);
     setSelectedRowId(null);
+    setSelectedSpareItemIds(new Set());
     setTicket(null);
     setSpareRequest(null);
+    setFaultTag(null);
   }, [spareView, workspacePreferences]);
 
   const reviewProtectedDraft = useCallback((ticketId: string, kind: TicketDraftKind) => {
@@ -833,7 +1017,7 @@ export default function App() {
     setSpareExportOpen(false);
     setToast({
       tone: result.warnings.length ? "info" : "success",
-      message: `Manually sent request registered in Active Requests.${result.warnings.length ? ` ${result.warnings.join(" ")}` : ""}`,
+      message: `New request created at Added to Zeus.${result.warnings.length ? ` ${result.warnings.join(" ")}` : ""}`,
     });
     await loadDashboard("spare-requests", "tt", "desc", "", "active");
   }, [loadDashboard]);
@@ -856,8 +1040,9 @@ export default function App() {
   useGlobalCommands({
     disabled: keyboardDisabled,
     queryDisabled: Boolean(activeJob),
+    syncDisabled: Boolean(activeJob) || !Boolean(bootstrap?.outlook.configuredPathAvailable),
     onSearch: () => searchRef.current?.focus(),
-    onSort: cycleSort,
+    onSync: syncEmail,
     onOperations: () => setOperationsOpen(true),
     onQuery: queryData,
   });
@@ -866,7 +1051,7 @@ export default function App() {
     function onKeyDown(event: KeyboardEvent) {
       if (
         keyboardDisabled
-        || (!selectedTicketId && !selectedRequestId)
+        || (!selectedTicketId && !selectedRequestId && !selectedFaultTagId)
         || event.defaultPrevented
         || event.isComposing
         || event.repeat
@@ -881,7 +1066,7 @@ export default function App() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeDetail, keyboardDisabled, selectedRequestId, selectedTicketId]);
+  }, [closeDetail, keyboardDisabled, selectedFaultTagId, selectedRequestId, selectedTicketId]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -921,6 +1106,13 @@ export default function App() {
           nextRowId = next.rowId;
           highlightSparePart(next);
         }
+      } else if (dashboard.view === "fault-tags") {
+        const index = nextIndex(dashboard.faultTags);
+        const next = dashboard.faultTags[index];
+        if (next) {
+          nextRowId = next.rowId;
+          highlightFaultTag(next);
+        }
       } else {
         const index = nextIndex(spareRequestFilters.filteredRows);
         const next = spareRequestFilters.filteredRows[index];
@@ -942,6 +1134,7 @@ export default function App() {
     dashboard,
     eligiblePartFilters.filteredRows,
     highlightServiceRequest,
+    highlightFaultTag,
     highlightSparePart,
     highlightSpareRequest,
     keyboardDisabled,
@@ -987,13 +1180,13 @@ export default function App() {
 
   return (
     <main
-      className={`app-shell ${selectedTicketId || selectedRequestId ? "with-detail" : ""}`}
+      className={`app-shell ${selectedTicketId || selectedRequestId || selectedFaultTagId ? "with-detail" : ""}`}
       data-workspace={workspace}
       data-spare-view={workspace === "spare-requests" ? spareView : undefined}
     >
       <TopBar
-        version={bootstrap.version || "3.1.6"}
-        detailOpen={Boolean(selectedTicketId || selectedRequestId)}
+        version={bootstrap.version || "3.1.7"}
+        detailOpen={Boolean(selectedTicketId || selectedRequestId || selectedFaultTagId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
         onWorkspaceChange={chooseWorkspace}
@@ -1012,7 +1205,7 @@ export default function App() {
       <JobBanner jobs={jobs} onCancel={stopJob} onOpenActivity={() => setOperationsOpen(true)} />
       <StatsBar dashboard={dashboard} />
       <section className="dashboard-toolbar">
-        {workspace === "spare-requests" && <div className="spare-view-row"><div className="spare-view-switcher" role="tablist" aria-label="Spare Request view">{(["active", "eligible", "completed"] as SpareRequestView[]).map((view) => <button type="button" role="tab" aria-selected={spareView === view} className={spareView === view ? "active" : ""} onClick={() => chooseSpareView(view)} key={view}>{view === "active" ? "Active Requests" : view === "eligible" ? "Eligible SR Parts" : "Completed"}</button>)}</div></div>}
+        {workspace === "spare-requests" && <div className="spare-view-row"><div className="spare-view-switcher" role="tablist" aria-label="Spare Request view">{(["active", "eligible", "fault-tags", "completed"] as SpareRequestView[]).map((view) => <button type="button" role="tab" aria-selected={spareView === view} className={spareView === view ? "active" : ""} onClick={() => chooseSpareView(view)} key={view}>{view === "active" ? "Active Requests" : view === "eligible" ? "Eligible SR Parts" : view === "fault-tags" ? "Fault Tags" : "Completed"}</button>)}</div></div>}
         <div className="dashboard-controls">
           <label className="search-box">
             <span>⌕</span>
@@ -1037,8 +1230,13 @@ export default function App() {
           </div>
           <button type="button" className="toolbar-button compactable-button" aria-label="Check Advanced Search" title="Check Advanced Search" onClick={queryData} disabled={Boolean(activeJob)}><span className="toolbar-icon" aria-hidden="true">↻</span><span className="toolbar-label">Check Advanced Search</span></button>
           {workspace === "spare-requests" && <>
-            <button type="button" className="toolbar-button compactable-button" aria-label="Manual request" title="Manual request" onClick={() => openSpareExport()}><span className="toolbar-icon" aria-hidden="true">+</span><span className="toolbar-label">Manual request</span></button>
+            <button type="button" className="toolbar-button compactable-button" aria-label="New Request" title="New Request" onClick={() => openSpareExport()}><span className="toolbar-icon" aria-hidden="true">+</span><span className="toolbar-label">New Request</span></button>
             <button type="button" className="toolbar-button compactable-button" aria-label="BOM catalog" title="BOM catalog" onClick={() => setBomCatalogOpen(true)}><span className="toolbar-icon" aria-hidden="true">▤</span><span className="toolbar-label">BOM catalog</span></button>
+            {spareView === "active" && <>
+              <button type="button" className="toolbar-button" disabled={!selectedActiveSpareItems.length || selectedActiveSpareItems.some((row) => !row.canAdvance)} title="Advance every selected item exactly one stage" onClick={() => setSpareBulkDialog("advance")}>✓ Confirm next stage ({selectedActiveSpareItems.length})</button>
+              <button type="button" className="toolbar-button" disabled={!selectedActiveSpareItems.length || selectedActiveSpareItems.some((row) => !row.canRollback)} title="Roll back every selected item exactly one stage" onClick={() => setSpareBulkDialog("rollback")}>↶ Roll back last stage</button>
+              <button type="button" className="toolbar-button" disabled={!selectedActiveSpareItems.length || selectedActiveSpareItems.some((row) => row.lifecycleStage !== 4 || Boolean(row.faultTagId))} title="Only Spare replaced items not already in a Fault Tag can be exported" onClick={() => setSpareBulkDialog("fault-tag")}>⬒ Export Fault Tag</button>
+            </>}
             {spareView === "completed" && <button type="button" className="toolbar-button compactable-button danger-text" aria-label="Purge selected" title="Purge selected" disabled={!selectedCompletedItem} onClick={() => setPurgeConfirmationOpen(true)}><span className="toolbar-icon" aria-hidden="true">⌫</span><span className="toolbar-label">Purge selected</span></button>}
           </>}
           {dashboard.workspace === "service-requests" ? (
@@ -1057,7 +1255,7 @@ export default function App() {
               onToggle={eligiblePartFilters.toggle}
               onClear={eligiblePartFilters.clear}
             />
-          ) : (
+          ) : dashboard.view !== "fault-tags" ? (
             <FilterBar
               definitions={spareRequestFilters.definitions}
               selections={spareRequestFilters.selections}
@@ -1065,7 +1263,7 @@ export default function App() {
               onToggle={spareRequestFilters.toggle}
               onClear={spareRequestFilters.clear}
             />
-          )}
+          ) : null}
           <div className="columns-anchor">
             <button type="button" className="toolbar-button compactable-button" aria-label="Fields" title="Fields" aria-expanded={columnsOpen} onClick={() => setColumnsOpen((value) => !value)}><span className="toolbar-icon" aria-hidden="true">⚙</span><span className="toolbar-label">Fields</span></button>
             {columnsOpen && (
@@ -1088,18 +1286,28 @@ export default function App() {
             columns={visibleColumns}
             selectedRowId={selectedRowId}
             draftTicketIds={draftTicketIds}
-            detailOpen={Boolean(selectedTicketId || selectedRequestId)}
+            detailOpen={Boolean(selectedTicketId || selectedRequestId || selectedFaultTagId)}
             onHighlight={highlightSparePart}
             onOpen={(row) => { selectSparePart(row); openSpareExport(row.ticketId, row); }}
+            onCloseDetail={closeDetail}
+          /> : dashboard.view === "fault-tags" ? <FaultTagsGrid
+            rows={dashboard.faultTags}
+            columns={visibleColumns}
+            selectedRowId={selectedRowId}
+            detailOpen={Boolean(selectedTicketId || selectedRequestId || selectedFaultTagId)}
+            onHighlight={highlightFaultTag}
+            onOpen={selectFaultTag}
             onCloseDetail={closeDetail}
           /> : <SpareRequestsGrid
             rows={spareRequestFilters.filteredRows}
             columns={visibleColumns}
             selectedRowId={selectedRowId}
-            detailOpen={Boolean(selectedTicketId || selectedRequestId)}
+            detailOpen={Boolean(selectedTicketId || selectedRequestId || selectedFaultTagId)}
             onHighlight={highlightSpareRequest}
             onOpen={selectSpareRequest}
             onCloseDetail={closeDetail}
+            bulkSelectedRowIds={spareView === "active" ? selectedSpareItemIds : undefined}
+            onToggleBulk={spareView === "active" ? toggleBulkSpareItem : undefined}
           />
         ) : (
           <TicketGrid
@@ -1107,7 +1315,7 @@ export default function App() {
             columns={visibleColumns}
             selectedRowId={selectedRowId}
             draftTicketIds={draftTicketIds}
-            detailOpen={Boolean(selectedTicketId || selectedRequestId)}
+            detailOpen={Boolean(selectedTicketId || selectedRequestId || selectedFaultTagId)}
             onHighlight={highlightServiceRequest}
             onOpen={selectServiceRequest}
             onCloseDetail={closeDetail}
@@ -1133,16 +1341,25 @@ export default function App() {
           onError={reportError}
           onNotice={(message) => setToast({ tone: "success", message })}
         />}
+        {selectedFaultTagId && <FaultTagDetail
+          faultTag={faultTag}
+          loading={ticketLoading}
+          onClose={closeDetail}
+          onChanged={(value) => { setFaultTag(value); if (!value) { setSelectedFaultTagId(null); setSelectedRowId(null); } }}
+          onRefresh={async () => { await loadDashboard(); }}
+          onError={reportError}
+          onNotice={(message) => setToast({ tone: "success", message })}
+        />}
       </section>
       <footer className="command-strip">
         <span>↑↓ Select</span>
         <span>←→ Detail tab</span>
-        <span>Click/Enter Open · Esc Close</span>
+        <span>Double-click/Enter Open · Esc Close</span>
         <span>Ctrl+F Search</span>
-        <span>S Sort</span>
+        <span className={!bootstrap?.outlook.configuredPathAvailable ? "disabled-command" : undefined}>S Fetch + sync email</span>
         <span>M Operations</span>
         <span>R Check source</span>
-        <span className="footer-state">{activeJob ? activeJob.message : <>{draftCount > 0 && <button type="button" className="footer-draft-button" onClick={() => setDraftsOpen(true)}>✎ {draftCount} protected draft{draftCount === 1 ? "" : "s"}</button>}<span>{workspaceConfig.label} · Local database · {bootstrap?.polling.intervalMinutes ?? 15} min Advanced Search check</span></>}</span>
+        <span className="footer-state">{activeJob ? activeJob.message : <>{draftCount > 0 && <button type="button" className="footer-draft-button" onClick={() => setDraftsOpen(true)}>✎ {draftCount} protected draft{draftCount === 1 ? "" : "s"}</button>}{draftUndoAvailable && <button type="button" className="footer-draft-button undo" onClick={() => void undoDraftAction()}>↶ Undo last draft action</button>}<span>{workspaceConfig.label} · Local database · {bootstrap?.polling.intervalMinutes ?? 15} min Advanced Search check</span></>}</span>
       </footer>
       {operationsOpen && (
         <OperationsModal
@@ -1178,11 +1395,14 @@ export default function App() {
       {draftsOpen && <DraftsModal onClose={() => setDraftsOpen(false)} onReview={reviewProtectedDraft} onSaved={(tickets) => { if (selectedTicketId && tickets[selectedTicketId]) setTicket(tickets[selectedTicketId]); loadDashboard().catch(reportError); }} onError={reportError} onNotice={(message) => setToast({ tone: "success", message })} />}
       {bomCatalogOpen && <BomCatalogModal onClose={() => setBomCatalogOpen(false)} onSaved={() => setToast({ tone: "success", message: "BOM catalog saved locally." })} onError={reportError} />}
       {purgeConfirmationOpen && selectedCompletedItem && <ConfirmationDialog title={`Purge ${selectedCompletedItem.itemId}?`} message="This permanently removes the completed item and its retained email from the local archive. This action cannot be undone." confirmLabel="Permanently purge" tone="danger" onCancel={() => setPurgeConfirmationOpen(false)} onConfirm={() => void purgeSelectedCompleted()} />}
-      {overdueMaintenanceWindow && !settingsOpen && !operationsOpen && !globalDataOpen && !bomCatalogOpen && !draftsOpen && !spareExportOpen && !purgeConfirmationOpen && !spareEmailReminder && <MaintenanceWindowPrompt
-        ticket={overdueMaintenanceWindow}
+      {reloadUndoPrompt && <ConfirmationDialog title="Reload and lose Undo?" message="Reloading now permanently removes the one-time Undo for your last Save or Discard. Existing protected drafts remain in browser storage." confirmLabel="Reload anyway" tone="danger" onCancel={() => setReloadUndoPrompt(false)} onConfirm={() => { clearDraftUndo(); window.location.reload(); }} />}
+      {(spareBulkDialog === "advance" || spareBulkDialog === "rollback") && <SpareLifecycleBulkDialog rows={selectedActiveSpareItems} action={spareBulkDialog} busy={spareBulkBusy} onCancel={() => setSpareBulkDialog(null)} onConfirm={(emailOverrideConfirmed, note) => void runBulkSpareLifecycle(spareBulkDialog, emailOverrideConfirmed, note)} />}
+      {spareBulkDialog === "fault-tag" && <FaultTagExportDialog rows={selectedActiveSpareItems} busy={spareBulkBusy} onCancel={() => setSpareBulkDialog(null)} onConfirm={(selections, returnSite) => void createFaultTagFromSelection(selections, returnSite)} />}
+      {overdueMaintenanceWindows.length > 0 && !settingsOpen && !operationsOpen && !globalDataOpen && !bomCatalogOpen && !draftsOpen && !spareExportOpen && !purgeConfirmationOpen && !spareEmailReminder && <MaintenanceWindowPrompt
+        tickets={overdueMaintenanceWindows}
         busy={maintenanceWindowBusy}
-        onLater={() => dismissMaintenanceWindow(overdueMaintenanceWindow)}
-        onOutcome={(successful) => void recordMaintenanceWindowOutcome(overdueMaintenanceWindow, successful)}
+        onClose={() => overdueMaintenanceWindows.forEach(dismissMaintenanceWindow)}
+        onSubmit={(decisions) => void recordMaintenanceWindowBatch(decisions)}
       />}
       {spareEmailReminder && !spareExportOpen && <Modal
         title="Spare Request created"

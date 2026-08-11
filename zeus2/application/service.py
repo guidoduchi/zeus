@@ -22,6 +22,14 @@ from ..excel_export import (
     restore_pendings_backup,
 )
 from ..excel_import import read_closed, validate_closed_against_index
+from ..fault_tags import (
+    FaultTagError,
+    create_fault_tag_record,
+    fault_tag_history,
+    fault_tag_status,
+    next_fault_tag_id,
+    normalize_return_site,
+)
 from ..mail import fetch_and_commit_outlook, synchronize_staged_email
 from ..mop import generate_mop
 from ..reconcile import sync_newest_advanced_search
@@ -53,6 +61,7 @@ from ..spare_requests import (
     create_request_record,
     LIFECYCLE_STAGE_LABELS,
     lifecycle_stage,
+    lifecycle_effect_suppressed,
     next_request_id,
     normalize_profile,
     normalize_report_date,
@@ -137,6 +146,8 @@ class ApplicationService:
         self._schedule_wakeup = threading.Event()
         self._scheduler: threading.Thread | None = None
         self._next_query_at: float | None = None
+        self._next_email_fetch_at: float | None = None
+        self._next_email_sync_at: float | None = None
         self._migration_pending = False
         self.latest_startup = StartupResult()
 
@@ -199,26 +210,56 @@ class ApplicationService:
     def _schedule_loop(self) -> None:
         self._reset_schedule()
         while not self._stopping.is_set():
-            minutes = int(
-                self.store.config.get("advanced_search", {}).get(
-                    "poll_interval_minutes", 15
+            deadlines = [
+                deadline
+                for deadline in (
+                    self._next_query_at,
+                    self._next_email_fetch_at,
+                    self._next_email_sync_at,
                 )
+                if deadline is not None
+            ]
+            remaining = (
+                max(0.0, min(deadlines) - time.monotonic()) if deadlines else 30.0
             )
-            if minutes == 0:
-                self._next_query_at = None
-                self._schedule_wakeup.wait(30.0)
-                self._schedule_wakeup.clear()
-                continue
-            if self._next_query_at is None:
-                self._next_query_at = time.monotonic() + minutes * 60
-            remaining = max(0.0, self._next_query_at - time.monotonic())
             if self._schedule_wakeup.wait(min(remaining, 30.0)):
                 self._schedule_wakeup.clear()
                 self._reset_schedule()
                 continue
-            if time.monotonic() >= self._next_query_at:
+            now = time.monotonic()
+            if self._next_query_at is not None and now >= self._next_query_at:
                 self._submit_scheduled_query()
-                self._reset_schedule()
+                self._next_query_at = self._next_deadline(
+                    int(
+                        self.store.config.get("advanced_search", {}).get(
+                            "poll_interval_minutes", 15
+                        )
+                    )
+                )
+            if (
+                self._next_email_fetch_at is not None
+                and now >= self._next_email_fetch_at
+            ):
+                self.submit_job("email-fetch", {"scheduled": True})
+                self._next_email_fetch_at = self._next_deadline(
+                    int(
+                        self.store.config.get("email", {}).get(
+                            "fetch_interval_minutes", 60
+                        )
+                    )
+                )
+            if (
+                self._next_email_sync_at is not None
+                and now >= self._next_email_sync_at
+            ):
+                self.submit_job("email-sync", {"scheduled": True})
+                self._next_email_sync_at = self._next_deadline(
+                    int(
+                        self.store.config.get("email", {}).get(
+                            "sync_interval_minutes", 60
+                        )
+                    )
+                )
 
     def _submit_scheduled_query(self) -> dict[str, Any]:
         """Use the same Advanced Search-only query path for the timer."""
@@ -233,14 +274,41 @@ class ApplicationService:
         return self.submit_job("query", {"scheduled": True})
 
     def _reset_schedule(self) -> None:
-        minutes = int(
-            self.store.config.get("advanced_search", {}).get(
-                "poll_interval_minutes", 15
-            )
+        config = self.store.config
+        self._next_query_at = self._next_deadline(
+            int(
+                config.get("advanced_search", {}).get(
+                    "poll_interval_minutes", 15
+                )
+            ),
+            startup_only=False,
         )
-        self._next_query_at = (
-            None if minutes == 0 else time.monotonic() + minutes * 60
+        email = config.get("email", {})
+        outlook_path = config.get("paths", {}).get("outlook_store_path")
+        email_available = bool(
+            outlook_path and Path(str(outlook_path)).is_file()
         )
+        self._next_email_fetch_at = (
+            self._next_deadline(int(email.get("fetch_interval_minutes", 60)))
+            if email_available
+            else None
+        )
+        self._next_email_sync_at = (
+            self._next_deadline(int(email.get("sync_interval_minutes", 60)))
+            if email_available and email.get("sync_mode") == "scheduled"
+            else None
+        )
+
+    @staticmethod
+    def _next_deadline(
+        minutes: int, *, startup_only: bool = True
+    ) -> float | None:
+        # Email's -1 value means startup only. Advanced Search has no -1
+        # setting, but treating any non-positive value as unscheduled makes the
+        # timer robust to a manually repaired configuration file.
+        if minutes <= 0 or (startup_only and minutes == -1):
+            return None
+        return time.monotonic() + minutes * 60
 
     def bootstrap_payload(self) -> dict[str, Any]:
         outlook_path = self.store.config.get("paths", {}).get("outlook_store_path")
@@ -364,6 +432,25 @@ class ApplicationService:
                     )
                 ),
                 "enabled": self._next_query_at is not None,
+            },
+            "emailSchedule": {
+                "fetchIntervalMinutes": int(
+                    self.store.config.get("email", {}).get(
+                        "fetch_interval_minutes", 60
+                    )
+                ),
+                "syncMode": str(
+                    self.store.config.get("email", {}).get(
+                        "sync_mode", "after_fetch"
+                    )
+                ),
+                "syncIntervalMinutes": int(
+                    self.store.config.get("email", {}).get(
+                        "sync_interval_minutes", 60
+                    )
+                ),
+                "fetchScheduled": self._next_email_fetch_at is not None,
+                "syncScheduled": self._next_email_sync_at is not None,
             },
             "appearance": {
                 "fontScale": str(
@@ -539,7 +626,12 @@ class ApplicationService:
         direction = direction or default_directions[sort]
         if direction not in {"asc", "desc"}:
             raise ValidationError(f"Unsupported dashboard sort direction: {direction}")
-        if workspace == "spare-requests" and view not in {"active", "eligible", "completed"}:
+        if workspace == "spare-requests" and view not in {
+            "active",
+            "eligible",
+            "completed",
+            "fault-tags",
+        }:
             raise ValidationError(f"Unsupported Spare Requests view: {view}")
         revision = self.dataset_revision
         cache_key = (
@@ -604,7 +696,7 @@ class ApplicationService:
             request = self.store.read_spare_request(request_id)
         except (StoreError, ValueError) as exc:
             raise NotFoundError(f"Spare Request {request_id} was not found") from exc
-        return serialize_spare_request_detail(request)
+        return serialize_spare_request_detail(request, self.store.config)
 
     def user_profile(self) -> dict[str, Any]:
         try:
@@ -1102,7 +1194,7 @@ class ApplicationService:
             self._operation_lock.release()
 
     def register_spare_request(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Register a request that the user already prepared and sent externally."""
+        """Create a tracked request without claiming that an email was sent."""
 
         if not self._operation_lock.acquire(blocking=False):
             raise BusyError("Another Zeus operation is changing data")
@@ -1131,13 +1223,11 @@ class ApplicationService:
                 export_path=None,
                 subject=subject,
             )
-            request["creation_method"] = "manual_confirmation"
-            request["request_sent_at"] = request.get("created_at") or iso_now()
-            request["request_sent_source"] = "manual"
-            request["history"][0]["action"] = "request-registered-manually"
-            request["history"][0]["summary"]["sent_outside_zeus"] = True
+            request["creation_method"] = "zeus_create"
+            request["history"][0]["action"] = "request-created"
+            request["history"][0]["summary"]["exported"] = False
             with self.store.transaction(
-                "spare-request-register-manual",
+                "spare-request-create",
                 {"request_id": request_id, "tt": tt, "items": len(request["items"])},
             ) as staging:
                 self.store.write_spare_request(staging, request)
@@ -1148,11 +1238,11 @@ class ApplicationService:
                     request_id=request_id,
                     submitted=True,
                 )
-            self._touch_data("spare-request-register-manual")
+            self._touch_data("spare-request-create")
             warnings = []
             if source == "manual" and not ticket_exists:
                 warnings.append(
-                    f"TT {tt} is not in local Service Requests. The manually sent request was registered with that warning recorded."
+                    f"TT {tt} is not in local Service Requests. The new request was created with that warning recorded."
                 )
             return {
                 "request": self.spare_request(request_id),
@@ -1213,76 +1303,327 @@ class ApplicationService:
         target_stage: int,
         expected_revision: str,
     ) -> dict[str, Any]:
+        current = self.store.read_spare_request(request_id)
+        if not expected_revision or spare_request_revision(current) != expected_revision:
+            raise ConflictError("This Spare Request changed. Reload before advancing it.")
+        item = self._find_request_item(current, item_id)
+        reached = lifecycle_stage(item, current)
+        if target_stage != reached + 1:
+            raise ValidationError(f"Advance one lifecycle stage at a time from {reached}")
+        result = self.bulk_spare_lifecycle(
+            item_ids=[item_id], action="advance", expected_revisions={request_id: expected_revision}
+        )
+        if self.store.spare_request_file(request_id).is_file():
+            result["request"] = self.spare_request(request_id)
+        else:
+            result["request"] = None
+        return result
+
+    @staticmethod
+    def _remove_stage_suppressions(target: dict[str, Any], stage: int) -> None:
+        target["lifecycle_suppressions"] = [
+            entry
+            for entry in target.get("lifecycle_suppressions", [])
+            if not isinstance(entry, dict) or int(entry.get("stage") or -1) != stage
+        ]
+
+    @staticmethod
+    def _suppress_stage(
+        target: dict[str, Any], *, stage: int, message_key: Any, note: str
+    ) -> None:
+        key = str(message_key or "")
+        if not key:
+            raise ValidationError("Email-backed rollback is missing its message identity")
+        if not lifecycle_effect_suppressed(target, stage, key):
+            target.setdefault("lifecycle_suppressions", []).append(
+                {
+                    "stage": stage,
+                    "message_key": key,
+                    "suppressed_at": iso_now(),
+                    "note": note,
+                }
+            )
+
+    def bulk_spare_lifecycle(
+        self,
+        *,
+        item_ids: list[str],
+        action: str,
+        expected_revisions: dict[str, str] | None = None,
+        email_override_confirmed: bool = False,
+        note: str = "",
+    ) -> dict[str, Any]:
+        normalized_action = str(action or "").strip().casefold()
+        if normalized_action not in {"advance", "rollback"}:
+            raise ValidationError("Lifecycle action must be advance or rollback")
+        clean_ids = list(dict.fromkeys(str(value or "").strip() for value in item_ids))
+        clean_ids = [value for value in clean_ids if value]
+        if not clean_ids:
+            raise ValidationError("Choose at least one active item")
         if not self._operation_lock.acquire(blocking=False):
             raise BusyError("Another Zeus operation is changing data")
         try:
-            current = self.store.read_spare_request(request_id)
-            if not expected_revision or spare_request_revision(current) != expected_revision:
-                raise ConflictError("This Spare Request changed. Reload before advancing it.")
-            current_item = self._find_request_item(current, item_id)
-            reached = lifecycle_stage(current_item, current)
-            if target_stage != reached + 1 or not 1 <= target_stage < len(LIFECYCLE_STAGE_LABELS):
-                raise ValidationError(
-                    f"Advance one lifecycle stage at a time from stage {reached}"
+            requests = list(self.store.iter_spare_requests())
+            pairs = {
+                str(item.get("item_id")): (request, item)
+                for request in requests
+                for item in request.get("items", [])
+                if item.get("item_id") in clean_ids
+            }
+            missing = sorted(set(clean_ids) - set(pairs))
+            if missing:
+                raise ValidationError("Active items were not found: " + ", ".join(missing))
+            for request_id, revision in (expected_revisions or {}).items():
+                request = next(
+                    (value for value in requests if value.get("request_id") == request_id),
+                    None,
                 )
+                if request is None or spare_request_revision(request) != revision:
+                    raise ConflictError("A selected Spare Request changed. Reload and try again.")
+
             timestamp = iso_now()
+            selected_ids = set(clean_ids)
+            for request in requests:
+                request_items = list(request.get("items") or [])
+                request_item_ids = {
+                    str(item.get("item_id") or "")
+                    for item in request_items
+                    if item.get("item_id")
+                }
+                selected_request_ids = request_item_ids & selected_ids
+                if not selected_request_ids:
+                    continue
+                stages_by_item = {
+                    str(item.get("item_id") or ""): lifecycle_stage(item, request)
+                    for item in request_items
+                    if item.get("item_id")
+                }
+                shared_stage_change = (
+                    normalized_action == "advance"
+                    and any(
+                        stages_by_item[item_id] == 0
+                        for item_id in selected_request_ids
+                    )
+                ) or (
+                    normalized_action == "rollback"
+                    and any(
+                        stages_by_item[item_id] == 1
+                        for item_id in selected_request_ids
+                    )
+                )
+                if (
+                    normalized_action == "rollback"
+                    and shared_stage_change
+                    and any(stage != 1 for stage in stages_by_item.values())
+                ):
+                    raise ValidationError(
+                        "Roll every later-stage item back to Request email sent before "
+                        f"rolling back the shared email stage in request {request.get('request_id')}"
+                    )
+                if shared_stage_change and selected_request_ids != request_item_ids:
+                    raise ValidationError(
+                        "Request email stage is shared; select all active items in "
+                        f"request {request.get('request_id')}"
+                    )
+            plans: list[dict[str, Any]] = []
+            for item_id in clean_ids:
+                request, item = pairs[item_id]
+                stage = lifecycle_stage(item, request)
+                target = stage + 1 if normalized_action == "advance" else stage
+                if normalized_action == "advance" and target >= len(LIFECYCLE_STAGE_LABELS):
+                    raise ValidationError(f"{item_id} is already complete")
+                if normalized_action == "rollback" and stage == 0:
+                    raise ValidationError(f"{item_id} is already at the first lifecycle stage")
+                if normalized_action == "advance" and target == 1:
+                    raise ValidationError(
+                        f"{item_id} needs detected outbound email evidence; "
+                        "Request email sent cannot be confirmed manually"
+                    )
+                if normalized_action == "advance" and target == 2 and not (
+                    request.get("spare_sr") and item.get("rma")
+                ):
+                    raise ValidationError(
+                        f"{item_id} needs both the seven-digit Spare SR and its RMA first"
+                    )
+                if normalized_action == "advance" and target == 5:
+                    raise ValidationError(
+                        f"{item_id} needs matching warehouse email evidence; this stage cannot be confirmed manually"
+                    )
+                if normalized_action == "rollback":
+                    source = {
+                        1: request.get("request_sent_source"),
+                        2: item.get("attendance_source"),
+                        3: item.get("dispatch_source"),
+                        4: item.get("replacement_confirmation_source"),
+                        5: item.get("warehouse_confirmation_source"),
+                        6: item.get("completion_confirmation_source"),
+                    }.get(stage)
+                    message_key = {
+                        1: request.get("request_sent_message_key"),
+                        2: item.get("attendance_message_key"),
+                        3: item.get("dispatch_message_key"),
+                        5: item.get("warehouse_message_key"),
+                    }.get(stage)
+                    email_backed = str(source or "").casefold().startswith("email")
+                    if email_backed and (not email_override_confirmed or not note.strip()):
+                        raise ValidationError(
+                            "Rolling back an email-backed stage requires the second confirmation and an audit note"
+                        )
+                    plans.append(
+                        {
+                            "item_id": item_id,
+                            "request_id": request["request_id"],
+                            "stage": stage,
+                            "email_backed": email_backed,
+                            "message_key": message_key,
+                        }
+                    )
+                else:
+                    plans.append(
+                        {
+                            "item_id": item_id,
+                            "request_id": request["request_id"],
+                            "stage": target,
+                        }
+                    )
+
+            completed_ids: set[str] = set()
+            closed_path = None
+            if normalized_action == "advance" and any(plan["stage"] == 6 for plan in plans):
+                closed_path = self._closed_workbook_path(required=True)
+                assert closed_path is not None
+                for plan in plans:
+                    if plan["stage"] != 6:
+                        continue
+                    request, item = pairs[plan["item_id"]]
+                    append_archived_item(
+                        closed_path,
+                        request,
+                        {**item, "completion_confirmed_at": timestamp},
+                        reason="returned",
+                        note=note.strip() or "Warehouse evidence confirmed by user",
+                    )
+                    completed_ids.add(plan["item_id"])
+
             with self.store.transaction(
-                "spare-request-lifecycle-advance",
+                f"spare-lifecycle-{normalized_action}",
                 {
-                    "request_id": request_id,
-                    "item_id": item_id,
-                    "stage": target_stage,
+                    "items": clean_ids,
+                    "email_override": email_override_confirmed,
+                    "note": note.strip() or None,
                 },
             ) as staging:
-                request = self.store.read_spare_request(request_id, staging)
-                item = self._find_request_item(request, item_id)
-                if lifecycle_stage(item, request) != reached:
-                    raise ConflictError("This lifecycle changed. Reload before advancing it.")
-                if target_stage == 1:
-                    request["request_sent_at"] = request.get("request_sent_at") or timestamp
-                    request["request_sent_source"] = request.get("request_sent_source") or "manual"
-                elif target_stage == 2:
-                    if not request.get("spare_sr") or not item.get("rma"):
-                        raise ValidationError(
-                            "Stage 2 requires both the confirmed 7-digit Spare SR and this unit's RMA. Save them first."
+                staged_requests = {
+                    request_id: self.store.read_spare_request(request_id, staging)
+                    for request_id in {plan["request_id"] for plan in plans}
+                }
+                for plan in plans:
+                    request = staged_requests[plan["request_id"]]
+                    item = self._find_request_item(request, plan["item_id"])
+                    stage = int(plan["stage"])
+                    if normalized_action == "advance":
+                        target = request if stage == 1 else item
+                        self._remove_stage_suppressions(target, stage)
+                        if stage == 1:
+                            request["request_sent_at"] = timestamp
+                            request["request_sent_source"] = "manual"
+                            request["request_sent_message_key"] = None
+                        elif stage == 2:
+                            item["attendance_confirmed_at"] = timestamp
+                            item["attendance_source"] = "manual"
+                            item["attendance_message_key"] = None
+                        elif stage == 3:
+                            item["dispatch_at"] = timestamp
+                            item["dispatch_source"] = "manual"
+                            item["dispatch_message_key"] = None
+                        elif stage == 4:
+                            item["replacement_confirmed_at"] = timestamp
+                            item["replacement_confirmation_source"] = "manual"
+                        elif stage == 6:
+                            item["completion_confirmed_at"] = timestamp
+                            item["completion_confirmation_source"] = "manual"
+                    else:
+                        if plan["email_backed"]:
+                            staged_target = request if stage == 1 else item
+                            self._suppress_stage(
+                                staged_target,
+                                stage=stage,
+                                message_key=plan["message_key"],
+                                note=note.strip(),
+                            )
+                        elif stage == 1:
+                            request["request_sent_at"] = None
+                            request["request_sent_source"] = None
+                            request["request_sent_message_key"] = None
+                        elif stage == 2:
+                            item["attendance_confirmed_at"] = None
+                            item["attendance_source"] = None
+                            item["attendance_message_key"] = None
+                        elif stage == 3:
+                            item["dispatch_at"] = None
+                            item["dispatch_source"] = None
+                            item["dispatch_message_key"] = None
+                        elif stage == 4:
+                            item["replacement_confirmed_at"] = None
+                            item["replacement_confirmation_source"] = None
+                        elif stage == 5:
+                            item["warehouse_candidate_at"] = None
+                            item["warehouse_confirmation_source"] = None
+                        elif stage == 6:
+                            item["completion_confirmed_at"] = None
+                            item["completion_confirmation_source"] = None
+                    request_history(
+                        request,
+                        f"lifecycle-stage-{normalized_action}",
+                        {
+                            "itemId": plan["item_id"],
+                            "stage": stage,
+                            "label": LIFECYCLE_STAGE_LABELS[stage],
+                            "emailOverride": bool(plan.get("email_backed")),
+                            "note": note.strip() or None,
+                        },
+                    )
+
+                affected_tags = list(self.store.iter_fault_tags(staging))
+                for record in affected_tags:
+                    changed = False
+                    for member in record.get("members", []):
+                        if member.get("item_id") in completed_ids:
+                            member["user_confirmed_at"] = timestamp
+                            changed = True
+                    if changed:
+                        fault_tag_history(
+                            record,
+                            "members-user-confirmed",
+                            {"items": sorted(completed_ids)},
                         )
-                    item["attendance_confirmed_at"] = (
-                        item.get("attendance_confirmed_at") or timestamp
-                    )
-                    item["attendance_source"] = item.get("attendance_source") or "manual"
-                elif target_stage == 3:
-                    item["dispatch_at"] = item.get("dispatch_at") or timestamp
-                    item["dispatch_source"] = item.get("dispatch_source") or "manual"
-                elif target_stage == 4:
-                    item["fault_tag_generated_at"] = (
-                        item.get("fault_tag_generated_at") or timestamp
-                    )
-                    item["fault_tag_generated_source"] = (
-                        item.get("fault_tag_generated_source") or "manual"
-                    )
-                elif target_stage == 5:
-                    item["fault_tag_sent_at"] = item.get("fault_tag_sent_at") or timestamp
-                    item["fault_tag_sent_source"] = item.get("fault_tag_sent_source") or "manual"
-                elif target_stage == 6:
-                    item["warehouse_confirmed_at"] = (
-                        item.get("warehouse_confirmed_at") or timestamp
-                    )
-                    item["warehouse_confirmation_source"] = (
-                        item.get("warehouse_confirmation_source") or "manual"
-                    )
-                request_history(
-                    request,
-                    "lifecycle-stage-confirmed",
-                    {
-                        "itemId": item_id,
-                        "stage": target_stage,
-                        "label": LIFECYCLE_STAGE_LABELS[target_stage],
-                        "source": "manual",
-                    },
-                )
-                self.store.write_spare_request(staging, request)
-            self._touch_data("spare-request-lifecycle-advance")
-            return {"request": self.spare_request(request_id)}
+                        self.store.write_fault_tag(staging, record)
+
+                for request_id, request in staged_requests.items():
+                    request["items"] = [
+                        item
+                        for item in request.get("items", [])
+                        if item.get("item_id") not in completed_ids
+                    ]
+                    if request["items"]:
+                        self.store.write_spare_request(staging, request)
+                    else:
+                        self.store.delete_spare_request(request_id, staging)
+                for record in affected_tags:
+                    if record.get("fault_tag_id") in set(
+                        self.store.iter_fault_tag_ids(staging)
+                    ) and fault_tag_status(record) == "completed":
+                        self.store.archive_fault_tag(record["fault_tag_id"], staging)
+
+            if completed_ids:
+                self.store.purge_state_backups_for_closed_tickets()
+            self._touch_data(f"spare-lifecycle-{normalized_action}")
+            return {
+                "action": normalized_action,
+                "items": clean_ids,
+                "completed": sorted(completed_ids),
+                "closedPath": str(closed_path) if closed_path else None,
+            }
         finally:
             self._operation_lock.release()
 
@@ -1395,13 +1736,6 @@ class ApplicationService:
                     ):
                         raise ValidationError(f"Spare SR {incoming_sr} already belongs to another active request")
                     request["spare_sr"] = incoming_sr
-                    if incoming_sr:
-                        timestamp = iso_now()
-                        request["request_sent_at"] = request.get("request_sent_at") or timestamp
-                        request["request_sent_source"] = request.get("request_sent_source") or "manual-inferred"
-                        for item in request.get("items", []):
-                            item["attendance_confirmed_at"] = item.get("attendance_confirmed_at") or timestamp
-                            item["attendance_source"] = item.get("attendance_source") or "manual"
                 for update in item_updates:
                     if not isinstance(update, dict):
                         raise ValidationError("Item updates must be objects")
@@ -1427,12 +1761,6 @@ class ApplicationService:
                         if incoming_rma and incoming_rma in archived_rmas:
                             raise ValidationError(f"RMA {incoming_rma} already belongs to a completed item")
                         item["rma"] = incoming_rma
-                        if incoming_rma:
-                            timestamp = iso_now()
-                            request["request_sent_at"] = request.get("request_sent_at") or timestamp
-                            request["request_sent_source"] = request.get("request_sent_source") or "manual-inferred"
-                            item["attendance_confirmed_at"] = item.get("attendance_confirmed_at") or timestamp
-                            item["attendance_source"] = item.get("attendance_source") or "manual"
                     if "deliveredBom" in update:
                         incoming_bom = str(update.get("deliveredBom") or "").strip() or None
                         if item.get("delivered_bom") and incoming_bom != item.get("delivered_bom"):
@@ -1558,7 +1886,49 @@ class ApplicationService:
         finally:
             self._operation_lock.release()
 
-    def export_spare_return(self, selections: list[dict[str, Any]]) -> dict[str, Any]:
+    @staticmethod
+    def _serialize_fault_tag(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "faultTagId": record.get("fault_tag_id"),
+            "status": fault_tag_status(record),
+            "returnSite": deepcopy(record.get("return_site") or {}),
+            "mixedSourceSites": bool(record.get("mixed_source_sites")),
+            "members": [
+                {
+                    "itemId": member.get("item_id"),
+                    "requestId": member.get("request_id"),
+                    "ticketId": member.get("tt"),
+                    "spareSr": member.get("spare_sr"),
+                    "rma": member.get("rma"),
+                    "condition": member.get("condition"),
+                    "sourceSite": member.get("source_site"),
+                    "requestedBom": member.get("requested_bom"),
+                    "newSn": member.get("new_sn"),
+                    "warehouseEvidenceAt": member.get("warehouse_evidence_at"),
+                    "userConfirmedAt": member.get("user_confirmed_at"),
+                }
+                for member in record.get("members", [])
+            ],
+            "export": deepcopy(record.get("export") or {}),
+            "email": deepcopy(record.get("email") or {}),
+            "lockedAt": record.get("locked_at"),
+            "locked": bool(record.get("locked_at")),
+            "createdAt": record.get("created_at"),
+            "updatedAt": record.get("updated_at"),
+        }
+
+    def fault_tag(self, fault_tag_id: str) -> dict[str, Any]:
+        try:
+            return self._serialize_fault_tag(self.store.read_fault_tag(fault_tag_id))
+        except StoreError as exc:
+            raise NotFoundError(str(exc)) from exc
+
+    def export_spare_return(
+        self,
+        selections: list[dict[str, Any]],
+        *,
+        return_site: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(selections, list) or not selections:
             raise ValidationError("Choose at least one RMA for the return workbook")
         if not self._operation_lock.acquire(blocking=False):
@@ -1573,6 +1943,11 @@ class ApplicationService:
                 for item in request.get("items", [])
             }
             prepared: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+            active_members = {
+                str(member.get("item_id"))
+                for record in self.store.iter_fault_tags()
+                for member in record.get("members", [])
+            }
             for selection in selections:
                 item_id = str(selection.get("itemId") or "")
                 pair = by_item.get(item_id)
@@ -1582,18 +1957,122 @@ class ApplicationService:
                 if not item.get("rma"):
                     raise ValidationError(f"Item {item_id} has no RMA")
                 condition = str(selection.get("condition") or "Faulty").title()
+                if condition not in {"Faulty", "New"}:
+                    raise ValidationError("Return condition must be Faulty or New")
+                if lifecycle_stage(item, request) != 4:
+                    raise ValidationError(
+                        f"{item_id} must be at Spare replaced before choosing its return condition"
+                    )
+                if item_id in active_members:
+                    raise ValidationError(
+                        f"{item_id} already belongs to an active Fault Tag; additions require a new Fault Tag"
+                    )
                 prepared.append((request, item, condition))
+            source_sites = {
+                (
+                    str(request.get("profile", {}).get("site_code") or "").strip(),
+                    str(request.get("profile", {}).get("site_address") or "").strip(),
+                    str(request.get("profile", {}).get("cloud") or "").strip(),
+                )
+                for request, _, _ in prepared
+            }
+            if len(source_sites) > 1 and not return_site:
+                raise ValidationError(
+                    "Selected items come from different sites. Choose the actual return site."
+                )
+            if return_site:
+                actual_site = normalize_return_site(return_site)
+            else:
+                site_code, site_address, cloud = next(iter(source_sites))
+                first_profile = prepared[0][0].get("profile", {})
+                actual_site = normalize_return_site(
+                    {
+                        "code": site_code,
+                        "name": first_profile.get("site_name"),
+                        "address": site_address,
+                        "cloud": cloud,
+                    }
+                )
+            fault_tag_id = next_fault_tag_id(
+                [
+                    *self.store.iter_fault_tag_ids(),
+                    *self.store.iter_fault_tag_ids(completed=True),
+                ]
+            )
             result = export_return_workbook(
                 self._spare_template("spare_return_template_path", "Faulty Return XLSX"),
                 self._spare_export_root(),
                 prepared,
+                fault_tag_id=fault_tag_id,
+                return_site=actual_site,
             )
             timestamp = iso_now()
             selected = {item.get("item_id"): condition for _, item, condition in prepared}
+            record = create_fault_tag_record(
+                fault_tag_id=fault_tag_id,
+                members=[
+                    {
+                        "item_id": item.get("item_id"),
+                        "request_id": request.get("request_id"),
+                        "tt": request.get("tt"),
+                        "spare_sr": request.get("spare_sr"),
+                        "rma": item.get("rma"),
+                        "condition": condition,
+                        "source_site": request.get("profile", {}).get("site_code"),
+                        "requested_bom": item.get("requested_bom"),
+                        "new_sn": item.get("new_sn"),
+                        # Re-export after a member completes needs only the
+                        # immutable workbook facts, not an O(n²) copy of the
+                        # entire multi-item request in every member.
+                        "request_snapshot": {
+                            "request_id": request.get("request_id"),
+                            "tt": request.get("tt"),
+                            "spare_sr": request.get("spare_sr"),
+                            "profile": deepcopy(request.get("profile") or {}),
+                        },
+                        "item_snapshot": {
+                            key: deepcopy(item.get(key))
+                            for key in (
+                                "item_id",
+                                "rma",
+                                "requested_bom",
+                                "delivered_bom",
+                                "requested_description",
+                                "part",
+                                "model",
+                                "device",
+                                "slot",
+                                "new_sn",
+                                "report_date",
+                            )
+                        },
+                    }
+                    for request, item, condition in prepared
+                ],
+                return_site=actual_site,
+                export={
+                    "filename": result["filename"],
+                    "path": result["path"],
+                    "subject": result["subject"],
+                    "revisions": [
+                        {
+                            "filename": result["filename"],
+                            "path": result["path"],
+                            "created_at": timestamp,
+                        }
+                    ],
+                },
+                created_at=timestamp,
+            )
             with self.store.transaction(
-                "spare-return-export",
-                {"items": sorted(selected), "filename": result["filename"]},
+                "fault-tag-create",
+                {
+                    "fault_tag_id": fault_tag_id,
+                    "items": sorted(selected),
+                    "filename": result["filename"],
+                },
             ) as staging:
+                self.store.write_fault_tag(staging, record)
                 for request_id in {request["request_id"] for request, _, _ in prepared}:
                     request = self.store.read_spare_request(request_id, staging)
                     affected = []
@@ -1602,40 +2081,160 @@ class ApplicationService:
                         if condition is None:
                             continue
                         item["return_condition"] = condition
-                        item["return_exported_at"] = timestamp
-                        item["return_export_filename"] = result["filename"]
-                        item["return_batch_id"] = result["filename"]
-                        item["fault_tag_generated_at"] = (
-                            item.get("fault_tag_generated_at") or timestamp
-                        )
-                        item["fault_tag_generated_source"] = (
-                            item.get("fault_tag_generated_source") or "zeus_export"
-                        )
+                        if fault_tag_id not in item.setdefault("fault_tag_ids", []):
+                            item["fault_tag_ids"].append(fault_tag_id)
                         affected.append(item["item_id"])
-                    request["export"].setdefault("returns", []).append(
-                        {
-                            "filename": result["filename"],
-                            "path": result["path"],
-                            "subject": result["subject"],
-                            "created_at": timestamp,
-                            "item_ids": affected,
-                        }
-                    )
                     request_history(
                         request,
-                        "return-exported",
-                        {"filename": result["filename"], "items": affected},
+                        "fault-tag-linked",
+                        {
+                            "faultTagId": fault_tag_id,
+                            "filename": result["filename"],
+                            "items": affected,
+                        },
                     )
                     self.store.write_spare_request(staging, request)
             persisted = True
-            self._touch_data("spare-return-export")
-            return result
+            self._touch_data("fault-tag-create")
+            return {
+                **result,
+                "faultTagId": fault_tag_id,
+                "faultTag": self.fault_tag(fault_tag_id),
+            }
+        except (FaultTagError, SpareRequestError) as exc:
+            if result is not None and not persisted:
+                exported_path = str(result.get("path") or "").strip()
+                if exported_path:
+                    Path(exported_path).unlink(missing_ok=True)
+            raise ValidationError(str(exc)) from exc
         except Exception:
             if result is not None and not persisted:
                 exported_path = str(result.get("path") or "").strip()
                 if exported_path:
                     Path(exported_path).unlink(missing_ok=True)
             raise
+        finally:
+            self._operation_lock.release()
+
+    def reexport_fault_tag(self, fault_tag_id: str) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        result: dict[str, Any] | None = None
+        persisted = False
+        try:
+            record = self.store.read_fault_tag(fault_tag_id, completed=False)
+            requests = {request["request_id"]: request for request in self.store.iter_spare_requests()}
+            selections: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+            for member in record.get("members", []):
+                request = requests.get(member.get("request_id"))
+                if request is None and isinstance(member.get("request_snapshot"), dict):
+                    request = deepcopy(member["request_snapshot"])
+                if request is None:
+                    raise ValidationError(
+                        "This legacy Fault Tag has no reusable request snapshot"
+                    )
+                item = next(
+                    (
+                        value
+                        for value in request.get("items", [])
+                        if value.get("item_id") == member.get("item_id")
+                    ),
+                    None,
+                )
+                if item is None and isinstance(member.get("item_snapshot"), dict):
+                    item = deepcopy(member["item_snapshot"])
+                if item is None:
+                    raise ValidationError(
+                        "This legacy Fault Tag has no reusable item snapshot"
+                    )
+                selections.append((request, item, str(member.get("condition"))))
+            result = export_return_workbook(
+                self._spare_template("spare_return_template_path", "Faulty Return XLSX"),
+                self._spare_export_root(),
+                selections,
+                fault_tag_id=str(record.get("fault_tag_id")),
+                return_site=record.get("return_site"),
+            )
+            timestamp = iso_now()
+            with self.store.transaction(
+                "fault-tag-reexport",
+                {"fault_tag_id": fault_tag_id, "filename": result["filename"]},
+            ) as staging:
+                updated = self.store.read_fault_tag(fault_tag_id, staging, completed=False)
+                updated.setdefault("export", {}).update(
+                    {
+                        "filename": result["filename"],
+                        "path": result["path"],
+                        "subject": result["subject"],
+                    }
+                )
+                updated["export"].setdefault("revisions", []).append(
+                    {
+                        "filename": result["filename"],
+                        "path": result["path"],
+                        "created_at": timestamp,
+                    }
+                )
+                fault_tag_history(
+                    updated, "fault-tag-reexported", {"filename": result["filename"]}
+                )
+                self.store.write_fault_tag(staging, updated)
+            persisted = True
+            self._touch_data("fault-tag-reexport")
+            return {**result, "faultTag": self.fault_tag(fault_tag_id)}
+        except Exception:
+            if result is not None and not persisted and result.get("path"):
+                Path(str(result["path"])).unlink(missing_ok=True)
+            raise
+        finally:
+            self._operation_lock.release()
+
+    def delete_fault_tag(self, fault_tag_id: str) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        try:
+            record = self.store.read_fault_tag(fault_tag_id, completed=False)
+            member_ids = {str(member.get("item_id")) for member in record.get("members", [])}
+            released_ids: set[str] = set()
+            with self.store.transaction(
+                "fault-tag-delete",
+                {
+                    "fault_tag_id": fault_tag_id,
+                    "items": sorted(member_ids),
+                    "was_locked": bool(record.get("locked_at")),
+                },
+            ) as staging:
+                for request_id in {
+                    str(member.get("request_id")) for member in record.get("members", [])
+                }:
+                    if not self.store.spare_request_file(request_id, staging).is_file():
+                        continue
+                    request = self.store.read_spare_request(request_id, staging)
+                    affected = []
+                    for item in request.get("items", []):
+                        if item.get("item_id") not in member_ids:
+                            continue
+                        item["fault_tag_ids"] = [
+                            value
+                            for value in item.get("fault_tag_ids", [])
+                            if value != fault_tag_id
+                        ]
+                        item["return_condition"] = None
+                        affected.append(item.get("item_id"))
+                        released_ids.add(str(item.get("item_id")))
+                    request_history(
+                        request,
+                        "fault-tag-unlinked-after-delete",
+                        {"faultTagId": fault_tag_id, "items": affected},
+                    )
+                    self.store.write_spare_request(staging, request)
+                self.store.delete_fault_tag(fault_tag_id, staging)
+            self._touch_data("fault-tag-delete")
+            return {
+                "deleted": fault_tag_id,
+                "itemsReleased": sorted(released_ids),
+                "lifecycleChanged": False,
+            }
         finally:
             self._operation_lock.release()
 
@@ -1655,8 +2254,42 @@ class ApplicationService:
             raise ValidationError("Choose at least one item to archive")
         if normalized_reason == "cancelled" and not note.strip():
             raise ValidationError("Cancellation requires a reason note")
-        if manual_override and not note.strip():
-            raise ValidationError("Manual return confirmation requires a note")
+        if normalized_reason == "returned":
+            if manual_override:
+                raise ValidationError(
+                    "Manual override cannot replace warehouse email evidence"
+                )
+            requests = list(self.store.iter_spare_requests())
+            pairs = {
+                item.get("item_id"): (request, item)
+                for request in requests
+                for item in request.get("items", [])
+                if item.get("item_id") in clean_ids
+            }
+            missing = sorted(clean_ids - set(pairs))
+            if missing:
+                raise ValidationError("Active items were not found: " + ", ".join(missing))
+            not_ready = sorted(
+                item_id
+                for item_id, (request, item) in pairs.items()
+                if lifecycle_stage(item, request) != 5
+            )
+            if not_ready:
+                raise ValidationError(
+                    "Warehouse email evidence plus explicit user confirmation is required for: "
+                    + ", ".join(not_ready)
+                )
+            completed = self.bulk_spare_lifecycle(
+                item_ids=sorted(clean_ids),
+                action="advance",
+                note=note.strip(),
+            )
+            return {
+                "archived": completed["completed"],
+                "reason": "returned",
+                "closedPath": completed["closedPath"],
+                "results": [],
+            }
         if not self._operation_lock.acquire(blocking=False):
             raise BusyError("Another Zeus operation is changing data")
         try:
@@ -1670,15 +2303,26 @@ class ApplicationService:
             missing = sorted(clean_ids - set(pairs))
             if missing:
                 raise ValidationError("Active items were not found: " + ", ".join(missing))
-            if normalized_reason == "returned":
-                for item_id, (_, item) in pairs.items():
-                    if not (
-                        item.get("warehouse_confirmed_at")
-                        or item.get("warehouse_candidate_at")
-                    ) and not manual_override:
-                        raise ValidationError(
-                            f"{item_id} has no exact warehouse email candidate. Use manual override with a note if verified independently."
-                        )
+            linked_tags = {
+                str(record.get("fault_tag_id")): sorted(
+                    clean_ids
+                    & {
+                        str(member.get("item_id") or "")
+                        for member in record.get("members", [])
+                    }
+                )
+                for record in self.store.iter_fault_tags()
+                if clean_ids
+                & {
+                    str(member.get("item_id") or "")
+                    for member in record.get("members", [])
+                }
+            }
+            if linked_tags:
+                raise ValidationError(
+                    "Delete the active Fault Tag before cancelling its member item(s): "
+                    + ", ".join(sorted(linked_tags))
+                )
             closed_path = self._closed_workbook_path(required=True)
             assert closed_path is not None
             archive_results = []
@@ -1973,7 +2617,15 @@ class ApplicationService:
             "query": lambda context: self._run_startup(context, startup=False),
             "advanced": self._run_advanced,
             "publish": lambda context: self._run_publish(context, payload),
-            "email-fetch": lambda context: self._run_email_fetch(context, rebuild=False),
+            "email-fetch": lambda context: self._run_email_fetch(
+                context,
+                rebuild=False,
+                synchronize=(
+                    bool(payload.get("synchronize"))
+                    if "synchronize" in payload
+                    else None
+                ),
+            ),
             "email-rebuild": lambda context: self._run_email_fetch(context, rebuild=True),
             "email-sync": self._run_email_sync,
             "restore": lambda context: self._run_restore(context, payload),
@@ -2084,7 +2736,13 @@ class ApplicationService:
         if not Path(str(path)).is_file():
             raise FeatureUnavailableError("The configured Outlook store is not available")
 
-    def _run_email_fetch(self, context: JobContext, *, rebuild: bool) -> dict[str, Any]:
+    def _run_email_fetch(
+        self,
+        context: JobContext,
+        *,
+        rebuild: bool,
+        synchronize: bool | None = None,
+    ) -> dict[str, Any]:
         def operation() -> dict[str, Any]:
             self._require_outlook()
             context.report("eligibility", "Refreshing ticket eligibility")
@@ -2093,6 +2751,7 @@ class ApplicationService:
             result = fetch_and_commit_outlook(
                 self.store,
                 full_scan=True if rebuild else None,
+                synchronize=synchronize,
                 cancel_event=context.cancel_event,
                 progress=context.progress_callback,
             )

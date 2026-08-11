@@ -219,14 +219,14 @@ class UtilityAndConfigTests(ZeusCase):
     def test_locked_defaults_and_config_validation(self) -> None:
         config = load_config(self.home)
         self.assertEqual(config["advanced_search"]["poll_interval_minutes"], 15)
-        self.assertEqual(config["email"]["fetch_interval_days"], 7)
-        self.assertEqual(config["email"]["sync_mode"], "scheduled")
-        self.assertEqual(config["email"]["sync_interval_days"], 7)
+        self.assertEqual(config["email"]["fetch_interval_minutes"], 60)
+        self.assertEqual(config["email"]["sync_mode"], "after_fetch")
+        self.assertEqual(config["email"]["sync_interval_minutes"], 60)
         self.assertEqual(config["email"]["retained_message_count"], 7)
         self.assertTrue(config["email"]["fetch_new_ticket_history_automatically"])
         self.assertEqual(config["web"]["font_scale"], "standard")
         bad = deepcopy(config)
-        bad["email"]["fetch_interval_days"] = -2
+        bad["email"]["fetch_interval_minutes"] = -2
         with self.assertRaises(ValueError):
             save_config(self.home, bad)
         bad_scale = deepcopy(config)
@@ -249,7 +249,7 @@ class UtilityAndConfigTests(ZeusCase):
 
         migrated = load_config(self.home)
 
-        self.assertEqual(migrated["schema_version"], 9)
+        self.assertEqual(migrated["schema_version"], 10)
         self.assertEqual(migrated["web"]["font_scale"], "standard")
 
     def test_outlook_configuration_requires_an_exact_store_file(self) -> None:
@@ -1278,7 +1278,7 @@ class StartupAndReadOnlyTests(ZeusCase):
         mailbox.touch()
         config = self.store.config
         config["paths"]["outlook_store_path"] = str(mailbox)
-        config["email"]["fetch_interval_days"] = -1
+        config["email"]["fetch_interval_minutes"] = -1
         self.store.save_config(config)
 
         with patch(

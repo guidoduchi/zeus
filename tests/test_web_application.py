@@ -1208,6 +1208,31 @@ class ApplicationServiceContractTests(WebFixture):
         finally:
             service.stop()
 
+    def test_manual_email_fetch_payload_forces_synchronization(self) -> None:
+        service = ApplicationService(self.store)
+        try:
+            with (
+                patch.object(service, "_require_outlook"),
+                patch("zeus2.application.service.sync_newest_advanced_search"),
+                patch(
+                    "zeus2.application.service.fetch_and_commit_outlook",
+                    return_value={"fetched": 1, "synchronized": 1},
+                ) as fetch,
+            ):
+                job = service.submit_job("email-fetch", {"synchronize": True})
+                deadline = time.monotonic() + 3
+                snapshot = service.jobs.get(job["id"])
+                while snapshot and snapshot["status"] in {"queued", "running"}:
+                    if time.monotonic() >= deadline:
+                        self.fail("Manual email fetch did not finish")
+                    time.sleep(0.01)
+                    snapshot = service.jobs.get(job["id"])
+
+            self.assertEqual(snapshot["status"], "succeeded")
+            self.assertTrue(fetch.call_args.kwargs["synchronize"])
+        finally:
+            service.stop()
+
 
 class WebServerTests(WebFixture):
     def setUp(self) -> None:
@@ -1362,11 +1387,11 @@ class WebServerTests(WebFixture):
             registered = json.loads(response.read())
             self.assertEqual(response.status, 201)
 
-        self.assertEqual(registered["request"]["creationMethod"], "manual_confirmation")
+        self.assertEqual(registered["request"]["creationMethod"], "zeus_create")
         self.assertIsNone(registered["request"]["export"]["request_filename"])
         self.assertEqual(
             registered["request"]["history"][0]["action"],
-            "request-registered-manually",
+            "request-created",
         )
         request_id = registered["request"]["requestId"]
         revision = registered["request"]["revision"]
