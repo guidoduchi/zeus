@@ -134,6 +134,10 @@ Consequences:
     SRs choose Completed, Incomplete, or Review later; shared windows are reviewed
     atomically, default each linked SR to Completed, and allow per-SR correction
     plus an optional half-hour finish time before saving.
+35. Upcoming counts every elapsed linked window awaiting review, including a
+    standalone SR window. It can create an unlinked MW, atomically attach or
+    detach active SRs during revision-safe edits, and delete the current plan
+    from every linked SR without deleting archived attempts.
 
 ## Authority invariants
 
@@ -152,8 +156,9 @@ Consequences:
 5. A later Advanced Search file can reactivate a pending closure before export.
    A successful explicit export writes Pendings and Closed from one snapshot,
    verifies both, and only then deletes finalized current records.
-6. Outlook is optional. Without an available selected store, no email operation
-   runs and the reason stays visible.
+6. Outlook is optional. Without an available selected store or at least one
+   active email-eligible database record, no email operation runs and the reason
+   stays visible.
 7. Closed is append-only finalized output and is not a prerequisite for startup
    or ordinary database editing.
 8. Spare is export-only and system-derived: any normalized part with a BOM

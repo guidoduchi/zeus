@@ -25,8 +25,13 @@ MAX_JSON_BODY = 1_000_000
 TICKET_ROUTE = re.compile(r"^/api/tickets/(\d{8})$")
 TICKET_LOCAL_ROUTE = re.compile(r"^/api/tickets/(\d{8})/local$")
 TICKET_MW_CONFIRM_ROUTE = re.compile(r"^/api/tickets/(\d{8})/maintenance-window/confirm$")
+UPCOMING_MW_IDENTIFIER = r"MW-(?:\d{12}-[A-F0-9]{4}|SR-\d{8})"
+UPCOMING_MW_ROUTE = re.compile(rf"^/api/maintenance-windows/({UPCOMING_MW_IDENTIFIER})$")
 UPCOMING_MW_COMPLETE_ROUTE = re.compile(
-    r"^/api/maintenance-windows/(MW-\d{12}-[A-F0-9]{4})/complete$"
+    rf"^/api/maintenance-windows/({UPCOMING_MW_IDENTIFIER})/complete$"
+)
+UPCOMING_MW_DELETE_ROUTE = re.compile(
+    rf"^/api/maintenance-windows/({UPCOMING_MW_IDENTIFIER})/delete$"
 )
 JOB_CANCEL_ROUTE = re.compile(r"^/api/jobs/([a-f0-9]{32})/cancel$")
 MOP_DOWNLOAD_ROUTE = re.compile(r"^/api/tickets/(\d{8})/mops/([^/]+)$")
@@ -319,13 +324,26 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/maintenance-windows":
             ticket_ids = payload.get("ticketIds")
             if not isinstance(ticket_ids, list):
-                raise ValidationError("Choose the Service Requests attached to this window")
+                raise ValidationError("Service Request selection must be a list")
             self._send_json(
                 HTTPStatus.CREATED,
                 self.server.service.schedule_upcoming_maintenance_window(
                     planned_date=payload.get("date"),
                     start_time=payload.get("startTime"),
                     ticket_ids=ticket_ids,
+                ),
+            )
+            return
+        upcoming_delete_match = UPCOMING_MW_DELETE_ROUTE.fullmatch(path)
+        if upcoming_delete_match:
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.delete_upcoming_maintenance_window(
+                    upcoming_delete_match.group(1),
+                    expected_revision=expected_revision,
                 ),
             )
             return
@@ -621,6 +639,25 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 HTTPStatus.OK,
                 self.server.service.edit_tickets(edits),
+            )
+            return
+        upcoming_match = UPCOMING_MW_ROUTE.fullmatch(path)
+        if upcoming_match:
+            ticket_ids = payload.get("ticketIds")
+            if not isinstance(ticket_ids, list):
+                raise ValidationError("Service Request selection must be a list")
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.update_upcoming_maintenance_window(
+                    upcoming_match.group(1),
+                    expected_revision=expected_revision,
+                    planned_date=payload.get("date"),
+                    start_time=payload.get("startTime"),
+                    ticket_ids=ticket_ids,
+                ),
             )
             return
         ticket_match = TICKET_LOCAL_ROUTE.fullmatch(path)

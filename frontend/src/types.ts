@@ -55,6 +55,7 @@ export interface UpcomingMaintenanceWindow {
   startTime: string | null;
   status: "planned" | "incomplete" | "conflict";
   managed: boolean;
+  kind: "shared" | "standalone" | "unlinked";
   canComplete: boolean;
   members: UpcomingMaintenanceWindowMember[];
 }
@@ -660,6 +661,7 @@ export interface BootstrapPayload {
   outlook: {
     enabled: boolean;
     configuredPathAvailable: boolean;
+    hasEligibleRecords?: boolean;
     stagedMessageCount: number;
   };
   polling: { intervalMinutes: number; enabled: boolean };

@@ -1261,6 +1261,7 @@ class ApplicationServiceContractTests(WebFixture):
             self.assertEqual(_restart_command(), ["C:/Zeus/zeus.exe", "serve"])
 
     def test_every_direct_email_job_fails_closed_when_outlook_is_disabled(self) -> None:
+        self.seed_database()
         service = ApplicationService(self.store)
         try:
             for kind in ("email-fetch", "email-sync", "email-rebuild"):
@@ -1279,6 +1280,7 @@ class ApplicationServiceContractTests(WebFixture):
             service.stop()
 
     def test_manual_email_fetch_payload_forces_synchronization(self) -> None:
+        self.seed_database()
         service = ApplicationService(self.store)
         try:
             with (
@@ -1309,6 +1311,7 @@ class ApplicationServiceContractTests(WebFixture):
             service.stop()
 
     def test_cancelled_outlook_fetch_is_reported_as_cancelled_not_failed(self) -> None:
+        self.seed_database()
         service = ApplicationService(self.store)
         try:
             with (
@@ -1329,6 +1332,47 @@ class ApplicationServiceContractTests(WebFixture):
 
             self.assertEqual(snapshot["status"], "cancelled")
             self.assertIn("cancelled", snapshot["message"].lower())
+        finally:
+            service.stop()
+
+    def test_email_jobs_skip_without_opening_outlook_when_database_has_no_active_records(self) -> None:
+        service = ApplicationService(self.store)
+        try:
+            with (
+                patch.object(
+                    service,
+                    "_require_outlook",
+                    side_effect=AssertionError("Outlook must remain unopened"),
+                ),
+                patch(
+                    "zeus2.application.service.fetch_and_commit_outlook",
+                    side_effect=AssertionError("The Outlook scan must not start"),
+                ),
+                patch(
+                    "zeus2.application.service.synchronize_staged_email",
+                    side_effect=AssertionError("Email synchronization must not start"),
+                ),
+            ):
+                for kind in ("email-fetch", "email-sync", "email-rebuild"):
+                    job = service.submit_job(kind, {})
+                    deadline = time.monotonic() + 3
+                    snapshot = service.jobs.get(job["id"])
+                    while snapshot and snapshot["status"] in {"queued", "running"}:
+                        if time.monotonic() >= deadline:
+                            self.fail(f"{kind} did not finish")
+                        time.sleep(0.01)
+                        snapshot = service.jobs.get(job["id"])
+                    self.assertIsNotNone(snapshot)
+                    self.assertEqual(snapshot["status"], "succeeded")
+                    self.assertTrue(snapshot["result"]["skipped"])
+                    self.assertEqual(snapshot["result"]["reason"], "no_active_records")
+                    self.assertTrue(
+                        any(
+                            "No active Zeus records" in update["message"]
+                            for update in snapshot["updates"]
+                        )
+                    )
+            self.assertFalse(service.bootstrap_payload()["outlook"]["hasEligibleRecords"])
         finally:
             service.stop()
 
@@ -1745,6 +1789,124 @@ class WebServerTests(WebFixture):
         self.assertEqual(incomplete_attempt["outcome"], "incomplete")
         self.assertEqual(incomplete_attempt["finish_time"], "00:30")
         self.assertEqual(incomplete_attempt["finish_date"], local_today().isoformat())
+
+    def test_standalone_elapsed_window_counts_and_can_be_reviewed_from_upcoming(self) -> None:
+        yesterday = (local_today() - timedelta(days=1)).isoformat()
+        detail = self.service.ticket("12345678")
+        self.service.edit_ticket(
+            "12345678",
+            changes={"Planned Date": yesterday},
+            expected_revision=detail["revision"],
+        )
+
+        upcoming = self.service.upcoming_maintenance_windows()
+        self.assertEqual(upcoming["stats"]["awaitingReview"], 1)
+        window = upcoming["windows"][0]
+        self.assertEqual(window["windowId"], "MW-SR-12345678")
+        self.assertEqual(window["kind"], "standalone")
+        self.assertTrue(window["canComplete"])
+
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        request = urllib.request.Request(
+            self.url + "/api/maintenance-windows/MW-SR-12345678/complete",
+            data=json.dumps(
+                {
+                    "revision": window["revision"],
+                    "outcomes": {"12345678": True},
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "If-Match": str(window["revision"]),
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            reviewed = json.loads(response.read())
+
+        self.assertEqual(reviewed["ticketIds"], ["12345678"])
+        self.assertEqual(reviewed["upcoming"]["stats"]["awaitingReview"], 0)
+        stored = self.store.read_ticket("12345678")["local"]["maintenance_window"]
+        self.assertEqual(stored["status"], "completed")
+        self.assertEqual(stored["attempts"][-1]["outcome"], "completed")
+
+    def test_unlinked_window_can_be_created_linked_updated_and_deleted_atomically(self) -> None:
+        source = self.downloads / "Advanced Search(Service Request)20260811020202.xlsx"
+        write_advanced(
+            source,
+            [
+                upstream_row("12345678", summary="Existing ticket"),
+                upstream_row("23456789", summary="Second member"),
+            ],
+        )
+        sync_advanced_search(self.store, source)
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+        }
+        first_date = (local_today() + timedelta(days=1)).isoformat()
+        second_date = (local_today() + timedelta(days=2)).isoformat()
+
+        create_request = urllib.request.Request(
+            self.url + "/api/maintenance-windows",
+            data=json.dumps(
+                {"date": first_date, "startTime": "21:30", "ticketIds": []}
+            ).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        with urllib.request.urlopen(create_request, timeout=3) as response:
+            created = json.loads(response.read())
+            self.assertEqual(response.status, 201)
+        window = created["upcoming"]["windows"][0]
+        self.assertEqual(window["kind"], "unlinked")
+        self.assertEqual(window["members"], [])
+
+        link_request = urllib.request.Request(
+            self.url + f"/api/maintenance-windows/{window['windowId']}",
+            data=json.dumps(
+                {
+                    "revision": window["revision"],
+                    "date": second_date,
+                    "startTime": "22:00",
+                    "ticketIds": ["12345678", "23456789"],
+                }
+            ).encode("utf-8"),
+            method="PATCH",
+            headers={**headers, "If-Match": str(window["revision"])},
+        )
+        with urllib.request.urlopen(link_request, timeout=3) as response:
+            linked = json.loads(response.read())
+        linked_window = linked["upcoming"]["windows"][0]
+        self.assertEqual(linked_window["kind"], "shared")
+        self.assertEqual(
+            {member["ticketId"] for member in linked_window["members"]},
+            {"12345678", "23456789"},
+        )
+        self.assertEqual(self.store.state().get("unlinked_maintenance_windows"), [])
+        for ticket_id in ("12345678", "23456789"):
+            stored = self.store.read_ticket(ticket_id)["local"]["maintenance_window"]
+            self.assertEqual(stored["date"], second_date)
+            self.assertEqual(stored["start_time"], "22:00")
+            self.assertEqual(stored["window_id"], linked_window["windowId"])
+
+        delete_request = urllib.request.Request(
+            self.url + f"/api/maintenance-windows/{linked_window['windowId']}/delete",
+            data=json.dumps({"revision": linked_window["revision"]}).encode("utf-8"),
+            method="POST",
+            headers={**headers, "If-Match": str(linked_window["revision"])},
+        )
+        with urllib.request.urlopen(delete_request, timeout=3) as response:
+            deleted = json.loads(response.read())
+        self.assertEqual(deleted["ticketIds"], ["12345678", "23456789"])
+        self.assertEqual(deleted["upcoming"]["windows"], [])
+        for ticket_id in ("12345678", "23456789"):
+            stored = self.store.read_ticket(ticket_id)["local"]["maintenance_window"]
+            self.assertEqual(stored["status"], "unplanned")
+            self.assertIsNone(stored["date"])
+            self.assertIsNone(stored["window_id"])
 
     def test_database_maintenance_status_route_is_read_only_when_current(self) -> None:
         audit_before = self.store.audit_file.read_text(encoding="utf-8")

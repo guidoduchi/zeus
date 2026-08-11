@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.1.15 - 2026-08-11
+
+- Fixes active Spare Request email retention by normalizing each parsed message
+  timestamp before comparing it with the 180-day cutoff.
+- Prevents scheduled, shortcut, Operations, and direct API email jobs from
+  opening Outlook when Zeus has no active ticket, Spare Request, or Fault Tag
+  record eligible for synchronization.
+- Counts standalone elapsed Maintenance Windows in Upcoming, permits their
+  completion review there, and uses the same status contract for cards and
+  summary totals.
+- Adds revision-safe Upcoming edit and confirmed delete controls that update
+  every linked SR atomically while preserving prior MW attempts.
+- Allows unlinked Maintenance Windows and transfers authority into or out of SR
+  records as membership is added or removed, without duplicating linked truth.
+
 ## 3.1.14 - 2026-08-11
 
 - Decouples direct Outlook fetching from Advanced Search so an invalid source

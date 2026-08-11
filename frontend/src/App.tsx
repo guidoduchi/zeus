@@ -9,6 +9,7 @@ import {
   cancelJob,
   completeUpcomingMaintenanceWindow,
   confirmMaintenanceWindow,
+  deleteUpcomingMaintenanceWindow,
   exportSpareRequest,
   exportSpareReturn,
   getBootstrap,
@@ -27,6 +28,7 @@ import {
   saveTicket,
   scheduleUpcomingMaintenanceWindow,
   startJob,
+  updateUpcomingMaintenanceWindow,
 } from "./api";
 import { BomCatalogModal } from "./components/BomCatalogModal";
 import { ColumnChooser } from "./components/ColumnChooser";
@@ -761,12 +763,69 @@ export default function App() {
       const result = await scheduleUpcomingMaintenanceWindow({ date, startTime, ticketIds });
       setUpcoming(result.upcoming);
       dashboardCache.current.clear();
+      await Promise.all([loadDashboard(), loadBootstrap()]);
       setToast({
         tone: "success",
-        message: `${result.windowId} scheduled for ${ticketIds.length} Service Request${ticketIds.length === 1 ? "" : "s"}.`,
+        message: ticketIds.length
+          ? `${result.windowId} scheduled for ${ticketIds.length} Service Request${ticketIds.length === 1 ? "" : "s"}.`
+          : `${result.windowId} scheduled as an unlinked Maintenance Window.`,
       });
     } catch (error) {
       reportError(error);
+      throw error;
+    } finally {
+      setUpcomingBusy(false);
+    }
+  }
+
+  async function updateMaintenanceWindow(
+    window: UpcomingMaintenanceWindow,
+    date: string,
+    startTime: string | null,
+    ticketIds: string[],
+  ) {
+    setUpcomingBusy(true);
+    try {
+      const result = await updateUpcomingMaintenanceWindow(
+        window.windowId,
+        window.revision,
+        { date, startTime, ticketIds },
+      );
+      setUpcoming(result.upcoming);
+      dashboardCache.current.clear();
+      await Promise.all([loadDashboard(), loadBootstrap()]);
+      setToast({
+        tone: "success",
+        message: ticketIds.length
+          ? `${result.windowId} updated across ${ticketIds.length} linked Service Request${ticketIds.length === 1 ? "" : "s"}.`
+          : `${result.windowId} updated and kept as an unlinked Maintenance Window.`,
+      });
+    } catch (error) {
+      reportError(error);
+      await loadUpcoming().catch(() => undefined);
+      throw error;
+    } finally {
+      setUpcomingBusy(false);
+    }
+  }
+
+  async function deleteMaintenanceWindow(window: UpcomingMaintenanceWindow) {
+    setUpcomingBusy(true);
+    try {
+      const result = await deleteUpcomingMaintenanceWindow(
+        window.windowId,
+        window.revision,
+      );
+      setUpcoming(result.upcoming);
+      dashboardCache.current.clear();
+      await Promise.all([loadDashboard(), loadBootstrap()]);
+      setToast({
+        tone: "success",
+        message: `${window.windowId} deleted${result.ticketIds.length ? ` from ${result.ticketIds.length} Service Request${result.ticketIds.length === 1 ? "" : "s"}` : ""}.`,
+      });
+    } catch (error) {
+      reportError(error);
+      await loadUpcoming().catch(() => undefined);
       throw error;
     } finally {
       setUpcomingBusy(false);
@@ -788,6 +847,7 @@ export default function App() {
       );
       setUpcoming(result.upcoming);
       dashboardCache.current.clear();
+      await Promise.all([loadDashboard(), loadBootstrap()]);
       setToast({
         tone: "success",
         message: `${window.windowId} archived after reviewing ${result.ticketIds.length} Service Request${result.ticketIds.length === 1 ? "" : "s"}.`,
@@ -1128,10 +1188,10 @@ export default function App() {
     if (!activeJob) void runJob("query");
   }, [activeJob, runJob]);
   const syncEmail = useCallback(() => {
-    if (!activeJob && bootstrap?.outlook.configuredPathAvailable) {
+    if (!activeJob && bootstrap?.outlook.configuredPathAvailable && bootstrap.outlook.hasEligibleRecords !== false) {
       void runJob("email-fetch", { synchronize: true });
     }
-  }, [activeJob, bootstrap?.outlook.configuredPathAvailable, runJob]);
+  }, [activeJob, bootstrap?.outlook.configuredPathAvailable, bootstrap?.outlook.hasEligibleRecords, runJob]);
 
   const closeDetail = useCallback(() => {
     if (!selectedTicketId && !selectedRequestId && !selectedFaultTagId) return;
@@ -1398,7 +1458,7 @@ export default function App() {
   useGlobalCommands({
     disabled: keyboardDisabled,
     queryDisabled: Boolean(activeJob) || workspace !== "service-requests",
-    syncDisabled: Boolean(activeJob) || !Boolean(bootstrap?.outlook.configuredPathAvailable),
+    syncDisabled: Boolean(activeJob) || !Boolean(bootstrap?.outlook.configuredPathAvailable) || bootstrap?.outlook.hasEligibleRecords === false,
     onSearch: () => searchRef.current?.focus(),
     onSync: syncEmail,
     onOperations: () => setOperationsOpen(true),
@@ -1557,7 +1617,7 @@ export default function App() {
       data-spare-view={workspace === "spare-requests" ? spareView : undefined}
     >
       <TopBar
-        version={bootstrap.version || "3.1.14"}
+        version={bootstrap.version || "3.1.15"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId || selectedFaultTagId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
@@ -1581,6 +1641,8 @@ export default function App() {
         busy={upcomingBusy}
         onRefresh={() => { void loadUpcoming().catch(reportError); }}
         onSchedule={scheduleMaintenanceWindow}
+        onUpdate={updateMaintenanceWindow}
+        onDelete={deleteMaintenanceWindow}
         onComplete={completeSharedMaintenanceWindow}
       /> : dashboard && <>
       <StatsBar dashboard={dashboard} />
@@ -1707,14 +1769,14 @@ export default function App() {
       </>}
       <footer className="command-strip">
         {workspace === "upcoming"
-          ? <span>Schedule shared windows · Review every linked SR</span>
+          ? <span>Schedule, link, edit, review, or delete Maintenance Windows</span>
           : <>
             <span>↑↓ Select</span>
             <span>←→ Detail tab</span>
             <span>Double-click/Enter Open · Esc Close</span>
             <span>Ctrl+F Search</span>
           </>}
-        <span className={!bootstrap?.outlook.configuredPathAvailable ? "disabled-command" : undefined}>S Fetch + sync email</span>
+        <span className={!bootstrap?.outlook.configuredPathAvailable || bootstrap?.outlook.hasEligibleRecords === false ? "disabled-command" : undefined}>S Fetch + sync email</span>
         <span>M Operations</span>
         {workspace === "service-requests" && <span>R Check source</span>}
         <span className="footer-state">{activeJob ? activeJob.message : <>{draftCount > 0 && <button type="button" className="footer-draft-button" onClick={() => setDraftsOpen(true)}>✎ {draftCount} protected draft{draftCount === 1 ? "" : "s"}</button>}{draftUndoAvailable && <button type="button" className="footer-draft-button undo" onClick={() => void undoDraftAction()}>↶ Undo last draft action</button>}<span>{workspaceConfig.label} · Local database{workspace === "service-requests" ? ` · ${bootstrap?.polling.intervalMinutes ?? 15} min Advanced Search check` : ""}</span></>}</span>
@@ -1724,6 +1786,7 @@ export default function App() {
           jobs={jobs}
           outlookEnabled={Boolean(bootstrap?.outlook.enabled)}
           outlookAvailable={Boolean(bootstrap?.outlook.configuredPathAvailable)}
+          outlookTargetsAvailable={bootstrap?.outlook.hasEligibleRecords !== false}
           onClose={() => setOperationsOpen(false)}
           onSettings={() => { setOperationsOpen(false); setSettingsOpen(true); }}
           onRun={runJob}

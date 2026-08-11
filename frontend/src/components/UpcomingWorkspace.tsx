@@ -3,6 +3,7 @@ import type {
   UpcomingMaintenanceWindow,
   UpcomingMaintenanceWindowsPayload,
 } from "../types";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -11,6 +12,13 @@ interface Props {
   busy: boolean;
   onRefresh: () => void;
   onSchedule: (date: string, startTime: string | null, ticketIds: string[]) => Promise<void>;
+  onUpdate: (
+    window: UpcomingMaintenanceWindow,
+    date: string,
+    startTime: string | null,
+    ticketIds: string[],
+  ) => Promise<void>;
+  onDelete: (window: UpcomingMaintenanceWindow) => Promise<void>;
   onComplete: (
     window: UpcomingMaintenanceWindow,
     outcomes: Record<string, boolean>,
@@ -40,6 +48,8 @@ export function UpcomingWorkspace({
   busy,
   onRefresh,
   onSchedule,
+  onUpdate,
+  onDelete,
   onComplete,
 }: Props) {
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -47,6 +57,8 @@ export function UpcomingWorkspace({
   const [startTime, setStartTime] = useState("");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [editing, setEditing] = useState<UpcomingMaintenanceWindow | null>(null);
+  const [deleting, setDeleting] = useState<UpcomingMaintenanceWindow | null>(null);
   const [completion, setCompletion] = useState<UpcomingMaintenanceWindow | null>(null);
   const [outcomes, setOutcomes] = useState<Record<string, boolean>>({});
   const [finishTime, setFinishTime] = useState("");
@@ -64,10 +76,20 @@ export function UpcomingWorkspace({
   }, [payload?.candidates, search]);
 
   function openSchedule() {
+    setEditing(null);
     setDate("");
     setStartTime("");
     setSearch("");
     setSelected(new Set());
+    setScheduleOpen(true);
+  }
+
+  function openEdit(window: UpcomingMaintenanceWindow) {
+    setEditing(window);
+    setDate(window.date);
+    setStartTime(window.startTime || "");
+    setSearch("");
+    setSelected(new Set(window.members.map((member) => member.ticketId)));
     setScheduleOpen(true);
   }
 
@@ -78,9 +100,11 @@ export function UpcomingWorkspace({
   }
 
   async function schedule() {
-    if (!date || !selected.size || !isHalfHourTime(startTime)) return;
-    await onSchedule(date, startTime || null, [...selected]);
+    if (!date || !isHalfHourTime(startTime)) return;
+    if (editing) await onUpdate(editing, date, startTime || null, [...selected]);
+    else await onSchedule(date, startTime || null, [...selected]);
     setScheduleOpen(false);
+    setEditing(null);
   }
 
   async function complete() {
@@ -99,7 +123,7 @@ export function UpcomingWorkspace({
         <div>
           <span className="eyebrow">MAINTENANCE WINDOW MANAGER</span>
           <h1>Upcoming</h1>
-          <p>Schedule one shared window for several Service Requests while keeping each SR’s own audited MW history.</p>
+          <p>Schedule linked or unlinked windows while keeping every Service Request’s audited MW history synchronized.</p>
         </div>
         <div className="upcoming-header-actions">
           <button type="button" className="secondary-button" disabled={loading || busy} onClick={onRefresh}>↻ Refresh</button>
@@ -122,6 +146,8 @@ export function UpcomingWorkspace({
             <div className="upcoming-card-actions">
               <span className={`mw-state mw-state-${window.status}`}>{window.status === "incomplete" ? "Awaiting review" : window.status === "conflict" ? "Conflict" : "Planned"}</span>
               {window.canComplete && <button type="button" className="mw-completed-button" onClick={() => openCompletion(window)}>Review completion</button>}
+              <button type="button" className="text-button" aria-label={`Edit ${window.windowId}`} onClick={() => openEdit(window)}>Edit</button>
+              <button type="button" className="text-button danger-text" aria-label={`Delete ${window.windowId}`} onClick={() => setDeleting(window)}>Delete</button>
             </div>
           </header>
           <div className="upcoming-members">
@@ -131,7 +157,8 @@ export function UpcomingWorkspace({
               <small>{member.site || "—"} · {member.cloud || "—"} · {member.handler || "—"}</small>
             </div>)}
           </div>
-          {!window.managed && <footer>Scheduled from SR Details. Complete it there, or start future shared windows from this workspace.</footer>}
+          {!window.members.length && <div className="upcoming-unlinked"><strong>No Service Request linked.</strong><span>Edit this window whenever an active SR should join it.</span></div>}
+          {!window.managed && <footer>Scheduled from SR Details. Editing or deleting it here updates that Service Request directly.</footer>}
           {window.status === "conflict" && <footer>Linked SRs no longer agree on date or start time. Zeus has blocked completion to prevent a partial result.</footer>}
         </article>)}
       </div>
@@ -148,30 +175,32 @@ export function UpcomingWorkspace({
     </section>
 
     {scheduleOpen && <Modal
-      title="Schedule Maintenance Window"
-      subtitle="One SR can belong to only one unfinished window at a time. Start time is optional."
-      onClose={() => setScheduleOpen(false)}
+      title={editing ? `Edit ${editing.windowId}` : "Schedule Maintenance Window"}
+      subtitle="A window may remain unlinked, while every selected SR can belong to only one unfinished window. Start time is optional."
+      onClose={() => { setScheduleOpen(false); setEditing(null); }}
       wide
       actions={<>
-        <span>{selected.size} Service Request{selected.size === 1 ? "" : "s"} selected</span>
-        <button type="button" onClick={() => setScheduleOpen(false)}>Cancel</button>
-        <button type="button" className="primary-button" disabled={busy || !date || !selected.size || !isHalfHourTime(startTime)} onClick={() => { void schedule().catch(() => undefined); }}>{busy ? "Scheduling…" : "Schedule MW"}</button>
+        <span>{selected.size ? `${selected.size} Service Request${selected.size === 1 ? "" : "s"} selected` : "Unlinked Maintenance Window"}</span>
+        <button type="button" onClick={() => { setScheduleOpen(false); setEditing(null); }}>Cancel</button>
+        <button type="button" className="primary-button" disabled={busy || !date || !isHalfHourTime(startTime)} onClick={() => { void schedule().catch(() => undefined); }}>{busy ? "Saving…" : editing ? "Update MW" : "Schedule MW"}</button>
       </>}
     >
       <section className="upcoming-schedule-form">
         <div className="form-grid two">
-          <label className="form-field"><span>MW date</span><input type="date" min={todayText()} value={date} onChange={(event) => setDate(event.target.value)} /></label>
+          <label className="form-field"><span>MW date</span><input type="date" min={editing ? undefined : todayText()} value={date} onChange={(event) => setDate(event.target.value)} /></label>
           <label className="form-field"><span>Optional start time</span><input type="time" step={1800} value={startTime} onChange={(event) => setStartTime(event.target.value)} /></label>
         </div>
         {!isHalfHourTime(startTime) && <p className="inline-warning">Start time must end in :00 or :30.</p>}
         <label className="search-box upcoming-search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search active SRs…" /></label>
         <div className="upcoming-candidate-list">
           {!candidates.length && <div className="upcoming-candidate-empty">No matching active Service Requests.</div>}
-          {candidates.map((candidate) => <label className={!candidate.available ? "blocked" : ""} key={candidate.ticketId}>
+          {candidates.map((candidate) => {
+            const selectable = candidate.available || candidate.currentWindowId === editing?.windowId;
+            return <label className={!selectable ? "blocked" : ""} key={candidate.ticketId}>
             <input
               type="checkbox"
               checked={selected.has(candidate.ticketId)}
-              disabled={!candidate.available}
+              disabled={!selectable}
               onChange={(event) => setSelected((current) => {
                 const next = new Set(current);
                 if (event.target.checked) next.add(candidate.ticketId); else next.delete(candidate.ticketId);
@@ -179,8 +208,8 @@ export function UpcomingWorkspace({
               })}
             />
             <span><strong>SR {candidate.ticketId}</strong><small>{candidate.summary || "No problem summary"}</small></span>
-            <em>{candidate.available ? `${candidate.site || "—"} · ${candidate.cloud || "—"}` : `Already scheduled · ${candidate.currentWindow?.date || "unfinished MW"}`}</em>
-          </label>)}
+            <em>{selectable ? `${candidate.site || "—"} · ${candidate.cloud || "—"}` : `Already scheduled · ${candidate.currentWindow?.date || "unfinished MW"}`}</em>
+          </label>;})}
         </div>
       </section>
     </Modal>}
@@ -210,5 +239,17 @@ export function UpcomingWorkspace({
         </div>
       </section>
     </Modal>}
+
+    {deleting && <ConfirmationDialog
+      title={`Delete ${deleting.windowId}?`}
+      message={deleting.members.length
+        ? `This removes the current Maintenance Window from ${deleting.members.length} linked Service Request${deleting.members.length === 1 ? "" : "s"}. Earlier completed or incomplete MW attempts remain archived in each ticket.`
+        : "This removes the unlinked Maintenance Window from the manager."}
+      confirmLabel="Delete MW"
+      tone="danger"
+      busy={busy}
+      onCancel={() => setDeleting(null)}
+      onConfirm={() => { void onDelete(deleting).then(() => setDeleting(null)).catch(() => undefined); }}
+    />}
   </>;
 }

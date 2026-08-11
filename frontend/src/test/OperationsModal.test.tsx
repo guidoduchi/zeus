@@ -55,4 +55,23 @@ describe("OperationsModal Outlook progress", () => {
     await userEvent.click(screen.getByText(/progress log \(2\)/i));
     expect(screen.getByText("Enumerating Outlook folders")).toBeVisible();
   });
+
+  it("disables every email operation when Zeus has no eligible database record", () => {
+    render(<OperationsModal
+      jobs={[]}
+      outlookEnabled
+      outlookAvailable
+      outlookTargetsAvailable={false}
+      onClose={vi.fn()}
+      onSettings={vi.fn()}
+      onRun={vi.fn()}
+      onCancel={vi.fn()}
+      onError={vi.fn()}
+    />);
+
+    expect(screen.getByRole("button", { name: /Fetch Outlook email/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Synchronize staged email/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Rebuild email history/i })).toBeDisabled();
+    expect(screen.getAllByText(/Add an active Service Request, Spare Request, or Fault Tag/i)).toHaveLength(3);
+  });
 });

@@ -113,7 +113,9 @@ from .serialization import (
 from .settings import outlook_candidates, settings_payload, update_settings
 from .upcoming import (
     complete_upcoming_window,
+    delete_upcoming_window,
     schedule_upcoming_window,
+    update_upcoming_window,
     upcoming_payload,
 )
 
@@ -246,7 +248,8 @@ class ApplicationService:
                 self._next_email_fetch_at is not None
                 and now >= self._next_email_fetch_at
             ):
-                self.submit_job("email-fetch", {"scheduled": True})
+                if self._has_email_targets():
+                    self.submit_job("email-fetch", {"scheduled": True})
                 self._next_email_fetch_at = self._next_deadline(
                     int(
                         self.store.config.get("email", {}).get(
@@ -332,6 +335,7 @@ class ApplicationService:
         capacity = storage_status(self.store)
         state: dict[str, Any] = {}
         maintenance_windows_due: list[dict[str, Any]] = []
+        email_targets_available = False
         if not self._operation_lock.acquire(blocking=False):
             database_maintenance = {
                 "status": "busy",
@@ -387,6 +391,7 @@ class ApplicationService:
                             "confirmationRequired"
                         ):
                             maintenance_windows_due.append(summary)
+                    email_targets_available = self._has_email_targets()
                 except Exception:
                     # The maintenance status above owns database-corruption reporting;
                     # bootstrap must still open Configuration so recovery remains possible.
@@ -430,6 +435,7 @@ class ApplicationService:
                 "stagedMessageCount": int(
                     state.get("email_state", {}).get("staged_message_count") or 0
                 ),
+                "hasEligibleRecords": email_targets_available,
             },
             "polling": {
                 "intervalMinutes": int(
@@ -722,6 +728,58 @@ class ApplicationService:
         finally:
             self._operation_lock.release()
         self._touch_data("upcoming-maintenance-window-completion")
+        return {
+            "windowId": window_id,
+            "ticketIds": ticket_ids,
+            "upcoming": self.upcoming_maintenance_windows(),
+        }
+
+    def update_upcoming_maintenance_window(
+        self,
+        window_id: str,
+        *,
+        expected_revision: str,
+        planned_date: Any,
+        start_time: Any,
+        ticket_ids: Any,
+    ) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data. Try again when it finishes.")
+        try:
+            resulting_id, normalized_ids = update_upcoming_window(
+                self.store,
+                window_id,
+                expected_revision=expected_revision,
+                planned_date=planned_date,
+                start_time=start_time,
+                ticket_ids=ticket_ids,
+            )
+        finally:
+            self._operation_lock.release()
+        self._touch_data("upcoming-maintenance-window-update")
+        return {
+            "windowId": resulting_id,
+            "ticketIds": normalized_ids,
+            "upcoming": self.upcoming_maintenance_windows(),
+        }
+
+    def delete_upcoming_maintenance_window(
+        self,
+        window_id: str,
+        *,
+        expected_revision: str,
+    ) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data. Try again when it finishes.")
+        try:
+            ticket_ids = delete_upcoming_window(
+                self.store,
+                window_id,
+                expected_revision=expected_revision,
+            )
+        finally:
+            self._operation_lock.release()
+        self._touch_data("upcoming-maintenance-window-delete")
         return {
             "windowId": window_id,
             "ticketIds": ticket_ids,
@@ -3075,6 +3133,15 @@ class ApplicationService:
         if not Path(str(path)).is_file():
             raise FeatureUnavailableError("The configured Outlook store is not available")
 
+    def _has_email_targets(self) -> bool:
+        """Return whether Outlook has any mutable Zeus record to update."""
+
+        return (
+            any(self.store.iter_ticket_ids(status="active"))
+            or any(self.store.iter_spare_request_ids())
+            or any(self.store.iter_fault_tag_ids(completed=False))
+        )
+
     def _run_email_fetch(
         self,
         context: JobContext,
@@ -3083,6 +3150,17 @@ class ApplicationService:
         synchronize: bool | None = None,
     ) -> dict[str, Any]:
         def operation() -> dict[str, Any]:
+            if not self._has_email_targets():
+                context.report(
+                    "skipped",
+                    "No active Zeus records; Outlook email was not opened",
+                )
+                return {
+                    "skipped": True,
+                    "reason": "no_active_records",
+                    "fetched": 0,
+                    "synchronized": 0,
+                }
             self._require_outlook()
             # Direct email fetches intentionally use the last successfully
             # committed ticket database. Advanced Search is an independent
@@ -3107,6 +3185,16 @@ class ApplicationService:
 
     def _run_email_sync(self, context: JobContext) -> dict[str, Any]:
         def operation() -> dict[str, Any]:
+            if not self._has_email_targets():
+                context.report(
+                    "skipped",
+                    "No active Zeus records; staged email synchronization was skipped",
+                )
+                return {
+                    "skipped": True,
+                    "reason": "no_active_records",
+                    "synchronized": 0,
+                }
             self._require_outlook()
             context.report("email-sync", "Applying staged email to Markdown records")
             result = synchronize_staged_email(self.store)

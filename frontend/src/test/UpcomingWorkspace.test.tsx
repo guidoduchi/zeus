@@ -14,6 +14,7 @@ const payload: UpcomingMaintenanceWindowsPayload = {
     startTime: "23:30",
     status: "incomplete",
     managed: true,
+    kind: "shared",
     canComplete: true,
     members: [
       { ticketId: "12345678", summary: "First member", site: "GYE", cloud: "Cloud A", severity: "Minor", handler: "Alice" },
@@ -31,7 +32,7 @@ describe("UpcomingWorkspace", () => {
   it("schedules available SRs with an optional half-hour start time", async () => {
     const user = userEvent.setup();
     const onSchedule = vi.fn().mockResolvedValue(undefined);
-    render(<UpcomingWorkspace payload={payload} loading={false} busy={false} onRefresh={vi.fn()} onSchedule={onSchedule} onComplete={vi.fn()} />);
+    render(<UpcomingWorkspace payload={payload} loading={false} busy={false} onRefresh={vi.fn()} onSchedule={onSchedule} onUpdate={vi.fn()} onDelete={vi.fn()} onComplete={vi.fn()} />);
 
     await user.click(screen.getByRole("button", { name: "+ Schedule MW" }));
     expect(screen.getByRole("checkbox", { name: /SR 12345678/ })).toBeDisabled();
@@ -46,7 +47,7 @@ describe("UpcomingWorkspace", () => {
   it("defaults every linked SR to Completed and submits the reviewed exceptions", async () => {
     const user = userEvent.setup();
     const onComplete = vi.fn().mockResolvedValue(undefined);
-    render(<UpcomingWorkspace payload={payload} loading={false} busy={false} onRefresh={vi.fn()} onSchedule={vi.fn()} onComplete={onComplete} />);
+    render(<UpcomingWorkspace payload={payload} loading={false} busy={false} onRefresh={vi.fn()} onSchedule={vi.fn()} onUpdate={vi.fn()} onDelete={vi.fn()} onComplete={onComplete} />);
 
     await user.click(screen.getByRole("button", { name: "Review completion" }));
     const first = screen.getByRole("combobox", { name: "SR 12345678 outcome" });
@@ -62,5 +63,47 @@ describe("UpcomingWorkspace", () => {
       { "12345678": true, "87654321": false },
       "00:30",
     ));
+  });
+
+  it("creates an unlinked Maintenance Window without requiring an SR", async () => {
+    const user = userEvent.setup();
+    const onSchedule = vi.fn().mockResolvedValue(undefined);
+    render(<UpcomingWorkspace payload={payload} loading={false} busy={false} onRefresh={vi.fn()} onSchedule={onSchedule} onUpdate={vi.fn()} onDelete={vi.fn()} onComplete={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "+ Schedule MW" }));
+    fireEvent.change(screen.getByLabelText("MW date"), { target: { value: "2099-08-22" } });
+    await user.click(screen.getByRole("button", { name: "Schedule MW" }));
+
+    await waitFor(() => expect(onSchedule).toHaveBeenCalledWith("2099-08-22", null, []));
+  });
+
+  it("edits the schedule and linked SR membership from its card", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    render(<UpcomingWorkspace payload={payload} loading={false} busy={false} onRefresh={vi.fn()} onSchedule={vi.fn()} onUpdate={onUpdate} onDelete={vi.fn()} onComplete={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: `Edit ${payload.windows[0].windowId}` }));
+    expect(screen.getByRole("checkbox", { name: /SR 12345678/ })).toBeEnabled();
+    await user.click(screen.getByRole("checkbox", { name: /SR 23456789/ }));
+    fireEvent.change(screen.getByLabelText("MW date"), { target: { value: "2099-08-23" } });
+    await user.click(screen.getByRole("button", { name: "Update MW" }));
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith(
+      payload.windows[0],
+      "2099-08-23",
+      "23:30",
+      ["12345678", "87654321", "23456789"],
+    ));
+  });
+
+  it("confirms deletion before removing a window", async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    render(<UpcomingWorkspace payload={payload} loading={false} busy={false} onRefresh={vi.fn()} onSchedule={vi.fn()} onUpdate={vi.fn()} onDelete={onDelete} onComplete={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: `Delete ${payload.windows[0].windowId}` }));
+    await user.click(screen.getByRole("button", { name: "Delete MW" }));
+
+    await waitFor(() => expect(onDelete).toHaveBeenCalledWith(payload.windows[0]));
   });
 });

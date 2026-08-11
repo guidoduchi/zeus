@@ -23,7 +23,10 @@ from .config import (
 )
 from .maintenance_windows import (
     LOCAL_SCHEMA_VERSION,
+    SHARED_WINDOW_ID_PATTERN,
+    maintenance_window_for_local,
     maintenance_window_summary,
+    normalize_half_hour_time,
     validate_maintenance_window_record,
 )
 from .fault_tags import (
@@ -48,6 +51,7 @@ from .utils import (
     json_dumps,
     load_json,
     normalize_ticket_id,
+    parse_date,
     safe_filename,
     sha256_file,
 )
@@ -339,6 +343,7 @@ class ZeusStore:
                 "staged_at": None,
                 "staged_message_count": 0,
             },
+            "unlinked_maintenance_windows": [],
         }
 
     @classmethod
@@ -728,6 +733,25 @@ class ZeusStore:
         state = self.state(current_path)
         if state.get("schema_version") != 2:
             raise StoreError("Unsupported or missing store schema version")
+        unlinked_windows = state.get("unlinked_maintenance_windows", [])
+        if not isinstance(unlinked_windows, list):
+            raise StoreError("Unlinked Maintenance Window state must be a list")
+        unlinked_ids: set[str] = set()
+        for window in unlinked_windows:
+            if not isinstance(window, dict):
+                raise StoreError("Unlinked Maintenance Window record must be an object")
+            window_id = str(window.get("window_id") or "").strip().upper()
+            if not SHARED_WINDOW_ID_PATTERN.fullmatch(window_id):
+                raise StoreError("Unlinked Maintenance Window ID is invalid")
+            if window_id in unlinked_ids:
+                raise StoreError("Unlinked Maintenance Window IDs must be unique")
+            unlinked_ids.add(window_id)
+            if parse_date(window.get("date")) is None:
+                raise StoreError(f"Unlinked Maintenance Window {window_id} date is invalid")
+            try:
+                normalize_half_hour_time(window.get("start_time"))
+            except ValueError as exc:
+                raise StoreError(f"Unlinked Maintenance Window {window_id}: {exc}") from exc
         tickets_path = current_path / "tickets"
         if not tickets_path.is_dir():
             raise StoreError("Ticket directory is missing")
@@ -736,6 +760,14 @@ class ZeusStore:
                 continue
             ticket = self.read_ticket(directory.name, current_path)
             self.validate_ticket(ticket, directory.name)
+            linked_window_id = str(
+                maintenance_window_for_local(ticket.get("local")).get("window_id")
+                or ""
+            ).strip().upper()
+            if linked_window_id and linked_window_id in unlinked_ids:
+                raise StoreError(
+                    f"Maintenance Window {linked_window_id} cannot be both linked and unlinked"
+                )
         spare_root = self.spare_request_active(current_path)
         if not spare_root.is_dir():
             raise StoreError("Spare Request directory is missing")

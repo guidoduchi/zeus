@@ -959,6 +959,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .upcoming-header h1 { margin: 5px 0 3px; font-size: var(--font-hero); line-height: 1; }
 .upcoming-header p { max-width: 720px; margin: 0; color: var(--muted); line-height: 1.45; }
 .upcoming-header-actions, .upcoming-card-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+.upcoming-card-actions { flex-wrap: wrap; justify-content: flex-end; }
+.upcoming-card-actions .text-button { font-size: var(--font-small); }
 .upcoming-stats { display: flex; flex-wrap: wrap; gap: 7px; padding: 10px 0; }
 .upcoming-stats > span { min-width: 132px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 7px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); }
 .upcoming-stats strong { color: var(--cyan); font-size: var(--font-label); }
@@ -977,6 +979,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .upcoming-members strong { color: var(--cyan); }
 .upcoming-members span, .upcoming-members small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upcoming-members small { color: var(--muted); }
+.upcoming-unlinked { display: grid; gap: 3px; padding: 11px 10px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.upcoming-unlinked strong { color: var(--yellow); font-size: var(--font-label); }
+.upcoming-unlinked span { font-size: var(--font-small); }
 .upcoming-card > footer { padding: 7px 10px; color: var(--muted); font-size: var(--font-small); line-height: 1.4; }
 .upcoming-card.state-conflict > footer { color: var(--red); }
 .upcoming-archive { margin-top: 20px; border-top: 1px solid var(--line-bright); }

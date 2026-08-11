@@ -221,6 +221,8 @@ sources of MW truth.
 - successful publication hashes, protected-field snapshot, and closed index;
 - successful email fetch and synchronization times;
 - full-scan, staged-message, publication, and recovery status.
+- unlinked Maintenance Windows, which transfer out of manager state when the
+  first SR becomes authoritative and return only if the last SR is detached;
 - database format version and last successful Database Maintenance timestamp.
 
 Configuration contains user choices only. Runtime markers are never accepted

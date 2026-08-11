@@ -1,4 +1,4 @@
-# Zeus 3.1.14 release scope
+# Zeus 3.1.15 release scope
 
 Included:
 
@@ -73,8 +73,9 @@ Included:
   Unplanned/Planned/Incomplete states, manual completion after the date passes,
   a startup review for elapsed standalone and shared windows, a New MW cycle
   action after completion, and durable archived attempt history;
-- a first-class Upcoming workspace with multiple shared MWs, multiple linked
+- a first-class Upcoming workspace with linked or unlinked MWs, multiple linked
   SRs per window, one unfinished MW per SR, revision-safe atomic scheduling,
+  synchronized edit/delete controls, accurate elapsed-window review counts,
   and per-SR completion review defaulted to Completed;
 - preview-first Database Maintenance with full backup, staged 3.1.8 migration,
   readable-Markdown repair, blocked-record review, validation, and atomic swap;
@@ -117,7 +118,8 @@ Included:
   protected drafts;
 - Advanced Search checks that discover/refresh tickets and defer missing-record
   deletion until the next successful explicit export;
-- hourly fetch-and-sync by default when an Outlook store is available, linked
+- hourly fetch-and-sync by default when an Outlook store and at least one active
+  email-eligible database record are available, linked
   interval configuration, all matched email bodies retained by default with an
   optional finite per-ticket cap, and clear nonfatal disablement when no valid
   store exists;
@@ -128,6 +130,8 @@ Included:
 - bounded Windows access-denied/sharing retries for atomic ticket replacement,
   inherited read-only correction inside disposable transactions, and a durable
   diagnostic while preserving the previous database if a lock persists;
+- fixed 180-day active Spare Request email retention that safely compares aware
+  and naive timestamps without aborting startup cleanup;
 - the full Advanced Search, closure, Outlook, publishing, recovery, MOP, aging,
   and Markdown transaction behavior inherited from 2.0.3;
 - retained non-interactive command-line automation;

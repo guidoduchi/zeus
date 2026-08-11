@@ -815,6 +815,38 @@ class SpareRequestApplicationTests(unittest.TestCase):
         )
         return request
 
+    def test_retention_removes_only_expired_active_email_bodies(self) -> None:
+        now = datetime.now(ECUADOR_TIMEZONE)
+        request = request_record(1)
+        request["email"]["messages"] = [
+            {
+                "message_key": "expired-message",
+                "timestamp": (now - timedelta(days=181)).isoformat(),
+                "direction": "received",
+                "subject": "Old reply",
+                "body": "expired",
+            },
+            {
+                "message_key": "retained-message",
+                "timestamp": (now - timedelta(days=20)).isoformat(),
+                "direction": "sent",
+                "subject": "Current reply",
+                "body": "retained",
+            },
+        ]
+        with self.store.transaction("retention-fixture", {}) as staging:
+            self.store.write_spare_request(staging, request)
+
+        result = self.service.enforce_spare_retention()
+
+        self.assertEqual(result["activeEmailBodies"], 1)
+        retained = self.store.read_spare_request(request["request_id"])["email"]["messages"]
+        self.assertEqual([message["message_key"] for message in retained], ["retained-message"])
+        self.assertEqual(
+            self.store.read_spare_request(request["request_id"])["history"][-1]["action"],
+            "email-records-purged",
+        )
+
     def test_manual_request_email_confirmation_is_shared_and_idempotent(self) -> None:
         request = self.service.export_spare_request(
             {

@@ -1076,16 +1076,31 @@ def purge_old_active_email_bodies(
     *,
     before: datetime,
 ) -> int:
+    cutoff = (
+        before.astimezone(ECUADOR_TIMEZONE).replace(tzinfo=None)
+        if before.tzinfo is not None
+        else before
+    )
+
+    def comparable_timestamp(value: Any) -> datetime | None:
+        timestamp = parse_datetime(value)
+        if timestamp is None:
+            return None
+        return (
+            timestamp.astimezone(ECUADOR_TIMEZONE).replace(tzinfo=None)
+            if timestamp.tzinfo is not None
+            else timestamp
+        )
+
     removed = 0
     for request in list(store.iter_spare_requests(staging_current)):
         messages = list(request.get("email", {}).get("messages", []))
         retained_messages: list[dict[str, Any]] = []
         for message in messages:
-            timestamp = parse_datetime(message.get("timestamp"))
-            if timestamp is None:
+            comparable = comparable_timestamp(message.get("timestamp"))
+            if comparable is None:
                 retained_messages.append(message)
                 continue
-            cutoff = before.replace(tzinfo=None) if before.tzinfo is not None else before
             if comparable >= cutoff:
                 retained_messages.append(message)
                 continue
@@ -1098,11 +1113,7 @@ def purge_old_active_email_bodies(
     unmatched = _read_ndjson(unmatched_path)
     retained_unmatched = []
     for message in unmatched:
-        timestamp = parse_datetime(message.get("timestamp"))
-        comparable = (
-            timestamp.replace(tzinfo=None) if timestamp and timestamp.tzinfo is not None else timestamp
-        )
-        cutoff = before.replace(tzinfo=None) if before.tzinfo is not None else before
+        comparable = comparable_timestamp(message.get("timestamp"))
         if comparable is None or comparable >= cutoff:
             retained_unmatched.append(message)
         else:

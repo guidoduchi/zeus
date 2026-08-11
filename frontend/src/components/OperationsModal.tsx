@@ -8,6 +8,7 @@ interface Props {
   jobs: Job[];
   outlookEnabled: boolean;
   outlookAvailable: boolean;
+  outlookTargetsAvailable?: boolean;
   onClose: () => void;
   onSettings: () => void;
   onRun: (kind: string, payload?: Record<string, unknown>) => void;
@@ -15,16 +16,18 @@ interface Props {
   onError: (error: unknown) => void;
 }
 
-export function OperationsModal({ jobs, outlookEnabled, outlookAvailable, onClose, onSettings, onRun, onCancel, onError }: Props) {
+export function OperationsModal({ jobs, outlookEnabled, outlookAvailable, outlookTargetsAvailable = true, onClose, onSettings, onRun, onCancel, onError }: Props) {
   const [confirmation, setConfirmation] = useState<"publish" | "shutdown" | null>(null);
   const [stopping, setStopping] = useState(false);
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(() => new Set());
   const active = jobs.filter((job) => job.status === "queued" || job.status === "running");
-  const outlookReady = outlookEnabled && outlookAvailable;
+  const outlookReady = outlookEnabled && outlookAvailable && outlookTargetsAvailable;
   const outlookMessage = !outlookEnabled
     ? "Outlook is disabled on this computer."
     : !outlookAvailable
       ? "The configured Outlook store is unavailable."
+      : !outlookTargetsAvailable
+        ? "Add an active Service Request, Spare Request, or Fault Tag before fetching email."
       : "Scan eligible active tickets.";
   async function confirmAction() {
     if (confirmation === "publish") {

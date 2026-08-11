@@ -69,6 +69,7 @@ describe("MaintenanceWindowStartupPrompt", () => {
       startTime: "23:30",
       status: "incomplete",
       managed: true,
+      kind: "shared",
       canComplete: true,
       members: [
         { ticketId: "22345678", summary: "First", site: "GYE", cloud: "Cloud", severity: "Minor", handler: "Handler" },

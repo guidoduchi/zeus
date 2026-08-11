@@ -351,6 +351,29 @@ export function scheduleUpcomingMaintenanceWindow(payload: {
   });
 }
 
+export function updateUpcomingMaintenanceWindow(
+  windowId: string,
+  revision: string,
+  payload: { date: string; startTime?: string | null; ticketIds: string[] },
+): Promise<{ windowId: string; ticketIds: string[]; upcoming: UpcomingMaintenanceWindowsPayload }> {
+  return request(`/api/maintenance-windows/${windowId}`, {
+    method: "PATCH",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision, ...payload }),
+  });
+}
+
+export function deleteUpcomingMaintenanceWindow(
+  windowId: string,
+  revision: string,
+): Promise<{ windowId: string; ticketIds: string[]; upcoming: UpcomingMaintenanceWindowsPayload }> {
+  return request(`/api/maintenance-windows/${windowId}/delete`, {
+    method: "POST",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision }),
+  });
+}
+
 export function completeUpcomingMaintenanceWindow(
   windowId: string,
   revision: string,
