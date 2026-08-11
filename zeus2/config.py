@@ -40,7 +40,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fetch_interval_minutes": 60,
         "sync_mode": "after_fetch",  # scheduled | after_fetch
         "sync_interval_minutes": 60,
-        "retained_message_count": 7,
+        # ``None`` retains every matched body. A finite non-negative integer is
+        # an explicit per-ticket cap; 0 keeps counters without storing bodies.
+        "retained_message_count": None,
         "incremental_overlap_days": 7,
         "fetch_new_ticket_history_automatically": True,
         # Organization-specific senders stay in local configuration rather
@@ -201,8 +203,9 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Retained email bodies",
         "Email",
         "integer",
-        "Newest sent/received message bodies retained per ticket.",
+        "All sent/received message bodies are retained when blank. Enter a maximum per ticket, or 0 to keep counters without bodies.",
         minimum=0,
+        nullable=True,
     ),
     SettingSpec(
         "email.incremental_overlap_days",
@@ -424,6 +427,13 @@ def get_dotted(config: dict[str, Any], dotted_key: str) -> Any:
     return cursor
 
 
+def retained_message_limit(config: dict[str, Any]) -> int | None:
+    """Return the explicit body cap, or ``None`` when every body is retained."""
+
+    value = config.get("email", {}).get("retained_message_count")
+    return None if value is None else int(value)
+
+
 def _looks_like_outlook_store(value: Any) -> bool:
     return bool(value) and Path(str(value).strip().strip('"')).suffix.lower() in OUTLOOK_STORE_SUFFIXES
 
@@ -553,9 +563,12 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
         value = _require_integer(config, f"email.{key}")
         if value < -1:
             raise ValueError(f"email.{key} must be -1, 0, or a positive integer")
-    retained = _require_integer(config, "email.retained_message_count")
-    if retained < 0:
-        raise ValueError("email.retained_message_count cannot be negative")
+    retained = get_dotted(config, "email.retained_message_count")
+    if retained is not None:
+        if isinstance(retained, bool) or not isinstance(retained, int):
+            raise ValueError("email.retained_message_count must be a whole number or null")
+        if retained < 0:
+            raise ValueError("email.retained_message_count cannot be negative")
     overlap = _require_integer(config, "email.incremental_overlap_days")
     if overlap < 0:
         raise ValueError("email.incremental_overlap_days cannot be negative")

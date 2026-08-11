@@ -158,9 +158,11 @@ def render_ticket_markdown(ticket: dict[str, Any]) -> str:
             "",
             f"- Current: **{_display(maintenance_window.get('display'))}**",
             f"- State: {_display(maintenance_window.get('status'))}",
+            f"- Scheduled start: {_display(maintenance_window.get('startTime'))}",
+            f"- Shared window: {_display(maintenance_window.get('windowId'))}",
             "",
-            "| Date | Outcome | Confirmed at | Source |",
-            "|---|---|---|---|",
+            "| Date | Start | Outcome | Finish | Confirmed at | Source |",
+            "|---|---|---|---|---|---|",
         ]
     )
     attempts = maintenance_window.get("attempts") or []
@@ -169,13 +171,28 @@ def render_ticket_markdown(ticket: dict[str, Any]) -> str:
             lines.append(
                 "| "
                 + " | ".join(
-                    _display(attempt.get(key))
-                    for key in ("date", "outcome", "confirmed_at", "source")
+                    (
+                        _display(attempt.get("date")),
+                        _display(attempt.get("start_time")),
+                        _display(attempt.get("outcome")),
+                        _display(
+                            " ".join(
+                                value
+                                for value in (
+                                    str(attempt.get("finish_date") or ""),
+                                    str(attempt.get("finish_time") or ""),
+                                )
+                                if value
+                            )
+                        ),
+                        _display(attempt.get("confirmed_at")),
+                        _display(attempt.get("source")),
+                    )
                 )
                 + " |"
             )
     else:
-        lines.append("| — | — | — | — |")
+        lines.append("| — | — | — | — | — | — |")
     lines.extend(["", "## Pendings fields", "", "| Field | Value |", "|---|---|"])
     for column in LOCAL_COLUMNS:
         lines.append(f"| {_display(column)} | {_display(local.get(column))} |")

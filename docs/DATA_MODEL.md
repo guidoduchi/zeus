@@ -177,7 +177,18 @@ Zeus 3.1.6 introduced MW truth under `local.maintenance_window`:
   "schema_version": 1,
   "status": "planned",
   "date": "2026-08-21",
-  "attempts": [],
+  "start_time": "23:30",
+  "window_id": "MW-260811120000-ABCD",
+  "attempts": [
+    {
+      "date": "2026-08-21",
+      "start_time": "23:30",
+      "outcome": "completed",
+      "finish_time": "00:30",
+      "finish_date": "2026-08-22",
+      "window_id": "MW-260811120000-ABCD"
+    }
+  ],
   "review_required": false
 }
 ```
@@ -188,6 +199,13 @@ appended to `attempts`, changes status to `incomplete`, and clears `date`; a
 later plan sets a new date without deleting the old attempt. A successful
 outcome preserves its date in history and changes the visible value to
 `Complete`.
+
+`start_time` and archived `finish_time` values are optional and restricted to
+`:00` or `:30`. When a finish clock time precedes a recorded start time, Zeus
+stores the finish on the next calendar day; the resulting duration must not
+exceed 12 hours. `window_id` links all members of one shared Upcoming window.
+It is cleared from the current SR state when that cycle is reviewed, while the
+archived attempt retains it permanently.
 
 `local.fields["Planned Date"]` and `local.fields["Done?"]` remain generated
 compatibility projections for Pendings/Closed export and older scripts. They

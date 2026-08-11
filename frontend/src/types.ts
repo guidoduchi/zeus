@@ -1,5 +1,6 @@
 export type Risk = "none" | "grey" | "yellow" | "red";
-export type WorkspaceKey = "service-requests" | "spare-requests";
+export type WorkspaceKey = "service-requests" | "spare-requests" | "upcoming";
+export type DashboardWorkspaceKey = Exclude<WorkspaceKey, "upcoming">;
 export type SpareRequestView = "active" | "eligible" | "fault-tags" | "completed";
 
 export interface ColumnDefinition {
@@ -17,17 +18,69 @@ export interface MaintenanceWindowAttempt {
   outcome: "completed" | "incomplete";
   confirmed_at: string | null;
   source: string;
+  start_time?: string | null;
+  finish_time?: string | null;
+  finish_date?: string | null;
+  window_id?: string | null;
 }
 
 export interface MaintenanceWindowSummary {
   schemaVersion: number;
   status: MaintenanceWindowStatus;
   date: string | null;
+  startTime?: string | null;
+  windowId?: string | null;
+  managedInUpcoming?: boolean;
   display: string;
   color: Risk | "green" | null;
   confirmationRequired: boolean;
   attempts: MaintenanceWindowAttempt[];
   reviewRequired: boolean;
+}
+
+export interface UpcomingMaintenanceWindowMember {
+  ticketId: string;
+  summary: string;
+  site: string;
+  cloud: string;
+  severity: string;
+  handler: string;
+  outcome?: "completed" | "incomplete";
+}
+
+export interface UpcomingMaintenanceWindow {
+  windowId: string;
+  revision: string;
+  date: string;
+  startTime: string | null;
+  status: "planned" | "incomplete" | "conflict";
+  managed: boolean;
+  canComplete: boolean;
+  members: UpcomingMaintenanceWindowMember[];
+}
+
+export interface ArchivedMaintenanceWindow {
+  windowId: string;
+  date: string;
+  startTime: string | null;
+  finishTime: string | null;
+  finishDate: string | null;
+  confirmedAt: string | null;
+  members: UpcomingMaintenanceWindowMember[];
+}
+
+export interface MaintenanceWindowCandidate extends UpcomingMaintenanceWindowMember {
+  available: boolean;
+  currentWindowId: string | null;
+  currentWindow: MaintenanceWindowSummary | null;
+}
+
+export interface UpcomingMaintenanceWindowsPayload {
+  datasetRevision: number;
+  windows: UpcomingMaintenanceWindow[];
+  archived: ArchivedMaintenanceWindow[];
+  candidates: MaintenanceWindowCandidate[];
+  stats: { windows: number; tickets: number; awaitingReview: number };
 }
 
 export interface TicketSummary {

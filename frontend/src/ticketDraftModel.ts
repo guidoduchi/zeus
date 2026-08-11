@@ -3,6 +3,7 @@ import type { SpareDevice, TicketDetail } from "./types";
 
 export const WORK_FIELDS = [
   "Planned Date",
+  "Maintenance Window Start Time",
   "Site",
   "Cloud",
   "RelatedSR",
@@ -60,7 +61,12 @@ export function draftValue(field: string, value: unknown): string {
 
 export function workFieldValues(ticket: TicketDetail): WorkDraft {
   return Object.fromEntries(
-    WORK_FIELDS.map((field) => [field, draftValue(field, ticket.localFields[field])]),
+    WORK_FIELDS.map((field) => [field, draftValue(
+      field,
+      field === "Maintenance Window Start Time"
+        ? ticket.maintenanceWindow?.startTime
+        : ticket.localFields[field],
+    )]),
   );
 }
 
@@ -70,7 +76,12 @@ export function changedWorkFields(
 ): Record<string, unknown> {
   return Object.fromEntries(
     WORK_FIELDS
-      .filter((field) => draftValue(field, ticket.localFields[field]) !== String(draft[field] ?? ""))
+      .filter((field) => draftValue(
+        field,
+        field === "Maintenance Window Start Time"
+          ? ticket.maintenanceWindow?.startTime
+          : ticket.localFields[field],
+      ) !== String(draft[field] ?? ""))
       .map((field) => [field, draft[field] === "" ? null : draft[field]]),
   );
 }
@@ -178,7 +189,7 @@ export function cleanSpareParts(value: DraftDevice[] | SpareDevice[]): SpareDevi
 }
 
 export function displayDraftField(field: string): string {
-  if (field === "Planned Date" || field === "Done?") return "Maintenance Window";
+  if (field === "Planned Date" || field === "Done?" || field === "Maintenance Window Start Time") return "Maintenance Window";
   if (field === "Spare Parts") return "Spare Parts";
   return field;
 }

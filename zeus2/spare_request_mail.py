@@ -8,6 +8,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
+from .config import retained_message_limit
 from .fault_tags import fault_tag_history
 from .spare_request_excel import archived_rma_values, read_archived_items
 from .spare_requests import (
@@ -455,7 +456,7 @@ def _conflict(
 
 
 def _associate_message(
-    request: dict[str, Any], message: dict[str, Any], item_ids: Iterable[str], retained: int
+    request: dict[str, Any], message: dict[str, Any], item_ids: Iterable[str], retained: int | None
 ) -> None:
     email = request.setdefault("email", {})
     key = str(message.get("message_key") or "")
@@ -476,11 +477,11 @@ def _associate_message(
     current = email.get("last_activity_at")
     if timestamp and (not current or _message_time(message) >= _message_time({"timestamp": current})):
         email["last_activity_at"] = timestamp
-    if retained:
+    if retained is None or retained > 0:
         messages = list(email.get("messages") or [])
         messages.append(copy_message_for_request(message, item_ids))
         messages.sort(key=_message_time, reverse=True)
-        email["messages"] = messages[:retained]
+        email["messages"] = messages if retained is None else messages[:retained]
     else:
         email["messages"] = []
 
@@ -532,7 +533,7 @@ def _apply_confirmation(
     fact: dict[str, Any],
     requests: list[dict[str, Any]],
     request_id_index: dict[str, dict[str, Any]],
-    retained: int,
+    retained: int | None,
     archived_rmas: set[str],
 ) -> tuple[set[str], bool]:
     affected: dict[str, tuple[dict[str, Any], set[str]]] = {}
@@ -664,7 +665,7 @@ def _apply_dispatch(
     message: dict[str, Any],
     fact: dict[str, Any],
     requests: list[dict[str, Any]],
-    retained: int,
+    retained: int | None,
 ) -> tuple[set[str], bool]:
     _, rma_index = _global_indices(requests)
     affected: dict[str, tuple[dict[str, Any], set[str]]] = {}
@@ -743,7 +744,7 @@ def _apply_warehouse(
     message: dict[str, Any],
     facts: list[dict[str, Any]],
     requests: list[dict[str, Any]],
-    retained: int,
+    retained: int | None,
 ) -> tuple[set[str], bool]:
     _, rma_index = _global_indices(requests)
     affected: dict[str, tuple[dict[str, Any], set[str]]] = {}
@@ -788,7 +789,7 @@ def _apply_warehouse(
 def _associate_outbound(
     message: dict[str, Any],
     request_id_index: dict[str, dict[str, Any]],
-    retained: int,
+    retained: int | None,
 ) -> set[str]:
     if str(message.get("direction") or "").casefold() != "sent":
         return set()
@@ -816,7 +817,7 @@ def _associate_fault_tag_outbound(
     message: dict[str, Any],
     requests: list[dict[str, Any]],
     fault_tags: list[dict[str, Any]],
-    retained: int,
+    retained: int | None,
 ) -> tuple[set[str], set[str]]:
     if str(message.get("direction") or "").casefold() != "sent":
         return set(), set()
@@ -990,7 +991,7 @@ def apply_spare_request_messages(
             for row in read_archived_items(closed_path)
         )
     ) if closed_path is not None else set()
-    retained = int(store.config.get("email", {}).get("retained_message_count", 7))
+    retained = retained_message_limit(store.config)
     trust = spare_mail_trust(store.config)
     message_state: dict[str, dict[str, Any]] = {
         str(message["message_key"]): {"message": message, "matched": False, "complete": True}

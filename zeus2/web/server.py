@@ -25,6 +25,9 @@ MAX_JSON_BODY = 1_000_000
 TICKET_ROUTE = re.compile(r"^/api/tickets/(\d{8})$")
 TICKET_LOCAL_ROUTE = re.compile(r"^/api/tickets/(\d{8})/local$")
 TICKET_MW_CONFIRM_ROUTE = re.compile(r"^/api/tickets/(\d{8})/maintenance-window/confirm$")
+UPCOMING_MW_COMPLETE_ROUTE = re.compile(
+    r"^/api/maintenance-windows/(MW-\d{12}-[A-F0-9]{4})/complete$"
+)
 JOB_CANCEL_ROUTE = re.compile(r"^/api/jobs/([a-f0-9]{32})/cancel$")
 MOP_DOWNLOAD_ROUTE = re.compile(r"^/api/tickets/(\d{8})/mops/([^/]+)$")
 SPARE_REQUEST_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})$")
@@ -218,6 +221,12 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if path == "/api/maintenance-windows":
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.upcoming_maintenance_windows(),
+            )
+            return
         if path == "/api/spare-requests/reference-data":
             self._send_json(HTTPStatus.OK, self.server.service.spare_reference_data())
             return
@@ -307,6 +316,37 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if path == "/api/maintenance-windows":
+            ticket_ids = payload.get("ticketIds")
+            if not isinstance(ticket_ids, list):
+                raise ValidationError("Choose the Service Requests attached to this window")
+            self._send_json(
+                HTTPStatus.CREATED,
+                self.server.service.schedule_upcoming_maintenance_window(
+                    planned_date=payload.get("date"),
+                    start_time=payload.get("startTime"),
+                    ticket_ids=ticket_ids,
+                ),
+            )
+            return
+        upcoming_complete_match = UPCOMING_MW_COMPLETE_ROUTE.fullmatch(path)
+        if upcoming_complete_match:
+            outcomes = payload.get("outcomes")
+            if not isinstance(outcomes, dict):
+                raise ValidationError("Review every linked Service Request")
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.complete_upcoming_maintenance_window(
+                    upcoming_complete_match.group(1),
+                    expected_revision=expected_revision,
+                    outcomes=outcomes,
+                    finish_time=payload.get("finishTime"),
+                ),
+            )
+            return
         maintenance_window_match = TICKET_MW_CONFIRM_ROUTE.fullmatch(path)
         if maintenance_window_match:
             successful = payload.get("successful")
@@ -322,6 +362,11 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                     planned_date=str(payload.get("plannedDate") or ""),
                     successful=successful,
                     expected_revision=expected_revision,
+                    finish_time=(
+                        str(payload.get("finishTime"))
+                        if payload.get("finishTime") not in (None, "")
+                        else None
+                    ),
                 ),
             )
             return

@@ -51,6 +51,17 @@ function settingsPayload(fontScale = "standard") {
       value: "C:\\Users\\Nebby\\AppData\\Local\\Zeus\\data",
       status: { exists: true, path: "C:\\Users\\Nebby\\AppData\\Local\\Zeus\\data", message: "1024 MiB available" },
     }, {
+      key: "email.retained_message_count",
+      label: "Retained email bodies",
+      category: "Email",
+      kind: "integer",
+      description: "Leave blank for all email bodies, or set a per-ticket maximum.",
+      minimum: 0,
+      choices: [],
+      nullable: true,
+      editable: true,
+      value: null,
+    }, {
       key: "web.font_scale",
       label: "Interface text size",
       category: "Appearance",
@@ -141,6 +152,18 @@ describe("SettingsModal data storage", () => {
     await user.click(toggle);
     await user.click(screen.getByRole("button", { name: "Save configuration" }));
     await waitFor(() => expect(api.saveSettings).toHaveBeenCalledWith({ "web.show_detail_history": true }));
+  });
+
+  it("shows unlimited email retention as blank and accepts a finite cap", async () => {
+    const user = userEvent.setup();
+    render(<SettingsModal onClose={vi.fn()} onSaved={vi.fn()} onError={vi.fn()} />);
+
+    const retained = await screen.findByLabelText("Retained email bodies");
+    expect(retained).toHaveValue(null);
+    expect(retained).toHaveAttribute("placeholder", "All emails");
+    await user.type(retained, "25");
+    await user.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => expect(api.saveSettings).toHaveBeenCalledWith({ "email.retained_message_count": "25" }));
   });
 
   it("previews and explicitly confirms a backup-backed database upgrade", async () => {

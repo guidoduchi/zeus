@@ -13,6 +13,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any, Callable, Iterable
 
+from .config import retained_message_limit
 from .diagnostics import record_exception
 from .spare_request_mail import (
     apply_spare_request_messages,
@@ -378,7 +379,7 @@ def _apply_sync_to_staging(
     staged_messages = _read_ndjson(staged_path)
     active_ids = set(store.iter_ticket_ids(status="active", current_path=staging_current))
     targets = active_ids if ticket_ids is None else active_ids & ticket_ids
-    retained_count = int(store.config.get("email", {}).get("retained_message_count", 7))
+    retained_count = retained_message_limit(store.config)
     updated_tickets: list[str] = []
     added_associations = 0
 
@@ -406,7 +407,7 @@ def _apply_sync_to_staging(
             if message.get("message_key")
         }
         for message in relevant:
-            if retained_count:
+            if retained_count is None or retained_count > 0:
                 all_retained[message["message_key"]] = {
                     key: deepcopy(value)
                     for key, value in message.items()
@@ -416,8 +417,10 @@ def _apply_sync_to_staging(
             all_retained.values(),
             key=lambda item: (_timestamp_key(item.get("timestamp")), item.get("message_key", "")),
             reverse=True,
-        )[:retained_count]
-        email["messages"] = retained if retained_count else []
+        )
+        if retained_count is not None:
+            retained = retained[:retained_count]
+        email["messages"] = retained
         email["seen_message_keys"] = sorted(seen)
 
         received_times = [
@@ -864,14 +867,14 @@ def _fetch_outlook_messages_on_worker(
 
         # Bodies are the expensive part.  Retrieve only the union of each
         # ticket's newest configured N matches.
-        retained_count = int(store.config.get("email", {}).get("retained_message_count", 7))
+        retained_count = retained_message_limit(store.config)
         body_keys: set[str] = set()
         body_keys.update(
             message["message_key"]
             for message in metadata
             if message.get("spare_candidate")
         )
-        if retained_count:
+        if retained_count is None or retained_count > 0:
             for ticket_id in known_ids:
                 candidates = [
                     message for message in metadata if ticket_id in message["ticket_ids"]
@@ -879,9 +882,8 @@ def _fetch_outlook_messages_on_worker(
                 candidates.sort(
                     key=lambda message: _timestamp_key(message["timestamp"]), reverse=True
                 )
-                body_keys.update(
-                    message["message_key"] for message in candidates[:retained_count]
-                )
+                selected = candidates if retained_count is None else candidates[:retained_count]
+                body_keys.update(message["message_key"] for message in selected)
         for index, message in enumerate(metadata, start=1):
             if message["message_key"] not in body_keys:
                 continue

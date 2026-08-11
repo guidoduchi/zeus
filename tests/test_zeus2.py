@@ -222,7 +222,7 @@ class UtilityAndConfigTests(ZeusCase):
         self.assertEqual(config["email"]["fetch_interval_minutes"], 60)
         self.assertEqual(config["email"]["sync_mode"], "after_fetch")
         self.assertEqual(config["email"]["sync_interval_minutes"], 60)
-        self.assertEqual(config["email"]["retained_message_count"], 7)
+        self.assertIsNone(config["email"]["retained_message_count"])
         self.assertTrue(config["email"]["fetch_new_ticket_history_automatically"])
         self.assertEqual(config["web"]["font_scale"], "standard")
         self.assertFalse(config["web"]["show_detail_history"])
@@ -704,6 +704,58 @@ class EmailTests(ZeusCase):
         email = self.store.read_ticket("12345678")["email"]
         self.assertEqual(email["total_received"] + email["total_sent"], 2)
         self.assertEqual(email["messages"], [])
+
+    def test_default_retention_keeps_every_matched_email_body(self) -> None:
+        messages = [
+            {
+                "message_id": f"message-{index}",
+                "ticket_ids": ["12345678"],
+                "timestamp": f"2026-08-{index:02d} 10:00:00",
+                "direction": "received",
+                "subject": f"SR 12345678 update {index}",
+                "body": f"body {index}",
+            }
+            for index in range(1, 13)
+        ]
+
+        commit_fetched_messages(
+            self.store,
+            messages,
+            fetched_ticket_ids=["12345678"],
+            full_scan=True,
+            synchronize=True,
+        )
+
+        retained = self.store.read_ticket("12345678")["email"]["messages"]
+        self.assertEqual(len(retained), 12)
+        self.assertEqual({message["body"] for message in retained}, {f"body {index}" for index in range(1, 13)})
+
+    def test_explicit_retention_cap_keeps_only_the_newest_bodies(self) -> None:
+        config = self.store.config
+        config["email"]["retained_message_count"] = 3
+        self.store.save_config(config)
+        messages = [
+            {
+                "message_id": f"limited-{index}",
+                "ticket_ids": ["12345678"],
+                "timestamp": f"2026-08-{index:02d} 10:00:00",
+                "direction": "received",
+                "subject": f"SR 12345678 update {index}",
+                "body": f"body {index}",
+            }
+            for index in range(1, 9)
+        ]
+
+        commit_fetched_messages(
+            self.store,
+            messages,
+            fetched_ticket_ids=["12345678"],
+            full_scan=True,
+            synchronize=True,
+        )
+
+        retained = self.store.read_ticket("12345678")["email"]["messages"]
+        self.assertEqual([message["body"] for message in retained], ["body 8", "body 7", "body 6"])
 
     def test_worker_failure_is_normalized_and_logged(self) -> None:
         failed: Future[object] = Future()

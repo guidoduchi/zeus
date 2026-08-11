@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TopBar } from "../components/TopBar";
 
 describe("TopBar workspace switcher", () => {
-  it("switches between first-class Service Requests and Spare Requests views", async () => {
+  it("switches between Service Requests, Spare Requests, and Upcoming", async () => {
     const user = userEvent.setup();
     const onWorkspaceChange = vi.fn();
     render(
@@ -24,5 +24,7 @@ describe("TopBar workspace switcher", () => {
     expect(screen.getByRole("button", { name: "Service Requests" })).toHaveAttribute("aria-pressed", "true");
     await user.click(screen.getByRole("button", { name: "Spare Requests" }));
     expect(onWorkspaceChange).toHaveBeenCalledWith("spare-requests");
+    await user.click(screen.getByRole("button", { name: "Upcoming" }));
+    expect(onWorkspaceChange).toHaveBeenCalledWith("upcoming");
   });
 });

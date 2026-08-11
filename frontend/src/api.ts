@@ -3,6 +3,7 @@ import type {
   BootstrapPayload,
   DashboardPayload,
   DatabaseMaintenanceStatus,
+  DashboardWorkspaceKey,
   BomCatalogPayload,
   GlobalReferenceData,
   FaultTagDetail,
@@ -15,7 +16,7 @@ import type {
   TicketDetail,
   UserProfile,
   UserProfilePayload,
-  WorkspaceKey,
+  UpcomingMaintenanceWindowsPayload,
 } from "./types";
 
 let csrfToken = "";
@@ -104,7 +105,7 @@ export function saveBomCatalog(value: BomCatalogPayload): Promise<BomCatalogPayl
 }
 
 export function getDashboard(
-  workspace: WorkspaceKey,
+  workspace: DashboardWorkspaceKey,
   sort: string,
   direction: "asc" | "desc",
   search: string,
@@ -322,6 +323,7 @@ export function confirmMaintenanceWindow(
   revision: string,
   plannedDate: string,
   successful: boolean,
+  finishTime?: string | null,
 ): Promise<{
   changed: boolean;
   changedFields: string[];
@@ -330,7 +332,35 @@ export function confirmMaintenanceWindow(
   return request(`/api/tickets/${ticketId}/maintenance-window/confirm`, {
     method: "POST",
     headers: { "If-Match": revision },
-    body: JSON.stringify({ revision, plannedDate, successful }),
+    body: JSON.stringify({ revision, plannedDate, successful, finishTime: finishTime || null }),
+  });
+}
+
+export function getUpcomingMaintenanceWindows(): Promise<UpcomingMaintenanceWindowsPayload> {
+  return request<UpcomingMaintenanceWindowsPayload>("/api/maintenance-windows");
+}
+
+export function scheduleUpcomingMaintenanceWindow(payload: {
+  date: string;
+  startTime?: string | null;
+  ticketIds: string[];
+}): Promise<{ windowId: string; upcoming: UpcomingMaintenanceWindowsPayload }> {
+  return request("/api/maintenance-windows", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function completeUpcomingMaintenanceWindow(
+  windowId: string,
+  revision: string,
+  outcomes: Record<string, boolean>,
+  finishTime?: string | null,
+): Promise<{ windowId: string; ticketIds: string[]; upcoming: UpcomingMaintenanceWindowsPayload }> {
+  return request(`/api/maintenance-windows/${windowId}/complete`, {
+    method: "POST",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision, outcomes, finishTime: finishTime || null }),
   });
 }
 

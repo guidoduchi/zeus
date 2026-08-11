@@ -1,4 +1,4 @@
-# Zeus 3.1.11 release scope
+# Zeus 3.1.12 release scope
 
 Included:
 
@@ -18,8 +18,8 @@ Included:
 - slot-derived physical-unit, future-RMA, and Fault Tag expansion, with a manual
   multiplier for slotless groups and every unit retaining the damaged device's
   newline-delimited faulty serial evidence together in one cell;
-- a Service Requests / Spare Requests workspace switcher with independent
-  search, sort, direction, and field preferences;
+- a Service Requests / Spare Requests / Upcoming workspace switcher, with
+  independent dashboard search, sort, direction, and field preferences;
 - independent active Spare Request Markdown records, unit-level items, partial
   stock, requested/delivered BOM separation, unique correction-safe RMAs with
   reserved historical aliases, and visible conflict handling;
@@ -67,9 +67,13 @@ Included:
 - severity in the default dense dashboard, one structured MW field with legacy
   workbook projections, Last Email age plus directional received/sent triangles,
   and compact unit-count Spare Parts badges with day-20 active escalation;
-- one date-first MW column and full-width editor, with automatic
+- one date-first MW column and full-width editor, optional half-hour start and
+  finish times with next-day inference and a 12-hour limit, automatic
   Unplanned/Planned/Incomplete states, manual completion after the date passes,
   a New MW cycle action after completion, and durable archived attempt history;
+- a first-class Upcoming workspace with multiple shared MWs, multiple linked
+  SRs per window, one unfinished MW per SR, revision-safe atomic scheduling,
+  and per-SR completion review defaulted to Completed;
 - preview-first Database Maintenance with full backup, staged 3.1.8 migration,
   readable-Markdown repair, blocked-record review, validation, and atomic swap;
 - locally persisted dark/light theme, filters, sort field, and
@@ -112,7 +116,9 @@ Included:
 - Advanced Search checks that discover/refresh tickets and defer missing-record
   deletion until the next successful explicit export;
 - hourly fetch-and-sync by default when an Outlook store is available, linked
-  interval configuration, and clear nonfatal disablement when no valid store exists;
+  interval configuration, all matched email bodies retained by default with an
+  optional finite per-ticket cap, and clear nonfatal disablement when no valid
+  store exists;
 - the full Advanced Search, closure, Outlook, publishing, recovery, MOP, aging,
   and Markdown transaction behavior inherited from 2.0.3;
 - retained non-interactive command-line automation;

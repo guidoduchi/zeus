@@ -37,6 +37,7 @@ export function useGlobalCommands({
         || event.altKey
         || event.metaKey
         || isEditingArea(event.target)
+        || Boolean(document.querySelector(".modal-backdrop"))
       ) return;
 
       const key = event.key.toLowerCase();

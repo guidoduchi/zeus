@@ -1,19 +1,9 @@
 # Zeus roadmap
 
-This file preserves agreed work that belongs after the Zeus 3.1.11 interaction
+This file preserves agreed work that belongs after the Zeus 3.1.12 interaction
 patch. Requirements remain provisional until their dedicated design pass.
 
 ## Next major patch
-
-### Maintenance Window Manager
-
-- Add a top-level **Maintenance Window Manager** after Service Requests and
-  Spare Requests.
-- Allow users to create independent maintenance-window records manually.
-- Create or link an MW candidate from a Service Request only when that ticket
-  contains a planned date.
-- Prevent duplicate MW records when the same SR is refreshed or its date is
-  edited; preserve an explicit relationship back to the source SR.
 
 ### Network Element Manager
 

@@ -13,8 +13,10 @@ from zeus2.application.service import ApplicationService
 from zeus2.application.serialization import serialize_ticket_summary, ticket_revision
 from zeus2.database_maintenance import inspect_database, maintain_database
 from zeus2.maintenance_windows import (
+    infer_finish_date,
     legacy_projection,
     maintenance_window_summary,
+    normalize_half_hour_time,
     normalize_maintenance_window,
 )
 from zeus2.store import StoreError, ZeusStore, render_ticket_markdown
@@ -300,6 +302,56 @@ class MaintenanceWindowLifecycleTests(unittest.TestCase):
         self.assertEqual(window["attempts"][-1]["date"], planned)
         self.assertEqual(window["attempts"][-1]["outcome"], "completed")
         self.assertEqual(summary["maintenanceWindow"]["display"], "Unplanned")
+
+    def test_half_hour_times_survive_rescheduling_and_infer_overnight_finish(self) -> None:
+        self.seed_planned()
+        before = self.store.read_ticket("12345678")
+        edit_ticket_in_database(
+            self.store,
+            "12345678",
+            {"Maintenance Window Start Time": "23:30"},
+            expected_revision=ticket_revision(before),
+        )
+        timed = self.store.read_ticket("12345678")
+        moved_date = (local_today() - timedelta(days=2)).isoformat()
+        edit_ticket_in_database(
+            self.store,
+            "12345678",
+            {"Planned Date": moved_date},
+            expected_revision=ticket_revision(timed),
+        )
+        moved = self.store.read_ticket("12345678")
+        self.assertEqual(moved["local"]["maintenance_window"]["start_time"], "23:30")
+
+        confirm_maintenance_window_in_database(
+            self.store,
+            "12345678",
+            planned_date=moved_date,
+            successful=True,
+            finish_time="00:30",
+            expected_revision=ticket_revision(moved),
+        )
+        attempt = self.store.read_ticket("12345678")["local"]["maintenance_window"]["attempts"][-1]
+        self.assertEqual(attempt["start_time"], "23:30")
+        self.assertEqual(attempt["finish_time"], "00:30")
+        self.assertEqual(
+            attempt["finish_date"],
+            (local_today() - timedelta(days=1)).isoformat(),
+        )
+        completed = self.store.read_ticket("12345678")
+        edit_ticket_in_database(
+            self.store,
+            "12345678",
+            {"Planned Date": None, "Done?": "N"},
+            expected_revision=ticket_revision(completed),
+        )
+        restarted = self.store.read_ticket("12345678")["local"]["maintenance_window"]
+        self.assertIsNone(restarted["date"])
+        self.assertIsNone(restarted["start_time"])
+        with self.assertRaisesRegex(ValueError, "HH:00 or HH:30"):
+            normalize_half_hour_time("23:15")
+        with self.assertRaisesRegex(ValueError, "cannot exceed 12 hours"):
+            infer_finish_date(moved_date, start_time="20:00", finish_time="09:00")
 
     def test_bootstrap_surfaces_overdue_prompts_from_any_saved_workspace(self) -> None:
         planned = self.seed_planned()

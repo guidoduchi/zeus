@@ -7,12 +7,14 @@ import {
   ApiError,
   bulkSpareLifecycle,
   cancelJob,
+  completeUpcomingMaintenanceWindow,
   confirmMaintenanceWindow,
   exportSpareRequest,
   exportSpareReturn,
   getBootstrap,
   getDashboard,
   getFaultTag,
+  getUpcomingMaintenanceWindows,
   getSpareRequest,
   getTemplates,
   getTicket,
@@ -23,6 +25,7 @@ import {
   saveTicketDraftBatch,
   saveUserProfile,
   saveTicket,
+  scheduleUpcomingMaintenanceWindow,
   startJob,
 } from "./api";
 import { BomCatalogModal } from "./components/BomCatalogModal";
@@ -53,6 +56,7 @@ import { StatsBar } from "./components/StatsBar";
 import { TicketDetail } from "./components/TicketDetail";
 import { TicketGrid } from "./components/TicketGrid";
 import { TopBar } from "./components/TopBar";
+import { UpcomingWorkspace } from "./components/UpcomingWorkspace";
 import {
   countUnsavedDrafts,
   clearDraftUndo,
@@ -70,6 +74,7 @@ import { useRowFilters, type RowFilterBlueprint } from "./hooks/useRowFilters";
 import { maintenanceWindowStatusLabel } from "./maintenanceWindow";
 import type {
   BootstrapPayload,
+  DashboardWorkspaceKey,
   DashboardPayload,
   FaultTagDetail as FaultTagDetailType,
   FaultTagSummary,
@@ -80,6 +85,8 @@ import type {
   SpareRequestView,
   TicketSummary,
   TicketDetail as TicketDetailType,
+  UpcomingMaintenanceWindow,
+  UpcomingMaintenanceWindowsPayload,
   UserProfile,
   WorkspaceKey,
 } from "./types";
@@ -139,6 +146,14 @@ const WORKSPACES: Record<WorkspaceKey, WorkspaceConfiguration> = {
     },
     searchPlaceholder: "Search TT, tracking ID, RMA, BOM, serial, site…",
     columnsStorageKey: "zeus3.spare-requests.columns",
+  },
+  "upcoming": {
+    label: "Upcoming",
+    defaultSort: "date",
+    sorts: [{ value: "date", label: "MW date" }],
+    defaultDirections: { date: "asc" },
+    searchPlaceholder: "Search upcoming windows…",
+    columnsStorageKey: "zeus3.upcoming.columns",
   },
 };
 
@@ -214,12 +229,16 @@ function readPreference(key: string, fallback: string): string {
 }
 
 function workspacePreferenceKey(workspace: WorkspaceKey, name: string): string {
-  const prefix = workspace === "service-requests" ? "zeus3.dashboard" : "zeus3.spare-requests";
+  const prefix = workspace === "service-requests"
+    ? "zeus3.dashboard"
+    : workspace === "spare-requests"
+      ? "zeus3.spare-requests"
+      : "zeus3.upcoming";
   return `${prefix}.${name}`;
 }
 
 function dashboardCacheKey(
-  workspace: WorkspaceKey,
+  workspace: DashboardWorkspaceKey,
   sort: string,
   direction: SortDirection,
   search: string,
@@ -229,9 +248,9 @@ function dashboardCacheKey(
 }
 
 function readWorkspace(): WorkspaceKey {
-  return ["spare-requests", "spare-parts"].includes(readPreference("zeus3.workspace", "service-requests"))
-    ? "spare-requests"
-    : "service-requests";
+  const saved = readPreference("zeus3.workspace", "service-requests");
+  if (saved === "upcoming") return "upcoming";
+  return ["spare-requests", "spare-parts"].includes(saved) ? "spare-requests" : "service-requests";
 }
 
 function readWorkspacePreference(workspace: WorkspaceKey): WorkspacePreference {
@@ -252,6 +271,7 @@ export default function App() {
   const [workspacePreferences, setWorkspacePreferences] = useState<Record<WorkspaceKey, WorkspacePreference>>(() => ({
     "service-requests": readWorkspacePreference("service-requests"),
     "spare-requests": readWorkspacePreference("spare-requests"),
+    "upcoming": readWorkspacePreference("upcoming"),
   }));
   const [spareView, setSpareView] = useState<SpareRequestView>(() => {
     const saved = readPreference("zeus3.spare-requests.view", "active");
@@ -259,6 +279,9 @@ export default function App() {
   });
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
+  const [upcoming, setUpcoming] = useState<UpcomingMaintenanceWindowsPayload | null>(null);
+  const [upcomingLoading, setUpcomingLoading] = useState(workspace === "upcoming");
+  const [upcomingBusy, setUpcomingBusy] = useState(false);
   const [ticket, setTicket] = useState<TicketDetailType | null>(null);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
@@ -346,13 +369,28 @@ export default function App() {
     return result;
   }, []);
 
+  const loadUpcoming = useCallback(async () => {
+    setUpcomingLoading(true);
+    try {
+      const result = await getUpcomingMaintenanceWindows();
+      setUpcoming(result);
+      return result;
+    } finally {
+      setUpcomingLoading(false);
+    }
+  }, []);
+
   const loadDashboard = useCallback(async (
-    currentWorkspace = workspace,
-    currentSort = sort,
-    currentDirection = direction,
-    currentSearch = search,
-    currentView = spareView,
+    currentWorkspace: DashboardWorkspaceKey = workspace === "upcoming" ? "service-requests" : workspace,
+    requestedSort?: string,
+    requestedDirection?: SortDirection,
+    requestedSearch?: string,
+    currentView: SpareRequestView = currentWorkspace === "spare-requests" ? spareView : "active",
   ) => {
+    const currentPreference = workspacePreferences[currentWorkspace];
+    const currentSort = requestedSort ?? currentPreference.sort;
+    const currentDirection = requestedDirection ?? currentPreference.direction;
+    const currentSearch = requestedSearch ?? currentPreference.search;
     const requestId = ++dashboardRequest.current;
     const result = await getDashboard(currentWorkspace, currentSort, currentDirection, currentSearch, currentView);
     dashboardCache.current.set(
@@ -361,10 +399,10 @@ export default function App() {
     );
     if (requestId === dashboardRequest.current) setDashboard(result);
     return result;
-  }, [direction, search, sort, spareView, workspace]);
+  }, [spareView, workspace, workspacePreferences]);
 
   const prefetchDashboard = useCallback((
-    targetWorkspace: WorkspaceKey,
+    targetWorkspace: DashboardWorkspaceKey,
     targetSort: string,
     targetDirection: SortDirection,
     targetSearch: string,
@@ -452,6 +490,18 @@ export default function App() {
 
   useEffect(() => {
     if (!bootstrap || bootstrap.onboarding.required) return;
+    localStorage.setItem("zeus3.workspace", workspace);
+    localStorage.setItem(workspacePreferenceKey(workspace, "sort"), sort);
+    localStorage.setItem(workspacePreferenceKey(workspace, "direction"), direction);
+    localStorage.setItem(workspacePreferenceKey(workspace, "search"), search);
+    localStorage.setItem("zeus3.spare-requests.view", spareView);
+    if (workspace === "upcoming") {
+      const timer = window.setTimeout(
+        () => loadUpcoming().catch(reportError),
+        upcoming ? 140 : 0,
+      );
+      return () => window.clearTimeout(timer);
+    }
     const currentDashboardMatches = dashboard?.workspace === workspace
       && (
         workspace !== "spare-requests"
@@ -461,13 +511,8 @@ export default function App() {
       () => loadDashboard(workspace, sort, direction, search, spareView).catch(reportError),
       currentDashboardMatches ? 140 : 0,
     );
-    localStorage.setItem("zeus3.workspace", workspace);
-    localStorage.setItem(workspacePreferenceKey(workspace, "sort"), sort);
-    localStorage.setItem(workspacePreferenceKey(workspace, "direction"), direction);
-    localStorage.setItem(workspacePreferenceKey(workspace, "search"), search);
-    localStorage.setItem("zeus3.spare-requests.view", spareView);
     return () => window.clearTimeout(timer);
-  }, [bootstrap?.onboarding.required, bootstrap?.instanceId, direction, loadDashboard, reportError, search, sort, spareView, workspace]);
+  }, [bootstrap?.onboarding.required, bootstrap?.instanceId, direction, loadDashboard, loadUpcoming, reportError, search, sort, spareView, workspace]);
 
   useEffect(() => {
     if (!bootstrap || bootstrap.onboarding.required || !dashboard) return;
@@ -579,7 +624,8 @@ export default function App() {
           if (next.status === "failed") setToast({ tone: "error", message: `${next.label}: ${next.message}` });
         } else if (envelope.type === "dataset") {
           dashboardCache.current.clear();
-          loadDashboard().catch(reportError);
+          if (workspace === "upcoming") loadUpcoming().catch(reportError);
+          else loadDashboard().catch(reportError);
           loadBootstrap().catch(reportError);
           if (selectedTicketId) loadTicket(selectedTicketId);
           if (selectedRequestId) loadSpareRequest(selectedRequestId);
@@ -595,7 +641,7 @@ export default function App() {
     source.addEventListener("dataset", receive);
     source.addEventListener("configuration", receive);
     return () => source.close();
-  }, [bootstrap?.instanceId, bootstrap?.onboarding.required, loadBootstrap, loadDashboard, loadFaultTag, loadSpareRequest, loadTicket, reportError, selectedFaultTagId, selectedRequestId, selectedTicketId]);
+  }, [bootstrap?.instanceId, bootstrap?.onboarding.required, loadBootstrap, loadDashboard, loadFaultTag, loadSpareRequest, loadTicket, loadUpcoming, reportError, selectedFaultTagId, selectedRequestId, selectedTicketId, workspace]);
 
   useEffect(() => {
     if (!selectedTicketId) {
@@ -669,7 +715,12 @@ export default function App() {
       message: `SR ${ticketId} saved to the Zeus database. Pendings.xlsx will reflect it at the next explicit export.`,
     });
     try {
-      await loadDashboard();
+      await Promise.all([
+        loadDashboard(),
+        ...(Object.keys(changes).some((key) => key === "Planned Date" || key === "Done?" || key === "Maintenance Window Start Time")
+          ? [loadUpcoming()]
+          : []),
+      ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setToast({
@@ -679,12 +730,12 @@ export default function App() {
     }
   }
 
-  async function completeMaintenanceWindow(ticketId: string, revision: string, plannedDate: string) {
+  async function completeMaintenanceWindow(ticketId: string, revision: string, plannedDate: string, finishTime?: string | null) {
     try {
-      const result = await confirmMaintenanceWindow(ticketId, revision, plannedDate, true);
+      const result = await confirmMaintenanceWindow(ticketId, revision, plannedDate, true, finishTime);
       setTicket(result.ticket);
       dashboardCache.current.clear();
-      await Promise.all([loadDashboard(), loadBootstrap()]);
+      await Promise.all([loadDashboard(), loadBootstrap(), loadUpcoming()]);
       setToast({
         tone: "success",
         message: `SR ${ticketId} Maintenance Window marked Completed. The completed cycle remains archived in MW history.`,
@@ -695,6 +746,52 @@ export default function App() {
       }
       reportError(error);
       throw error;
+    }
+  }
+
+  async function scheduleMaintenanceWindow(date: string, startTime: string | null, ticketIds: string[]) {
+    setUpcomingBusy(true);
+    try {
+      const result = await scheduleUpcomingMaintenanceWindow({ date, startTime, ticketIds });
+      setUpcoming(result.upcoming);
+      dashboardCache.current.clear();
+      setToast({
+        tone: "success",
+        message: `${result.windowId} scheduled for ${ticketIds.length} Service Request${ticketIds.length === 1 ? "" : "s"}.`,
+      });
+    } catch (error) {
+      reportError(error);
+      throw error;
+    } finally {
+      setUpcomingBusy(false);
+    }
+  }
+
+  async function completeSharedMaintenanceWindow(
+    window: UpcomingMaintenanceWindow,
+    outcomes: Record<string, boolean>,
+    finishTime: string | null,
+  ) {
+    setUpcomingBusy(true);
+    try {
+      const result = await completeUpcomingMaintenanceWindow(
+        window.windowId,
+        window.revision,
+        outcomes,
+        finishTime,
+      );
+      setUpcoming(result.upcoming);
+      dashboardCache.current.clear();
+      setToast({
+        tone: "success",
+        message: `${window.windowId} archived after reviewing ${result.ticketIds.length} Service Request${result.ticketIds.length === 1 ? "" : "s"}.`,
+      });
+    } catch (error) {
+      reportError(error);
+      await loadUpcoming().catch(() => undefined);
+      throw error;
+    } finally {
+      setUpcomingBusy(false);
     }
   }
 
@@ -946,15 +1043,16 @@ export default function App() {
     if (next === workspace) return;
     dashboardRequest.current += 1;
     const nextPreference = workspacePreferences[next];
-    const cached = dashboardCache.current.get(dashboardCacheKey(
+    const cached = next === "upcoming" ? undefined : dashboardCache.current.get(dashboardCacheKey(
       next,
       nextPreference.sort,
       nextPreference.direction,
       nextPreference.search,
       next === "spare-requests" ? spareView : "active",
     ));
+    if (next === "upcoming" && !upcoming) setUpcomingLoading(true);
     setWorkspace(next);
-    setDashboard(cached || null);
+    if (next !== "upcoming") setDashboard(cached || null);
     setTicket(null);
     setSpareRequest(null);
     setFaultTag(null);
@@ -965,7 +1063,7 @@ export default function App() {
     setSelectedSpareItemIds(new Set());
     setColumnsOpen(false);
     setTicketInitialTab(next === "spare-requests" ? "spares" : "overview");
-  }, [spareView, workspace, workspacePreferences]);
+  }, [spareView, upcoming, workspace, workspacePreferences]);
 
   const informProtectedTicketMove = useCallback((nextTicketId: string | null) => {
     if (
@@ -1117,12 +1215,13 @@ export default function App() {
     if (!next.onboarding.required) {
       const [templateResult] = await Promise.all([
         getTemplates(),
-        loadDashboard(workspace, sort, direction, search, spareView),
+        loadDashboard(),
+        ...(workspace === "upcoming" ? [loadUpcoming()] : []),
       ]);
       setTemplates(templateResult.templates);
       setToast({ tone: "success", message: "Profile saved locally. Welcome to Zeus." });
     }
-  }, [direction, loadBootstrap, loadDashboard, search, sort, spareView, workspace]);
+  }, [loadBootstrap, loadDashboard, loadUpcoming, workspace]);
 
   const createSpareRequest = useCallback(async (payload: Record<string, unknown>) => {
     const result = await exportSpareRequest(payload);
@@ -1205,6 +1304,7 @@ export default function App() {
     function onKeyDown(event: KeyboardEvent) {
       if (
         keyboardDisabled
+        || workspace === "upcoming"
         || event.defaultPrevented
         || event.isComposing
         || event.repeat
@@ -1212,6 +1312,7 @@ export default function App() {
         || event.ctrlKey
         || event.metaKey
         || isEditingArea(event.target)
+        || Boolean(document.querySelector(".modal-backdrop"))
         || (event.target instanceof Element && Boolean(event.target.closest('[role="grid"]')))
       ) return;
       const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
@@ -1274,6 +1375,7 @@ export default function App() {
     selectedRowId,
     serviceFilters.filteredRows,
     spareRequestFilters.filteredRows,
+    workspace,
   ]);
 
   const warnings = bootstrap?.startup.warnings || [];
@@ -1301,7 +1403,7 @@ export default function App() {
     </>;
   }
 
-  if (!dashboard) {
+  if (!dashboard && workspace !== "upcoming") {
     return (
       <main className="boot-screen">
         <span className="boot-bolt">ϟ</span>
@@ -1329,7 +1431,7 @@ export default function App() {
       data-spare-view={workspace === "spare-requests" ? spareView : undefined}
     >
       <TopBar
-        version={bootstrap.version || "3.1.11"}
+        version={bootstrap.version || "3.1.12"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId || selectedFaultTagId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
@@ -1347,6 +1449,14 @@ export default function App() {
         onSettings={() => setSettingsOpen(true)}
       />
       <JobBanner jobs={jobs} onCancel={stopJob} onOpenActivity={() => setOperationsOpen(true)} />
+      {workspace === "upcoming" ? <UpcomingWorkspace
+        payload={upcoming}
+        loading={upcomingLoading}
+        busy={upcomingBusy}
+        onRefresh={() => { void loadUpcoming().catch(reportError); }}
+        onSchedule={scheduleMaintenanceWindow}
+        onComplete={completeSharedMaintenanceWindow}
+      /> : dashboard && <>
       <StatsBar dashboard={dashboard} />
       <section className="dashboard-toolbar">
         {workspace === "spare-requests" && <div className="spare-view-row"><div className="spare-view-switcher" role="tablist" aria-label="Spare Request view">{(["active", "eligible", "fault-tags", "completed"] as SpareRequestView[]).map((view) => <button type="button" role="tab" aria-selected={spareView === view} className={spareView === view ? "active" : ""} onClick={() => chooseSpareView(view)} key={view}>{view === "active" ? "Active Requests" : view === "eligible" ? "Eligible SR Parts" : view === "fault-tags" ? "Fault Tags" : "Completed"}</button>)}</div>{spareToolbarActions}</div>}
@@ -1441,6 +1551,7 @@ export default function App() {
           onClose={closeDetail}
           onSave={saveLocalFields}
           onConfirmMaintenanceWindow={completeMaintenanceWindow}
+          onOpenUpcoming={() => chooseWorkspace("upcoming")}
           onGenerateMop={(ticketId, template) => runJob("mop", { ticketId, template })}
           onRegisterSpareRequest={(ticketId) => openSpareExport(ticketId, selectedEligiblePart?.ticketId === ticketId ? selectedEligiblePart : null, "manual")}
           showHistory={Boolean(bootstrap?.appearance.showDetailHistory)}
@@ -1467,11 +1578,16 @@ export default function App() {
           onNotice={(message) => setToast({ tone: "success", message })}
         />}
       </section>
+      </>}
       <footer className="command-strip">
-        <span>↑↓ Select</span>
-        <span>←→ Detail tab</span>
-        <span>Double-click/Enter Open · Esc Close</span>
-        <span>Ctrl+F Search</span>
+        {workspace === "upcoming"
+          ? <span>Schedule shared windows · Review every linked SR</span>
+          : <>
+            <span>↑↓ Select</span>
+            <span>←→ Detail tab</span>
+            <span>Double-click/Enter Open · Esc Close</span>
+            <span>Ctrl+F Search</span>
+          </>}
         <span className={!bootstrap?.outlook.configuredPathAvailable ? "disabled-command" : undefined}>S Fetch + sync email</span>
         <span>M Operations</span>
         {workspace === "service-requests" && <span>R Check source</span>}

@@ -20,6 +20,7 @@ import {
 import type { EmailMessage, SpareDevice, TicketDetail as TicketDetailType } from "../types";
 import { ConfirmationDialog } from "./ConfirmationDialog";
 import { maintenanceWindowLabel } from "../maintenanceWindow";
+import { Modal } from "./Modal";
 
 type Tab = "overview" | "work" | "spares" | "emails" | "mops" | "history";
 
@@ -35,7 +36,8 @@ interface Props {
   templates: TemplateOption[];
   onClose: () => void;
   onSave: (ticketId: string, revision: string, changes: Record<string, unknown>) => Promise<void>;
-  onConfirmMaintenanceWindow?: (ticketId: string, revision: string, plannedDate: string) => Promise<void>;
+  onConfirmMaintenanceWindow?: (ticketId: string, revision: string, plannedDate: string, finishTime?: string | null) => Promise<void>;
+  onOpenUpcoming?: () => void;
   onGenerateMop: (ticketId: string, template: string) => void;
   onRegisterSpareRequest?: (ticketId: string) => void;
   showHistory?: boolean;
@@ -84,7 +86,7 @@ function FieldList({ fields }: { fields: Record<string, unknown> }) {
   );
 }
 
-function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow }: Pick<Props, "ticket" | "onSave" | "onConfirmMaintenanceWindow"> & { ticket: TicketDetailType }) {
+function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow, onOpenUpcoming }: Pick<Props, "ticket" | "onSave" | "onConfirmMaintenanceWindow" | "onOpenUpcoming"> & { ticket: TicketDetailType }) {
   const [draft, setDraft] = useState<WorkDraft>(() => workFieldValues(ticket));
   const [draftRevision, setDraftRevision] = useState(ticket.revision);
   const [baseValue, setBaseValue] = useState<Record<string, string>>(() => workFieldValues(ticket));
@@ -97,6 +99,8 @@ function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow }: Pick<Props, "ti
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<{ kind: "discard" | "remove-device"; deviceNumber?: number } | null>(null);
   const [deviceBatch, setDeviceBatch] = useState({ names: "", model: "", notes: "" });
+  const [completionOpen, setCompletionOpen] = useState(false);
+  const [finishTime, setFinishTime] = useState("");
 
   useEffect(() => {
     if (saving) return;
@@ -170,13 +174,15 @@ function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow }: Pick<Props, "ti
   const cleanedDevices = useMemo(() => cleanSpareParts(devices), [devices]);
   const devicesChanged = JSON.stringify(cleanedDevices) !== JSON.stringify(cleanSpareParts(ticket.spareParts));
   const changedCount = Object.keys(changes).length + (devicesChanged ? 1 : 0);
-  const maintenanceWindowChanged = "Planned Date" in changes || "Done?" in changes;
+  const maintenanceWindowChanged = "Planned Date" in changes || "Done?" in changes || "Maintenance Window Start Time" in changes;
   const currentMaintenanceWindow = ticket.maintenanceWindow;
+  const maintenanceWindowManaged = Boolean(currentMaintenanceWindow?.managedInUpcoming);
   const canCompleteMaintenanceWindow = Boolean(
     currentMaintenanceWindow?.confirmationRequired
     && currentMaintenanceWindow.date
     && !maintenanceWindowChanged
-    && !stale,
+    && !stale
+    && !maintenanceWindowManaged,
   );
   const canStartNewMaintenanceWindow = Boolean(
     currentMaintenanceWindow?.status === "completed"
@@ -291,7 +297,9 @@ function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow }: Pick<Props, "ti
     if (!canCompleteMaintenanceWindow || !plannedDate || !onConfirmMaintenanceWindow) return;
     setSaving(true);
     try {
-      await onConfirmMaintenanceWindow(ticket.ticketId, ticket.revision, plannedDate);
+      await onConfirmMaintenanceWindow(ticket.ticketId, ticket.revision, plannedDate, finishTime || null);
+      setCompletionOpen(false);
+      setFinishTime("");
     } finally {
       setSaving(false);
     }
@@ -328,6 +336,7 @@ function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow }: Pick<Props, "ti
 
   const maintenanceWindowCode = draft["Done?"] || "N";
   const maintenanceWindowDate = draft["Planned Date"] || "";
+  const maintenanceWindowStartTime = draft["Maintenance Window Start Time"] || "";
   const maintenanceWindowCompleted = maintenanceWindowCode === "Y";
   const maintenanceWindowInvisible = maintenanceWindowCode === "?";
   const maintenanceWindowState = maintenanceWindowCompleted
@@ -360,8 +369,22 @@ function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow }: Pick<Props, "ti
                   <input
                     type="date"
                     value={maintenanceWindowDate}
-                    disabled={ticket.readOnly || maintenanceWindowCompleted}
-                    onChange={(event) => setFields({ "Planned Date": event.target.value, "Done?": "N" })}
+                    disabled={ticket.readOnly || maintenanceWindowCompleted || maintenanceWindowManaged}
+                    onChange={(event) => setFields({
+                      "Planned Date": event.target.value,
+                      "Done?": "N",
+                      ...(event.target.value ? {} : { "Maintenance Window Start Time": "" }),
+                    })}
+                  />
+                </label>
+                <label className="form-field mw-time-field">
+                  <span>Optional start time</span>
+                  <input
+                    type="time"
+                    step={1800}
+                    value={maintenanceWindowStartTime}
+                    disabled={ticket.readOnly || maintenanceWindowCompleted || maintenanceWindowManaged || !maintenanceWindowDate}
+                    onChange={(event) => setField("Maintenance Window Start Time", event.target.value)}
                   />
                 </label>
                 <button
@@ -370,16 +393,17 @@ function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow }: Pick<Props, "ti
                   aria-label="MW visibility unknown"
                   aria-pressed={maintenanceWindowInvisible}
                   title="Toggle when the Maintenance Window date is not visible to you"
-                  disabled={ticket.readOnly || maintenanceWindowCompleted}
+                  disabled={ticket.readOnly || maintenanceWindowCompleted || maintenanceWindowManaged}
                   onClick={() => setFields(maintenanceWindowInvisible
-                    ? { "Done?": "N", "Planned Date": "" }
-                    : { "Done?": "?", "Planned Date": "" })}
+                    ? { "Done?": "N", "Planned Date": "", "Maintenance Window Start Time": "" }
+                    : { "Done?": "?", "Planned Date": "", "Maintenance Window Start Time": "" })}
                 ><strong>?</strong><span>No visibility</span></button>
               </div>
-              <p className="mw-editor-help">No date is Unplanned. Today or a future date is Planned. After the date passes, Zeus marks it Incomplete until you confirm Completed.</p>
+              <p className="mw-editor-help">No date is Unplanned. Today or a future date is Planned. Optional times must end in :00 or :30. After the date passes, Zeus marks it Incomplete until you confirm Completed.</p>
+              {maintenanceWindowManaged && <div className="mw-managed-note"><span>This SR belongs to shared window <strong>{currentMaintenanceWindow?.windowId}</strong>. Its schedule and completion are controlled from Upcoming.</span>{onOpenUpcoming && <button type="button" className="secondary-button" onClick={onOpenUpcoming}>Open Upcoming</button>}</div>}
               {!!ticket.maintenanceWindow?.attempts.length && <div className="mw-attempt-history">
                 <strong>Archived MW cycles</strong>
-                {ticket.maintenanceWindow.attempts.map((attempt, index) => <span key={`${attempt.date}-${attempt.outcome}-${index}`}>{attempt.date} · {attempt.outcome === "completed" ? "Completed" : "Incomplete"}</span>)}
+                {ticket.maintenanceWindow.attempts.map((attempt, index) => <span key={`${attempt.date}-${attempt.outcome}-${index}`}>{attempt.date}{attempt.start_time ? ` · ${attempt.start_time}` : ""} · {attempt.outcome === "completed" ? "Completed" : "Incomplete"}{attempt.finish_time ? ` at ${attempt.finish_date} ${attempt.finish_time}` : ""}</span>)}
               </div>}
             </section>
             <section className="site-information-section full" aria-label="Site information">
@@ -438,7 +462,7 @@ function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow }: Pick<Props, "ti
             {changedCount > 0 && <button type="button" className="text-button danger-text" disabled={saving} onClick={() => setConfirmAction({ kind: "discard" })}>Discard draft</button>}
             {stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore work changes</button>}
             {deviceStale && <button type="button" className="secondary-button" disabled={saving} onClick={restoreDeviceDraft}>Restore device changes</button>}
-            {canCompleteMaintenanceWindow && onConfirmMaintenanceWindow && <button type="button" className="mw-completed-button" disabled={saving || deviceStale} onClick={() => void completeMaintenanceWindow()}>Completed</button>}
+            {canCompleteMaintenanceWindow && onConfirmMaintenanceWindow && <button type="button" className="mw-completed-button" disabled={saving || deviceStale} onClick={() => { setFinishTime(""); setCompletionOpen(true); }}>Completed</button>}
             {canStartNewMaintenanceWindow && <button type="button" className="secondary-button mw-new-button" disabled={saving || deviceStale} onClick={() => void startNewMaintenanceWindow()}>New MW</button>}
             <button type="button" className="primary-button" disabled={!changedCount || saving || stale || deviceStale} onClick={save}>
               {saving ? "Saving…" : "Save to Zeus"}
@@ -450,6 +474,21 @@ function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow }: Pick<Props, "ti
     {restoreOpen && <ConfirmationDialog title={`Restore protected SR ${ticket.ticketId} changes?`} message="The protected Work Fields will be reapplied over the latest Zeus values for review. This action does not save anything to the database." confirmLabel="Restore for review" onCancel={() => setRestoreOpen(false)} onConfirm={restoreDraft} />}
     {confirmAction?.kind === "discard" && <ConfirmationDialog title={`Discard SR ${ticket.ticketId} draft?`} message="This removes the protected Work Fields and affected-device changes from this browser. Zeus database values remain unchanged." confirmLabel="Discard draft" tone="danger" onCancel={() => setConfirmAction(null)} onConfirm={() => { discardDraft(); setConfirmAction(null); }} />}
     {confirmAction?.kind === "remove-device" && <ConfirmationDialog title="Remove affected device?" message="This removes the device card and its device-specific data from the protected draft. The change reaches Zeus only after Save to Zeus." confirmLabel="Remove device" tone="danger" onCancel={() => setConfirmAction(null)} onConfirm={() => { const deviceNumber = confirmAction.deviceNumber; updateDevices((current) => current.filter((candidate) => candidate.device_number !== deviceNumber)); setConfirmAction(null); }} />}
+    {completionOpen && <Modal
+      title={`Complete SR ${ticket.ticketId} Maintenance Window?`}
+      subtitle="The finish time is optional and remains part of the archived MW cycle."
+      onClose={() => setCompletionOpen(false)}
+      actions={<>
+        <button type="button" onClick={() => setCompletionOpen(false)}>Cancel</button>
+        <button type="button" className="mw-completed-button" disabled={saving || (finishTime !== "" && !/^(?:[01]\d|2[0-3]):(?:00|30)$/.test(finishTime))} onClick={() => { void completeMaintenanceWindow().catch(() => undefined); }}>{saving ? "Saving…" : "Confirm Completed"}</button>
+      </>}
+    >
+      <section className="local-confirmation">
+        <p>Zeus will archive the current cycle as Completed. If the finish clock time is earlier than {maintenanceWindowStartTime || "the optional start time"}, it belongs to the next calendar day; a recorded MW cannot exceed 12 hours.</p>
+        <label className="form-field"><span>Optional finish time</span><input type="time" step={1800} value={finishTime} onChange={(event) => setFinishTime(event.target.value)} /></label>
+        {finishTime !== "" && !/^(?:[01]\d|2[0-3]):(?:00|30)$/.test(finishTime) && <small className="status-bad">Finish time must end in :00 or :30.</small>}
+      </section>
+    </Modal>}
   </>;
 }
 
@@ -771,7 +810,7 @@ function MopsTab({ ticket, templates, onGenerateMop }: { ticket: TicketDetailTyp
   );
 }
 
-export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onConfirmMaintenanceWindow, onGenerateMop, onRegisterSpareRequest, showHistory = false }: Props) {
+export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onConfirmMaintenanceWindow, onOpenUpcoming, onGenerateMop, onRegisterSpareRequest, showHistory = false }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
   const tabOrder = useMemo<Tab[]>(
@@ -852,7 +891,7 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
             <FieldList fields={ticket.upstreamFields} />
           </div>
         )}
-        {tab === "work" && <WorkTab ticket={ticket} onSave={onSave} onConfirmMaintenanceWindow={onConfirmMaintenanceWindow} />}
+        {tab === "work" && <WorkTab ticket={ticket} onSave={onSave} onConfirmMaintenanceWindow={onConfirmMaintenanceWindow} onOpenUpcoming={onOpenUpcoming} />}
         {tab === "spares" && <SparePartsTab ticket={ticket} onSave={onSave} onRegisterSpareRequest={onRegisterSpareRequest} />}
         {tab === "emails" && <EmailsTab messages={ticket.email.messages} />}
         {tab === "mops" && <MopsTab ticket={ticket} templates={templates} onGenerateMop={onGenerateMop} />}

@@ -27,7 +27,7 @@ export function TopBar({
     <header className="top-bar">
       <div className="top-title">
         <span className="bolt" aria-hidden="true">ϟ</span>
-        <strong>ZEUS {version || "3.1.11"}</strong>
+        <strong>ZEUS {version || "3.1.12"}</strong>
         <span className="top-separator">|</span>
         <nav className="workspace-switcher" aria-label="Zeus workspace">
           <button
@@ -45,6 +45,14 @@ export function TopBar({
             onClick={() => onWorkspaceChange("spare-requests")}
           >
             Spare Requests
+          </button>
+          <button
+            type="button"
+            className={workspace === "upcoming" ? "active" : ""}
+            aria-pressed={workspace === "upcoming"}
+            onClick={() => onWorkspaceChange("upcoming")}
+          >
+            Upcoming
           </button>
         </nav>
         {detailOpen && <span className="detail-crumb">/ Detail</span>}

@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.1.12 - 2026-08-11
+
+- Adds a first-class **Upcoming** workspace for several concurrent Maintenance
+  Windows, each linked to several Service Requests, while enforcing one
+  unfinished MW per SR and atomic revision-safe scheduling.
+- Completes a shared MW through an explicit review of every linked SR, defaulting
+  each outcome to **Completed** and archiving the reviewed result in each SR's
+  own structured history.
+- Adds optional `:00`/`:30` start and finish times, infers the next day when the
+  finish clock precedes the start, and rejects recorded durations over 12 hours.
+- Retains all matched sent and received email bodies per ticket by default;
+  Configuration can still set a finite maximum or `0` for counters only.
+
 ## 3.1.11 - 2026-08-11
 
 - Reorders Service Request work fields around one full-width Maintenance Window

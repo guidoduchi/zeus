@@ -3,10 +3,16 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from ..maintenance_windows import confirm_maintenance_window
+from ..maintenance_windows import (
+    confirm_maintenance_window,
+    maintenance_window_for_local,
+    normalize_half_hour_time,
+    set_maintenance_window_plan,
+)
 from ..store import ZeusStore
 from ..tickets import (
     EDITABLE_LOCAL_COLUMNS,
+    MW_START_TIME_CHANGE_KEY,
     SPARE_PARTS_CHANGE_KEY,
     normalize_done,
     normalize_local,
@@ -34,7 +40,10 @@ def _normalize_local_changes(changes: dict[str, Any]) -> dict[str, Any]:
         raise ValidationError("Choose at least one Zeus work field to update")
     if "Spare" in changes:
         raise ValidationError("Spare is an export-only value and cannot be edited directly")
-    allowed = set(EDITABLE_LOCAL_COLUMNS) | {SPARE_PARTS_CHANGE_KEY}
+    allowed = set(EDITABLE_LOCAL_COLUMNS) | {
+        SPARE_PARTS_CHANGE_KEY,
+        MW_START_TIME_CHANGE_KEY,
+    }
     unknown = sorted(set(changes) - allowed)
     if unknown:
         raise ValidationError(
@@ -45,6 +54,15 @@ def _normalize_local_changes(changes: dict[str, Any]) -> dict[str, Any]:
     for key, value in changes.items():
         if key == SPARE_PARTS_CHANGE_KEY:
             prepared[key] = _normalize_spare_parts_change(value)
+            continue
+        if key == MW_START_TIME_CHANGE_KEY:
+            try:
+                prepared[key] = normalize_half_hour_time(
+                    value,
+                    label="Maintenance Window start time",
+                )
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
             continue
         if isinstance(value, (dict, list, tuple, set)):
             raise ValidationError(f"{key} must be a text, date, number, or blank value")
@@ -333,6 +351,14 @@ def _prepare_local_edit(
 ) -> tuple[dict[str, Any], list[str]]:
     prepared = _normalize_local_changes(changes)
     existing_local = normalize_local(ticket.get("local"))
+    existing_window = maintenance_window_for_local(existing_local)
+    if existing_window.get("window_id") and any(
+        key in prepared
+        for key in ("Planned Date", "Done?", MW_START_TIME_CHANGE_KEY)
+    ):
+        raise ValidationError(
+            "This Maintenance Window is managed in Upcoming. Change or complete it there."
+        )
     proposed_local = deepcopy(existing_local)
     proposed_fields = proposed_local["fields"]
     for key, value in prepared.items():
@@ -348,6 +374,8 @@ def _prepare_local_edit(
                 value,
                 active_sources,
             )
+        elif key == MW_START_TIME_CHANGE_KEY:
+            continue
         else:
             proposed_fields[key] = value
     # A real date is itself the planning decision. When an earlier attempt was
@@ -356,6 +384,22 @@ def _prepare_local_edit(
     if prepared.get("Planned Date") is not None and "Done?" not in prepared:
         proposed_fields["Done?"] = "N"
     proposed_local = normalize_local(proposed_local)
+    if MW_START_TIME_CHANGE_KEY in prepared or "Planned Date" in prepared:
+        planned_date = proposed_local.get("fields", {}).get("Planned Date")
+        if MW_START_TIME_CHANGE_KEY in prepared:
+            proposed_start = prepared[MW_START_TIME_CHANGE_KEY]
+        elif prepared.get("Planned Date") is None:
+            proposed_start = None
+        else:
+            proposed_start = existing_window.get("start_time")
+        if proposed_start is not None and planned_date is None:
+            raise ValidationError("Choose an MW date before setting its start time")
+        if planned_date is not None:
+            proposed_local = set_maintenance_window_plan(
+                proposed_local,
+                planned_date,
+                start_time=proposed_start,
+            )
 
     changed_fields = [
         key
@@ -363,6 +407,8 @@ def _prepare_local_edit(
         if (
             existing_local.get("spare_parts") != value
             if key == SPARE_PARTS_CHANGE_KEY
+            else existing_window.get("start_time") != value
+            if key == MW_START_TIME_CHANGE_KEY
             else _comparable_cell(existing_local["fields"].get(key))
             != _comparable_cell(value)
         )
@@ -390,6 +436,7 @@ def confirm_maintenance_window_in_database(
     planned_date: Any,
     successful: bool,
     expected_revision: str,
+    finish_time: Any = None,
 ) -> dict[str, Any]:
     """Commit one overdue MW outcome with revision and date protection."""
 
@@ -405,11 +452,17 @@ def confirm_maintenance_window_in_database(
                 "actualRevision": actual_revision,
             },
         )
+    current_window = maintenance_window_for_local(normalize_local(ticket.get("local")))
+    if current_window.get("window_id"):
+        raise ValidationError(
+            "This shared Maintenance Window must be reviewed and completed in Upcoming"
+        )
     try:
         proposed_local = confirm_maintenance_window(
             normalize_local(ticket.get("local")),
             expected_date=planned_date,
             successful=bool(successful),
+            finish_time=finish_time,
         )
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
@@ -418,6 +471,7 @@ def confirm_maintenance_window_in_database(
         "ticket_id": ticket_id,
         "planned_date": str(planned_date),
         "outcome": "completed" if successful else "incomplete",
+        "finish_time": str(finish_time or "") or None,
         "authority": "markdown_database",
     }
     with store.transaction("maintenance-window-confirmation", summary) as staging:

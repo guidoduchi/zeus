@@ -112,6 +112,11 @@ from .serialization import (
     spare_requests_dashboard_payload,
 )
 from .settings import outlook_candidates, settings_payload, update_settings
+from .upcoming import (
+    complete_upcoming_window,
+    schedule_upcoming_window,
+    upcoming_payload,
+)
 
 
 class ApplicationService:
@@ -669,6 +674,60 @@ class ApplicationService:
                 self._dashboard_cache.pop(next(iter(self._dashboard_cache)))
             self._dashboard_cache[cache_key] = deepcopy(result)
         return result
+
+    def upcoming_maintenance_windows(self) -> dict[str, Any]:
+        return upcoming_payload(self.store, dataset_revision=self.dataset_revision)
+
+    def schedule_upcoming_maintenance_window(
+        self,
+        *,
+        planned_date: Any,
+        start_time: Any,
+        ticket_ids: Any,
+    ) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data. Try again when it finishes.")
+        try:
+            window_id = schedule_upcoming_window(
+                self.store,
+                planned_date=planned_date,
+                start_time=start_time,
+                ticket_ids=ticket_ids,
+            )
+        finally:
+            self._operation_lock.release()
+        self._touch_data("upcoming-maintenance-window-schedule")
+        return {
+            "windowId": window_id,
+            "upcoming": self.upcoming_maintenance_windows(),
+        }
+
+    def complete_upcoming_maintenance_window(
+        self,
+        window_id: str,
+        *,
+        expected_revision: str,
+        outcomes: Any,
+        finish_time: Any = None,
+    ) -> dict[str, Any]:
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data. Try again when it finishes.")
+        try:
+            ticket_ids = complete_upcoming_window(
+                self.store,
+                window_id,
+                expected_revision=expected_revision,
+                outcomes=outcomes,
+                finish_time=finish_time,
+            )
+        finally:
+            self._operation_lock.release()
+        self._touch_data("upcoming-maintenance-window-completion")
+        return {
+            "windowId": window_id,
+            "ticketIds": ticket_ids,
+            "upcoming": self.upcoming_maintenance_windows(),
+        }
 
     def ticket(self, ticket_id: str) -> dict[str, Any]:
         normalized_ticket_id = normalize_ticket_id(ticket_id)
@@ -2763,6 +2822,7 @@ class ApplicationService:
         planned_date: str,
         successful: bool,
         expected_revision: str,
+        finish_time: str | None = None,
     ) -> dict[str, Any]:
         normalized_ticket_id = normalize_ticket_id(ticket_id)
         if not self._operation_lock.acquire(blocking=False):
@@ -2774,6 +2834,7 @@ class ApplicationService:
                 planned_date=planned_date,
                 successful=successful,
                 expected_revision=expected_revision,
+                finish_time=finish_time,
             )
         finally:
             self._operation_lock.release()

@@ -132,6 +132,11 @@ describe("TicketDetail", () => {
     expect(screen.getByText("Unplanned")).toBeVisible();
     await user.click(screen.getByRole("button", { name: /work fields/i }));
     expect(screen.getByLabelText("MW date")).toHaveValue("");
+    expect(screen.getByLabelText("Optional start time")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("MW date"), { target: { value: "2099-08-20" } });
+    expect(screen.getByLabelText("Optional start time")).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Optional start time"), { target: { value: "22:30" } });
+    expect(screen.getByLabelText("Optional start time")).toHaveValue("22:30");
     const visibility = screen.getByRole("button", { name: "MW visibility unknown" });
     expect(visibility).toHaveAttribute("aria-pressed", "false");
     await user.click(visibility);
@@ -167,7 +172,10 @@ describe("TicketDetail", () => {
 
     expect(screen.getByText("Incomplete")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Completed" }));
-    expect(onConfirmMaintenanceWindow).toHaveBeenCalledWith("12345678", "revision", "2000-01-01");
+    expect(screen.getByRole("dialog", { name: /complete sr 12345678 maintenance window/i })).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Optional finish time"), { target: { value: "00:30" } });
+    await user.click(screen.getByRole("button", { name: "Confirm Completed" }));
+    expect(onConfirmMaintenanceWindow).toHaveBeenCalledWith("12345678", "revision", "2000-01-01", "00:30");
 
     const completed: TicketDetailType = {
       ...overdue,
@@ -179,6 +187,34 @@ describe("TicketDetail", () => {
     view.rerender(<TicketDetail ticket={completed} loading={false} initialTab="work" templates={[]} onClose={vi.fn()} onSave={onSave} onConfirmMaintenanceWindow={onConfirmMaintenanceWindow} onGenerateMop={vi.fn()} />);
     await user.click(await screen.findByRole("button", { name: "New MW" }));
     expect(onSave).toHaveBeenCalledWith("12345678", "revision-completed", { "Planned Date": null, "Done?": "N" });
+  });
+
+  it("routes a shared MW to Upcoming instead of allowing a partial SR edit", async () => {
+    const user = userEvent.setup();
+    const onOpenUpcoming = vi.fn();
+    const shared: TicketDetailType = {
+      ...detail,
+      maintenanceWindow: {
+        schemaVersion: 1,
+        status: "incomplete",
+        date: "2000-01-01",
+        startTime: "23:30",
+        windowId: "MW-260811120000-ABCD",
+        managedInUpcoming: true,
+        display: "2000-01-01",
+        color: "red",
+        confirmationRequired: true,
+        attempts: [],
+        reviewRequired: false,
+      },
+      localFields: { ...detail.localFields, "Done?": "N", "Planned Date": "2000-01-01" },
+    };
+    render(<TicketDetail ticket={shared} loading={false} initialTab="work" templates={[]} onClose={vi.fn()} onSave={vi.fn()} onConfirmMaintenanceWindow={vi.fn()} onOpenUpcoming={onOpenUpcoming} onGenerateMop={vi.fn()} />);
+
+    expect(screen.getByLabelText("MW date")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Completed" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open Upcoming" }));
+    expect(onOpenUpcoming).toHaveBeenCalledTimes(1);
   });
 
   it("keeps raw detail History hidden unless the developer setting enables it", () => {

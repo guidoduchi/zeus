@@ -1,4 +1,4 @@
-# Zeus 3.1.11
+# Zeus 3.1.12
 
 Zeus is a strictly local ticket workstation. Its Python backend runs in the
 background, serves a bundled React interface on `127.0.0.1`, and opens that
@@ -53,8 +53,10 @@ Pendings + Closed** generates both from one committed database snapshot.
 
 When an Outlook store is available, Zeus defaults to a real hourly fetch and
 synchronization. Configuration can unlink synchronization from fetch and give
-it its own interval. If Outlook is disabled or unavailable, Zeus runs no email
-work and the dashboard says why; every non-email operation remains usable.
+it its own interval. New configurations retain every matched sent/received body
+per ticket; a user can set a finite maximum, or `0` for counters only. If
+Outlook is disabled or unavailable, Zeus runs no email work and the dashboard
+says why; every non-email operation remains usable.
 
 ## Query behavior
 
@@ -83,14 +85,17 @@ port. The server cannot bind to another machine or network interface.
 
 ## Workspaces, dashboard, and ticket panel
 
-The blue title rail switches seamlessly between two management workspaces:
+The blue title rail switches seamlessly between three management workspaces:
 
 - **Service Requests** keeps the original dense ticket dashboard: SR,
   lifecycle, the unified date-first MW, age, Last Email, severity, and summary;
 - **Spare Requests** manages independent replacement requests and their
   per-unit RMA lifecycle. It contains **Active Requests**, reusable **Eligible
   SR Parts**, independent **Fault Tags**, and read-only **Completed** archive
-  views.
+  views;
+- **Upcoming** groups several Service Requests into one shared Maintenance
+  Window, while keeping each SR's own revision-safe, audited MW history. One SR
+  can belong to only one unfinished window at a time.
 
 Last Email uses green received and cyan sent legends in the header with fixed
 rounded count slots in every row. A no-email row centers one square red zero in
@@ -118,7 +123,7 @@ selection locks to the lifecycle stage of its first selected unit so
 incompatible rows cannot enter one transaction.
 
 The gear beside **Fields** can show/hide and reorder every available field.
-Each workspace remembers its own search, filters, sort field,
+Each dashboard workspace remembers its own search, filters, sort field,
 ascending/descending direction, visible fields, and field order in the browser
 profile. Multiple values are OR within a filter category and categories are
 ANDed together. Service Requests includes a Customer Organization filter and
@@ -181,15 +186,20 @@ Browser-editable database-owned fields are:
 Maintenance Window, Site, Cloud, RelatedSR, Notes
 ```
 
-Maintenance Window uses one date-first editor and one dashboard column. When a
+Maintenance Window uses one date-first editor and one dashboard column. A plan
+can also record an optional start time on a `:00` or `:30` boundary. When a
 current date exists, Zeus shows that date instead of a generic state label.
-After the date passes, Zeus asks whether the MW succeeded. Success changes the
-display to `Complete`; failure records an `Incomplete` attempt, clears the
-current date, and waits for another date. `Unplanned` and `No visibility`
-remain distinct undated states. Every completed or failed attempt remains in
-the structured local history. When several windows are overdue, Zeus presents
-one batch dialog where each can be marked Successful, Incomplete/Postponed, or
-Later; an incomplete result can receive its next planned date immediately.
+After the date passes, Zeus asks whether the MW succeeded. Success can record
+an optional half-hour finish time; if it is earlier than the start clock time,
+Zeus infers the next calendar day and rejects durations over 12 hours. Failure
+records an `Incomplete` attempt, clears the current date, and waits for another
+date. `Unplanned` and `No visibility` remain distinct undated states. Every
+completed or failed attempt remains in the structured local history.
+
+Upcoming can create several independent shared windows and attach several SRs
+to each. Completion is one reviewed transaction: every linked SR defaults to
+Completed, and the user explicitly changes only the SRs that remained
+Incomplete. Shared schedules cannot be partially edited from SR detail.
 
 For operational-workbook compatibility, Zeus still generates `Planned Date`
 as a real Excel date plus `Done?` (`Y`, `N`, `P`, or `?`). Those columns are

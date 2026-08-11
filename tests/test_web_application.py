@@ -1541,6 +1541,126 @@ class WebServerTests(WebFixture):
             planned_date,
         )
 
+    def test_shared_maintenance_window_routes_enforce_one_open_window_and_review_every_sr(self) -> None:
+        source = self.downloads / "Advanced Search(Service Request)20260811010101.xlsx"
+        write_advanced(
+            source,
+            [
+                upstream_row("12345678", summary="First shared MW member"),
+                upstream_row("23456789", summary="Independent shared MW member"),
+                upstream_row("87654321", summary="Second shared MW member"),
+            ],
+        )
+        sync_advanced_search(self.store, source)
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+        }
+        planned_date = (local_today() - timedelta(days=1)).isoformat()
+        schedule_body = {
+            "date": planned_date,
+            "startTime": "23:30",
+            "ticketIds": ["12345678", "87654321"],
+        }
+
+        with patch(
+            "zeus2.application.upcoming.local_today",
+            return_value=local_today() - timedelta(days=2),
+        ):
+            schedule_request = urllib.request.Request(
+                self.url + "/api/maintenance-windows",
+                data=json.dumps(schedule_body).encode("utf-8"),
+                method="POST",
+                headers=headers,
+            )
+            with urllib.request.urlopen(schedule_request, timeout=3) as response:
+                self.assertEqual(response.status, 201)
+                scheduled = json.loads(response.read())
+
+            parallel_request = urllib.request.Request(
+                self.url + "/api/maintenance-windows",
+                data=json.dumps(
+                    {
+                        "date": planned_date,
+                        "startTime": "20:00",
+                        "ticketIds": ["23456789"],
+                    }
+                ).encode("utf-8"),
+                method="POST",
+                headers=headers,
+            )
+            with urllib.request.urlopen(parallel_request, timeout=3) as response:
+                parallel = json.loads(response.read())
+            self.assertEqual(len(parallel["upcoming"]["windows"]), 2)
+            parallel_window_id = parallel["windowId"]
+
+            conflict_request = urllib.request.Request(
+                self.url + "/api/maintenance-windows",
+                data=json.dumps(schedule_body).encode("utf-8"),
+                method="POST",
+                headers=headers,
+            )
+            with self.assertRaises(urllib.error.HTTPError) as conflict:
+                urllib.request.urlopen(conflict_request, timeout=3)
+            self.assertEqual(conflict.exception.code, 409)
+            conflict.exception.close()
+
+        window = scheduled["upcoming"]["windows"][0]
+        self.assertEqual(window["status"], "incomplete")
+        self.assertTrue(window["canComplete"])
+        self.assertEqual(len(window["members"]), 2)
+
+        incomplete_review = urllib.request.Request(
+            self.url + f"/api/maintenance-windows/{window['windowId']}/complete",
+            data=json.dumps(
+                {
+                    "revision": window["revision"],
+                    "outcomes": {"12345678": True},
+                    "finishTime": "00:30",
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={**headers, "If-Match": str(window["revision"])},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as invalid_review:
+            urllib.request.urlopen(incomplete_review, timeout=3)
+        self.assertEqual(invalid_review.exception.code, 422)
+        invalid_review.exception.close()
+
+        complete_request = urllib.request.Request(
+            self.url + f"/api/maintenance-windows/{window['windowId']}/complete",
+            data=json.dumps(
+                {
+                    "revision": window["revision"],
+                    "outcomes": {"12345678": True, "87654321": False},
+                    "finishTime": "00:30",
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={**headers, "If-Match": str(window["revision"])},
+        )
+        with urllib.request.urlopen(complete_request, timeout=3) as response:
+            completed = json.loads(response.read())
+
+        self.assertEqual(completed["ticketIds"], ["12345678", "87654321"])
+        self.assertEqual(
+            [candidate["windowId"] for candidate in completed["upcoming"]["windows"]],
+            [parallel_window_id],
+        )
+        archived = completed["upcoming"]["archived"][0]
+        self.assertEqual(archived["windowId"], window["windowId"])
+        self.assertEqual(archived["finishTime"], "00:30")
+        self.assertEqual(archived["finishDate"], local_today().isoformat())
+        self.assertEqual(
+            {member["ticketId"]: member["outcome"] for member in archived["members"]},
+            {"12345678": "completed", "87654321": "incomplete"},
+        )
+        incomplete_attempt = self.store.read_ticket("87654321")["local"]["maintenance_window"]["attempts"][-1]
+        self.assertEqual(incomplete_attempt["outcome"], "incomplete")
+        self.assertEqual(incomplete_attempt["finish_time"], "00:30")
+        self.assertEqual(incomplete_attempt["finish_date"], local_today().isoformat())
+
     def test_database_maintenance_status_route_is_read_only_when_current(self) -> None:
         audit_before = self.store.audit_file.read_text(encoding="utf-8")
         status, maintenance, _ = self.read_json("/api/database/maintenance")

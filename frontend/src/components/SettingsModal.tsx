@@ -72,7 +72,7 @@ function SettingControl({
               value={String(value)}
               disabled={!setting.editable}
               onChange={(event) => onChange(event.target.value)}
-              placeholder={setting.nullable ? "Not configured" : undefined}
+              placeholder={setting.key === "email.retained_message_count" ? "All emails" : setting.nullable ? "Not configured" : undefined}
             />
             {path && <button type="button" onClick={onBrowse}>{setting.kind === "data_directory" ? "Move data…" : "Browse…"}</button>}
             {path && setting.status?.path && <button type="button" className="icon-button" onClick={onOpen} title="Open folder" aria-label={`Open ${setting.label}`}>↗</button>}

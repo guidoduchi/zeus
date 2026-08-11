@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date
+from datetime import date, timedelta
+import re
 from typing import Any
 
 from .utils import iso_now, local_today, parse_date
@@ -40,6 +41,9 @@ STATUS_LABELS = {
     STATUS_NO_VISIBILITY: "No visibility",
 }
 
+HALF_HOUR_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):(?:00|30)$")
+SHARED_WINDOW_ID_PATTERN = re.compile(r"^MW-\d{12}-[A-F0-9]{4}$")
+
 
 def validate_maintenance_window_record(value: Any) -> None:
     """Reject semantic corruption without rejecting a legacy record entirely."""
@@ -66,6 +70,16 @@ def validate_maintenance_window_record(value: Any) -> None:
     raw_date = value.get("date")
     if raw_date not in (None, "") and parse_date(raw_date) is None:
         raise ValueError("Maintenance Window date is invalid")
+    start_time = value.get("start_time")
+    if start_time not in (None, ""):
+        normalize_half_hour_time(start_time, label="Maintenance Window start time")
+        if raw_date in (None, ""):
+            raise ValueError("Maintenance Window start time requires a date")
+    window_id = value.get("window_id")
+    if window_id not in (None, "") and not SHARED_WINDOW_ID_PATTERN.fullmatch(
+        str(window_id)
+    ):
+        raise ValueError("Maintenance Window shared ID is invalid")
     attempts = value.get("attempts", [])
     if not isinstance(attempts, list):
         raise ValueError("Maintenance Window attempts must be a list")
@@ -89,6 +103,39 @@ def validate_maintenance_window_record(value: Any) -> None:
             attempt.get("source"), str
         ):
             raise ValueError(f"Maintenance Window attempt {index} source is invalid")
+        attempt_start = attempt.get("start_time")
+        if attempt_start not in (None, ""):
+            normalize_half_hour_time(
+                attempt_start,
+                label=f"Maintenance Window attempt {index} start time",
+            )
+        attempt_finish = attempt.get("finish_time")
+        if attempt_finish not in (None, ""):
+            normalize_half_hour_time(
+                attempt_finish,
+                label=f"Maintenance Window attempt {index} finish time",
+            )
+            finish_day = parse_date(attempt.get("finish_date"))
+            if finish_day is None:
+                raise ValueError(
+                    f"Maintenance Window attempt {index} finish date is invalid"
+                )
+            inferred_day = infer_finish_date(
+                attempt.get("date"),
+                start_time=attempt_start,
+                finish_time=attempt_finish,
+            )
+            if inferred_day != finish_day.isoformat():
+                raise ValueError(
+                    f"Maintenance Window attempt {index} finish date does not match its times"
+                )
+        attempt_window_id = attempt.get("window_id")
+        if attempt_window_id not in (None, "") and not SHARED_WINDOW_ID_PATTERN.fullmatch(
+            str(attempt_window_id)
+        ):
+            raise ValueError(
+                f"Maintenance Window attempt {index} shared ID is invalid"
+            )
     if "review_required" in value and not isinstance(value.get("review_required"), bool):
         raise ValueError("Maintenance Window review_required must be true or false")
 
@@ -103,11 +150,61 @@ def _date_text(value: Any) -> str | None:
     return parsed.isoformat() if parsed else None
 
 
+def normalize_half_hour_time(value: Any, *, label: str = "Maintenance Window time") -> str | None:
+    """Return an optional 24-hour time restricted to half-hour boundaries."""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if not HALF_HOUR_TIME_PATTERN.fullmatch(text):
+        raise ValueError(f"{label} must use HH:00 or HH:30 in 24-hour format")
+    return text
+
+
+def infer_finish_date(
+    planned_date: Any,
+    *,
+    start_time: Any = None,
+    finish_time: Any = None,
+) -> str | None:
+    """Resolve the finish calendar day while enforcing the 12-hour MW limit.
+
+    When a start time exists and the finish clock time is earlier, the finish
+    belongs to the next calendar day. Without a start time there is no safe
+    overnight inference, so the scheduled day is retained.
+    """
+
+    finish = normalize_half_hour_time(finish_time, label="Maintenance Window finish time")
+    if finish is None:
+        return None
+    planned = parse_date(planned_date)
+    if planned is None:
+        raise ValueError("Maintenance Window finish time requires a scheduled date")
+    start = normalize_half_hour_time(start_time, label="Maintenance Window start time")
+    if start is None:
+        return planned.isoformat()
+
+    start_minutes = int(start[:2]) * 60 + int(start[3:])
+    finish_minutes = int(finish[:2]) * 60 + int(finish[3:])
+    finish_day = planned
+    if finish_minutes < start_minutes:
+        finish_day += timedelta(days=1)
+        finish_minutes += 24 * 60
+    duration = finish_minutes - start_minutes
+    if duration <= 0:
+        raise ValueError("Maintenance Window finish time must be after its start time")
+    if duration > 12 * 60:
+        raise ValueError("Maintenance Windows cannot exceed 12 hours")
+    return finish_day.isoformat()
+
+
 def _normalize_attempts(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     attempts: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for candidate in value:
         if not isinstance(candidate, dict):
             continue
@@ -117,7 +214,22 @@ def _normalize_attempts(value: Any) -> list[dict[str, Any]]:
             continue
         confirmed_at = str(candidate.get("confirmed_at") or "").strip() or None
         source = str(candidate.get("source") or "manual").strip() or "manual"
-        key = (attempt_date, outcome, confirmed_at or "")
+        try:
+            start_time = normalize_half_hour_time(candidate.get("start_time"))
+            finish_time = normalize_half_hour_time(candidate.get("finish_time"))
+        except ValueError:
+            start_time = None
+            finish_time = None
+        finish_date = _date_text(candidate.get("finish_date")) if finish_time else None
+        if finish_time and finish_date is None:
+            # A partial hand-edited timestamp is not safe to preserve. Dropping
+            # both values keeps the archived outcome valid without inventing a
+            # calendar day.
+            finish_time = None
+        window_id = str(candidate.get("window_id") or "").strip().upper() or None
+        if window_id and not SHARED_WINDOW_ID_PATTERN.fullmatch(window_id):
+            window_id = None
+        key = (attempt_date, outcome, confirmed_at or "", window_id or "")
         if key in seen:
             continue
         seen.add(key)
@@ -127,6 +239,10 @@ def _normalize_attempts(value: Any) -> list[dict[str, Any]]:
                 "outcome": outcome,
                 "confirmed_at": confirmed_at,
                 "source": source,
+                "start_time": start_time,
+                "finish_time": finish_time,
+                "finish_date": finish_date,
+                "window_id": window_id,
             }
         )
     return attempts
@@ -187,6 +303,8 @@ def maintenance_window_from_legacy(
         "schema_version": MAINTENANCE_WINDOW_SCHEMA_VERSION,
         "status": status,
         "date": planned_date,
+        "start_time": None,
+        "window_id": None,
         "attempts": attempts,
         "review_required": review_required,
     }
@@ -205,6 +323,13 @@ def normalize_maintenance_window(
     if status not in MAINTENANCE_WINDOW_STATUSES:
         return maintenance_window_from_legacy(legacy_fields)
     planned_date = _date_text(prepared.get("date"))
+    try:
+        start_time = normalize_half_hour_time(prepared.get("start_time"))
+    except ValueError:
+        start_time = None
+    window_id = str(prepared.get("window_id") or "").strip().upper() or None
+    if window_id and not SHARED_WINDOW_ID_PATTERN.fullmatch(window_id):
+        window_id = None
     attempts = _normalize_attempts(prepared.get("attempts"))
     if status != STATUS_COMPLETED and planned_date is not None:
         # A current calendar date is stronger than every undated state. This
@@ -212,6 +337,9 @@ def normalize_maintenance_window(
         status = STATUS_PLANNED
     elif status == STATUS_PLANNED and planned_date is None:
         status = STATUS_UNPLANNED
+    if planned_date is None:
+        start_time = None
+        window_id = None
     review_required = bool(
         status == STATUS_COMPLETED
         and planned_date is None
@@ -221,6 +349,8 @@ def normalize_maintenance_window(
         "schema_version": MAINTENANCE_WINDOW_SCHEMA_VERSION,
         "status": status,
         "date": planned_date,
+        "start_time": start_time,
+        "window_id": window_id,
         "attempts": attempts,
         "review_required": review_required,
     }
@@ -309,6 +439,9 @@ def maintenance_window_summary(
         "schemaVersion": int(window.get("schema_version") or 1),
         "status": effective_status,
         "date": planned_date,
+        "startTime": window.get("start_time"),
+        "windowId": window.get("window_id"),
+        "managedInUpcoming": bool(window.get("window_id")),
         "display": display,
         "color": color,
         "confirmationRequired": confirmation_required,
@@ -320,14 +453,26 @@ def maintenance_window_summary(
 def set_maintenance_window_plan(
     local: dict[str, Any],
     planned_date: Any,
+    *,
+    start_time: Any = None,
+    window_id: str | None = None,
 ) -> dict[str, Any]:
     parsed = parse_date(planned_date)
     if parsed is None:
         raise ValueError("Maintenance Window date must be a recognizable calendar date")
+    normalized_start = normalize_half_hour_time(
+        start_time,
+        label="Maintenance Window start time",
+    )
+    normalized_window_id = str(window_id or "").strip().upper() or None
+    if normalized_window_id and not SHARED_WINDOW_ID_PATTERN.fullmatch(normalized_window_id):
+        raise ValueError("Maintenance Window shared ID is invalid")
     prepared = synchronize_maintenance_window(local)
     window = prepared["maintenance_window"]
     window["status"] = STATUS_PLANNED
     window["date"] = parsed.isoformat()
+    window["start_time"] = normalized_start
+    window["window_id"] = normalized_window_id
     window["review_required"] = False
     prepared["fields"].update(legacy_projection(window))
     return prepared
@@ -350,6 +495,8 @@ def set_maintenance_window_status(
     window["status"] = normalized
     if normalized != STATUS_COMPLETED:
         window["date"] = None
+        window["start_time"] = None
+        window["window_id"] = None
     window["review_required"] = normalized == STATUS_COMPLETED and not window.get("date")
     prepared["fields"].update(legacy_projection(window))
     return prepared
@@ -362,6 +509,8 @@ def confirm_maintenance_window(
     successful: bool,
     timestamp: str | None = None,
     source: str = "manual",
+    finish_time: Any = None,
+    expected_window_id: str | None = None,
 ) -> dict[str, Any]:
     prepared = synchronize_maintenance_window(local)
     window = prepared["maintenance_window"]
@@ -371,10 +520,23 @@ def confirm_maintenance_window(
         raise ValueError("This ticket no longer has a pending Maintenance Window decision")
     if expected != current_date:
         raise ValueError("The Maintenance Window date changed before it was confirmed")
+    current_window_id = str(window.get("window_id") or "").strip().upper() or None
+    expected_id = str(expected_window_id or "").strip().upper() or None
+    if expected_id is not None and expected_id != current_window_id:
+        raise ValueError("The shared Maintenance Window changed before it was confirmed")
     if parse_date(current_date) >= local_today():
         raise ValueError("The Maintenance Window can be confirmed only after its date has passed")
 
     outcome = "completed" if successful else "incomplete"
+    normalized_finish = normalize_half_hour_time(
+        finish_time,
+        label="Maintenance Window finish time",
+    )
+    finish_date = infer_finish_date(
+        current_date,
+        start_time=window.get("start_time"),
+        finish_time=normalized_finish,
+    ) if normalized_finish else None
     window["attempts"] = _normalize_attempts(
         [
             *(window.get("attempts") or []),
@@ -383,11 +545,17 @@ def confirm_maintenance_window(
                 "outcome": outcome,
                 "confirmed_at": timestamp or iso_now(),
                 "source": source,
+                "start_time": window.get("start_time"),
+                "finish_time": normalized_finish,
+                "finish_date": finish_date,
+                "window_id": current_window_id,
             },
         ]
     )
     window["status"] = STATUS_COMPLETED if successful else STATUS_INCOMPLETE
     window["date"] = current_date if successful else None
+    window["start_time"] = window.get("start_time") if successful else None
+    window["window_id"] = None
     window["review_required"] = False
     prepared["fields"].update(legacy_projection(window))
     return prepared
