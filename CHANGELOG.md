@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.9 - 2026-08-10
+
+- Keeps pre-migration Active Requests usable by supplying safe empty detail
+  collections at the API boundary and defensively rendering stage-zero records
+  without changing their Added to Zeus lifecycle state.
+- Replaces pill and circular email/spare counters with compact, softly rounded
+  rectangular badges shared by Service Requests and Spare Requests.
+
 ## 3.1.8 - 2026-08-10
 
 - Stabilizes Service Request and Spare Request table geometry and replaces row

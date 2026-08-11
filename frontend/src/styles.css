@@ -389,12 +389,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .email-fact > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .email-count-badge {
   min-width: 0;
-  height: 17px;
+  height: 18px;
   display: grid;
   place-items: center;
   padding: 0 3px;
   border: 1px solid rgb(255 255 255 / 24%);
-  border-radius: 9px;
+  border-radius: 4px;
+  box-sizing: border-box;
   color: white;
   font-size: var(--font-caption);
   font-style: normal;
@@ -406,7 +407,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .email-count-badge.empty { background: var(--grey); color: white; }
 .email-count-badge.zero { grid-column: 2 / 4; background: var(--red); color: white; }
 .spare-counts { display: inline-flex; align-items: center; gap: 4px; }
-.spare-count { min-width: 19px; height: 18px; display: inline-grid; place-items: center; padding: 0 5px; border-radius: 9px; color: #101415; font-size: var(--font-caption); font-style: normal; font-weight: 800; line-height: 1; }
+.spare-count { min-width: 20px; height: 18px; display: inline-grid; place-items: center; padding: 0 4px; border: 1px solid rgb(255 255 255 / 24%); border-radius: 4px; box-sizing: border-box; color: #101415; font-size: var(--font-caption); font-style: normal; font-weight: 800; line-height: 1; }
 .spare-count.pending { background: var(--grey); color: white; }
 .spare-count.dispatched { background: var(--yellow); }
 .spare-count.overdue { background: var(--red); color: white; }

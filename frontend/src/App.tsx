@@ -1287,7 +1287,7 @@ export default function App() {
       data-spare-view={workspace === "spare-requests" ? spareView : undefined}
     >
       <TopBar
-        version={bootstrap.version || "3.1.8"}
+        version={bootstrap.version || "3.1.9"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId || selectedFaultTagId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}

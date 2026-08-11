@@ -168,6 +168,23 @@ describe("SpareRequestDetail", () => {
     expect(screen.getByRole("button", { name: "Confirm request email sent" })).toBeEnabled();
   });
 
+  it("opens an Added to Zeus record created before detail collections existed", async () => {
+    const user = userEvent.setup();
+    const request = detail();
+    request.creationMethod = "zeus_create";
+    request.export.request_filename = null;
+    request.export.request_path = null;
+    delete (request.items[0] as { rma_aliases?: string[] }).rma_aliases;
+    delete (request.email as { messages?: Array<Record<string, unknown>> }).messages;
+
+    render(<SpareRequestDetail {...props(request)} />);
+
+    expect(screen.getByText("Lifecycle · Added to Zeus")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Confirm request email sent" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /Emails/ }));
+    expect(screen.getByText("No spare-related email retained for this request.")).toBeVisible();
+  });
+
   it("saves SR and RMA facts before enabling the contextual confirmation", async () => {
     const user = userEvent.setup();
     const request = detail(1);

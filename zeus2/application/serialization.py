@@ -1102,6 +1102,15 @@ def serialize_spare_request_detail(
     request: dict[str, Any], config: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     email_days, email_label, email_color, email_count = _spare_email_facts(request)
+    email = deepcopy(request.get("email") or {})
+    email["total_received"] = int(email.get("total_received") or 0)
+    email["total_sent"] = int(email.get("total_sent") or 0)
+    email["last_activity_at"] = email.get("last_activity_at")
+    email["messages"] = (
+        deepcopy(email.get("messages"))
+        if isinstance(email.get("messages"), list)
+        else []
+    )
     return {
         "requestId": request.get("request_id"),
         "revision": spare_request_revision(request),
@@ -1135,6 +1144,19 @@ def serialize_spare_request_detail(
         "items": [
             {
                 **deepcopy(item),
+                # Details remain usable while Database Maintenance is still
+                # offering the schema upgrade.  These collections did not
+                # exist on every pre-3.1.8 Active Request record.
+                "rma_aliases": (
+                    deepcopy(item.get("rma_aliases"))
+                    if isinstance(item.get("rma_aliases"), list)
+                    else []
+                ),
+                "conflicts": (
+                    deepcopy(item.get("conflicts"))
+                    if isinstance(item.get("conflicts"), list)
+                    else []
+                ),
                 "status": item_status(item, request),
                 "statusLabel": SPARE_STATUS_LABELS.get(item_status(item, request), item_status(item, request)),
                 "lifecycleColor": lifecycle_color(item, request),
@@ -1156,7 +1178,7 @@ def serialize_spare_request_detail(
         ],
         "export": deepcopy(request.get("export") or {}),
         "email": {
-            **deepcopy(request.get("email") or {}),
+            **email,
             "inactivityDays": email_days,
             "label": email_label,
             "color": email_color,

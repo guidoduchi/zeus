@@ -44,6 +44,10 @@ function conflictValue(conflict: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
+function safeArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 const NEXT_ACTION_LABELS: Record<number, string> = {
   0: "Confirm request email sent",
   1: "Confirm SR and RMA",
@@ -68,7 +72,7 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
     setTicketId(request.ticketId);
     setSpareSr(request.spareSr || "");
     setNote("");
-    setDrafts(Object.fromEntries(request.items.map((item) => [item.item_id, {
+    setDrafts(Object.fromEntries(safeArray(request.items).map((item) => [item.item_id, {
       rma: item.rma || "",
       deliveredBom: item.delivered_bom || "",
       newSn: item.new_sn || "",
@@ -116,7 +120,7 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
       const changes: Record<string, unknown> = { note };
       if (ticketId !== currentRequest.ticketId) changes.ticketId = ticketId;
       if (spareSr !== (currentRequest.spareSr || "")) changes.spareSr = spareSr;
-      const itemUpdates = currentRequest.items.flatMap((item) => {
+      const itemUpdates = safeArray(currentRequest.items).flatMap((item) => {
         const draft = drafts[item.item_id];
         const update: Record<string, unknown> = { itemId: item.item_id };
         if (draft.rma !== (item.rma || "")) update.rma = draft.rma;
@@ -198,8 +202,8 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
   }
 
   const allConflicts = [
-    ...request.conflicts.map((conflict, index) => ({ conflict, index, itemId: undefined as string | undefined })),
-    ...request.items.flatMap((item) => item.conflicts.map((conflict, index) => ({ conflict, index, itemId: item.item_id }))),
+    ...safeArray(request.conflicts).map((conflict, index) => ({ conflict, index, itemId: undefined as string | undefined })),
+    ...safeArray(request.items).flatMap((item) => safeArray(item.conflicts).map((conflict, index) => ({ conflict, index, itemId: item.item_id }))),
   ].filter(({ conflict }) => !conflict.resolved_at);
 
   return <>
@@ -209,9 +213,9 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
         <button type="button" className="icon-button" onClick={onClose} aria-label="Close Spare Request detail">×</button>
       </header>
       <nav className="detail-tabs" aria-label="Spare Request sections">
-        <button type="button" className={tab === "items" ? "active" : ""} onClick={() => setTab("items")}>Items <small>{request.items.length}</small></button>
+        <button type="button" className={tab === "items" ? "active" : ""} onClick={() => setTab("items")}>Items <small>{safeArray(request.items).length}</small></button>
         <button type="button" className={tab === "emails" ? "active" : ""} onClick={() => setTab("emails")}>Emails <small>{request.email.count}</small></button>
-        <button type="button" className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>History <small>{request.history.length}</small></button>
+        <button type="button" className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>History <small>{safeArray(request.history).length}</small></button>
       </nav>
       <div className="detail-scroll">
         {tab === "items" && <div className="tab-content spare-request-items">
@@ -233,12 +237,12 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
           </div>
           {allConflicts.length > 0 && <section className="conflict-panel"><header><strong>{allConflicts.length} unresolved conflict(s)</strong><span>Nothing was overwritten</span></header>{allConflicts.map(({ conflict, index, itemId }, position) => { const field = String(conflict.field || ""); const canAccept = ["spare_sr", "delivered_bom", "new_sn"].includes(field); return <article key={`${itemId}-${index}-${position}`}><div><strong>{field || "field"}</strong><span>{itemId || "request"}</span><p>Existing: {conflictValue(conflict, "existing")} · Incoming: {conflictValue(conflict, "incoming")}</p></div><div><button type="button" className="secondary-button" onClick={() => beginResolution(itemId, index, "keep-existing")}>Keep existing</button>{canAccept && <button type="button" className="secondary-button" onClick={() => beginResolution(itemId, index, "accept-incoming")}>Accept incoming</button>}</div></article>; })}</section>}
           <div className="request-item-list">
-            {request.items.map((item) => {
+            {safeArray(request.items).map((item) => {
               const draft = drafts[item.item_id];
               if (!draft) return null;
               const rollbackAvailable = item.lifecycle.stage > 0 && !(
                 item.lifecycle.stage === 1
-                && request.items.some((candidate) => candidate.lifecycle.stage !== 1)
+                && safeArray(request.items).some((candidate) => candidate.lifecycle.stage !== 1)
               );
               return <article className="request-item-card" data-lifecycle={item.lifecycleColor} key={item.item_id}>
                 <header><strong>Unit {item.ordinal}</strong><span className={`status-chip lifecycle-${item.lifecycleColor}`}>{item.statusLabel}</span><span>{item.dispatchAgeDays === null ? "Timer not started" : `${item.dispatchAgeDays} day(s)`}</span></header>
@@ -250,7 +254,7 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
                 </div>
                 <div className="item-bom-pair"><div><span>Requested BOM</span><strong>{item.requested_bom}</strong></div><div><span>Delivered / substitute BOM</span><strong>{item.delivered_bom || "—"}</strong></div></div>
                 <div className="form-grid four">
-                  <label className="form-field"><span>RMA · C + 10 digits</span><input value={draft.rma} maxLength={11} placeholder="C1234567890" onChange={(event) => updateItem(item.item_id, { rma: event.target.value.toUpperCase() })} />{item.rma_aliases.length > 0 && <small>Previous: {item.rma_aliases.join(", ")}</small>}</label>
+                  <label className="form-field"><span>RMA · C + 10 digits</span><input value={draft.rma} maxLength={11} placeholder="C1234567890" onChange={(event) => updateItem(item.item_id, { rma: event.target.value.toUpperCase() })} />{safeArray(item.rma_aliases).length > 0 && <small>Previous: {safeArray(item.rma_aliases).join(", ")}</small>}</label>
                   <label className="form-field"><span>Delivered BOM</span><input value={draft.deliveredBom} onChange={(event) => updateItem(item.item_id, { deliveredBom: event.target.value })} /></label>
                   <label className="form-field"><span>New SN</span><input value={draft.newSn} onChange={(event) => updateItem(item.item_id, { newSn: event.target.value })} /></label>
                   <label className="form-field"><span>Manual dispatch time</span><input type="datetime-local" value={draft.dispatchAt} onChange={(event) => updateItem(item.item_id, { dispatchAt: event.target.value })} /></label>
@@ -277,8 +281,8 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
             <small>Use each item’s current action here, or select multiple rows in Active Requests for the same stage-aware bulk action.</small>
           </section>
         </div>}
-        {tab === "emails" && <div className="tab-content spare-email-list">{request.email.messages.length ? request.email.messages.map((message, index) => <article key={String(message.message_key || index)}><header><strong>{String(message.subject || "(no subject)")}</strong><span>{String(message.timestamp || "")}</span></header><small>{String(message.direction || "")} · {String(message.sender || "")}</small><pre>{String(message.latest_reply_body || message.body || "Body purged or unavailable.")}</pre></article>) : <div className="empty-panel">No spare-related email retained for this request.</div>}</div>}
-        {tab === "history" && <div className="history-list">{request.history.map((event, index) => <article key={`${event.timestamp}-${index}`}><time>{event.timestamp}</time><strong>{event.action}</strong><pre>{JSON.stringify(event.summary, null, 2)}</pre></article>)}</div>}
+        {tab === "emails" && <div className="tab-content spare-email-list">{safeArray(request.email.messages).length ? safeArray(request.email.messages).map((message, index) => <article key={String(message.message_key || index)}><header><strong>{String(message.subject || "(no subject)")}</strong><span>{String(message.timestamp || "")}</span></header><small>{String(message.direction || "")} · {String(message.sender || "")}</small><pre>{String(message.latest_reply_body || message.body || "Body purged or unavailable.")}</pre></article>) : <div className="empty-panel">No spare-related email retained for this request.</div>}</div>}
+        {tab === "history" && <div className="history-list">{safeArray(request.history).map((event, index) => <article key={`${event.timestamp}-${index}`}><time>{event.timestamp}</time><strong>{event.action}</strong><pre>{JSON.stringify(event.summary, null, 2)}</pre></article>)}</div>}
       </div>
     </aside>
     {pendingResolution && <ConfirmationDialog

@@ -216,6 +216,9 @@ describe("TicketGrid", () => {
     expect(screen.getByTitle("Warehouse evidence or completed return")).toHaveTextContent("4");
     expect(styles).toMatch(/\.email-count-badge\.received\s*\{[^}]*background:\s*var\(--green\)/s);
     expect(styles).toMatch(/\.email-count-badge\.sent\s*\{[^}]*background:\s*var\(--cyan\)/s);
+    expect(styles).toMatch(/\.email-count-badge\s*\{[^}]*border-radius:\s*4px/s);
+    expect(styles).toMatch(/\.spare-count\s*\{[^}]*border-radius:\s*4px/s);
+    expect(styles).not.toMatch(/\.(?:email-count-badge|spare-count)\s*\{[^}]*border-radius:\s*9px/s);
   });
 
   it("shows one red zero spanning both count slots when no email exists", () => {

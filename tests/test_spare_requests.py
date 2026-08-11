@@ -12,6 +12,7 @@ from openpyxl import Workbook, load_workbook
 from zeus2.application.errors import ValidationError
 from zeus2.application.serialization import (
     dashboard_payload,
+    serialize_spare_request_detail,
     spare_requests_dashboard_payload,
     ticket_revision,
 )
@@ -172,6 +173,19 @@ def create_return_template(path: Path) -> None:
 
 
 class SpareRequestDomainTests(unittest.TestCase):
+    def test_detail_serialization_supplies_collections_before_database_upgrade(self) -> None:
+        request = request_record(1)
+        request["creation_method"] = "zeus_create"
+        request["items"][0].pop("rma_aliases")
+        request["email"].pop("messages")
+
+        detail = serialize_spare_request_detail(request)
+
+        self.assertEqual(detail["items"][0]["rma_aliases"], [])
+        self.assertEqual(detail["email"]["messages"], [])
+        self.assertEqual(detail["items"][0]["lifecycle"]["stage"], 0)
+        self.assertEqual(detail["creationMethod"], "zeus_create")
+
     def test_legacy_archive_adds_the_rma_alias_column_without_shifting_data(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             closed = Path(directory) / "Closed.xlsx"

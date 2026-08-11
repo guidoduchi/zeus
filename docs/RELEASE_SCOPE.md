@@ -1,4 +1,4 @@
-# Zeus 3.1.8 release scope
+# Zeus 3.1.9 release scope
 
 Included:
 
