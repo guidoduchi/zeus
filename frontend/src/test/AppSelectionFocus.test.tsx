@@ -85,7 +85,7 @@ function serviceSummary(ticketId: string): TicketSummary {
     lastEmailDirection: null,
     received: 0,
     sent: 0,
-    spareBadges: { eligible: 0, active: 0, activeColor: "green", completed: 0 },
+    spareBadges: { pendingDispatch: 0, dispatched: 0, overdue: 0, returned: 0 },
     summary: `Ticket ${ticketId}`,
     customerOrganization: "Organization",
     customerContact: `Customer ${ticketId}`,
@@ -177,6 +177,10 @@ function spareSummary(index: number): SpareRequestItemSummary {
     risk: "none",
     readOnly: false,
     source: "active",
+    canAdvance: true,
+    canRollback: true,
+    nextStageLabel: "Spare parts dispatched",
+    rollbackRequiresDoubleConfirmation: false,
   };
 }
 
@@ -234,6 +238,7 @@ function spareDetail(row: SpareRequestItemSummary): SpareRequestDetail {
       faulty_sn: row.faultySn,
       faulty_sns: [row.faultySn],
       rma: row.rma,
+      rma_aliases: [],
       delivered_bom: null,
       new_sn: null,
       dispatch_at: null,
@@ -461,6 +466,27 @@ afterEach(() => {
 });
 
 describe("workspace selection and detail focus", () => {
+  it("keeps Advanced Search in Service Requests and shows only the selected spare stage action", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("row", { name: /20000001/ });
+    expect(screen.getByRole("button", { name: "Check Advanced Search" })).toBeVisible();
+    expect(screen.getByText("R Check source")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Spare Requests" }));
+    const spareRow = await screen.findByRole("row", { name: /C3209937821/ });
+    expect(screen.queryByRole("button", { name: "Check Advanced Search" })).not.toBeInTheDocument();
+    expect(screen.queryByText("R Check source")).not.toBeInTheDocument();
+
+    await user.click(within(spareRow).getByRole("checkbox"));
+    expect(screen.getByRole("button", { name: /Confirm dispatched \(1\)/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Confirm SR \+ RMA/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Export Fault Tag/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Confirm dispatched \(1\)/ }));
+    expect(screen.getByRole("dialog", { name: /Confirm spare dispatched for 1 item/ })).toBeVisible();
+    expect(screen.getByLabelText("Confirmation time")).toBeVisible();
+  });
+
   it("applies the persisted interface text-size preset", async () => {
     apiMocks.getBootstrap.mockResolvedValue({ ...bootstrap, appearance: { fontScale: "large" } });
     render(<App />);

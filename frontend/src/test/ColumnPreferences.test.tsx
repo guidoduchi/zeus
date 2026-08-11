@@ -102,4 +102,23 @@ describe("dashboard field preferences", () => {
     act(() => result.current.move("ticketId", 1));
     expect(result.current.orderedColumns[0].key).toBe("ticketId");
   });
+
+  it("moves Spare Parts immediately after Last Email once without resetting choices", () => {
+    const key = "zeus3.dashboard.columns.migration";
+    localStorage.setItem(key, JSON.stringify({
+      order: ["ticketId", "severity", "spareBadges", "summary", "emailLabel", "handler"],
+      visible: ["ticketId", "spareBadges", "emailLabel", "handler"],
+    }));
+    const migratedDefinitions: ColumnDefinition[] = [
+      ...definitions.slice(0, 2),
+      { key: "emailLabel", label: "Last Email", width: 154, default: true },
+      { key: "spareBadges", label: "Spare Parts", width: 132, default: true },
+      ...definitions.slice(2),
+    ];
+    const { result } = renderHook(() => useColumnPreferences(migratedDefinitions, key));
+    const order = result.current.orderedColumns.map((column) => column.key);
+    expect(order.indexOf("spareBadges")).toBe(order.indexOf("emailLabel") + 1);
+    expect(result.current.visibleKeys).toEqual(expect.arrayContaining(["ticketId", "spareBadges", "emailLabel", "handler"]));
+    expect(JSON.parse(localStorage.getItem(key) || "{}").layoutVersion).toBe(2);
+  });
 });

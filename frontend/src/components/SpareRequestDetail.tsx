@@ -17,6 +17,8 @@ interface Props {
   onRefresh: () => Promise<void>;
   onError: (error: unknown) => void;
   onNotice: (message: string) => void;
+  onLifecycle: (itemId: string, action: "advance" | "rollback") => void;
+  onFaultTag: (itemId: string) => void;
 }
 
 interface ItemDraft {
@@ -42,7 +44,15 @@ function conflictValue(conflict: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-export function SpareRequestDetail({ request, loading, onClose, onChanged, onRefresh, onError, onNotice }: Props) {
+const NEXT_ACTION_LABELS: Record<number, string> = {
+  0: "Confirm request email sent",
+  1: "Confirm SR and RMA",
+  2: "Confirm spare dispatched",
+  3: "Confirm spare replaced",
+  5: "Confirm warehouse return",
+};
+
+export function SpareRequestDetail({ request, loading, onClose, onChanged, onRefresh, onError, onNotice, onLifecycle, onFaultTag }: Props) {
   const [tab, setTab] = useState<"items" | "emails" | "history">("items");
   const [ticketId, setTicketId] = useState("");
   const [spareSr, setSpareSr] = useState("");
@@ -207,11 +217,11 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
         {tab === "items" && <div className="tab-content spare-request-items">
           <div className="source-contract">
             <strong>Independent persistent request.</strong>
-            <span>Requested BOMs stay separate from delivered substitutions. One RMA belongs to one unit item and is immutable.</span>
+            <span>Requested BOMs stay separate from delivered substitutions. Every current or previous RMA identity stays reserved to one unit.</span>
             <span className="request-entry-guidance">{request.creationMethod === "zeus_create"
-              ? "Created in Zeus at Added to Zeus. Email synchronization advances it only after the matching sent request email is detected."
+              ? "Created in Zeus at Added to Zeus. You can confirm the sent request manually; later matching email is attached without advancing twice."
               : request.creationMethod === "zeus_export"
-                ? "The workbook was exported, but lifecycle still waits for matching sent-email evidence."
+                ? "The workbook was exported. Confirm the request email manually after sending it, or let email synchronization detect it."
                 : "Legacy evidence is preserved. Review the history before changing manual facts."}</span>
           </div>
           <div className="request-identity-form">
@@ -226,6 +236,10 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
             {request.items.map((item) => {
               const draft = drafts[item.item_id];
               if (!draft) return null;
+              const rollbackAvailable = item.lifecycle.stage > 0 && !(
+                item.lifecycle.stage === 1
+                && request.items.some((candidate) => candidate.lifecycle.stage !== 1)
+              );
               return <article className="request-item-card" data-lifecycle={item.lifecycleColor} key={item.item_id}>
                 <header><strong>Unit {item.ordinal}</strong><span className={`status-chip lifecycle-${item.lifecycleColor}`}>{item.statusLabel}</span><span>{item.dispatchAgeDays === null ? "Timer not started" : `${item.dispatchAgeDays} day(s)`}</span></header>
                 <div className="lifecycle-quest">
@@ -236,20 +250,31 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
                 </div>
                 <div className="item-bom-pair"><div><span>Requested BOM</span><strong>{item.requested_bom}</strong></div><div><span>Delivered / substitute BOM</span><strong>{item.delivered_bom || "—"}</strong></div></div>
                 <div className="form-grid four">
-                  <label className="form-field"><span>RMA · immutable once set</span><input value={draft.rma} maxLength={11} placeholder="C1234567890" onChange={(event) => updateItem(item.item_id, { rma: event.target.value.toUpperCase() })} /></label>
+                  <label className="form-field"><span>RMA · C + 10 digits</span><input value={draft.rma} maxLength={11} placeholder="C1234567890" onChange={(event) => updateItem(item.item_id, { rma: event.target.value.toUpperCase() })} />{item.rma_aliases.length > 0 && <small>Previous: {item.rma_aliases.join(", ")}</small>}</label>
                   <label className="form-field"><span>Delivered BOM</span><input value={draft.deliveredBom} onChange={(event) => updateItem(item.item_id, { deliveredBom: event.target.value })} /></label>
                   <label className="form-field"><span>New SN</span><input value={draft.newSn} onChange={(event) => updateItem(item.item_id, { newSn: event.target.value })} /></label>
                   <label className="form-field"><span>Manual dispatch time</span><input type="datetime-local" value={draft.dispatchAt} onChange={(event) => updateItem(item.item_id, { dispatchAt: event.target.value })} /></label>
                   <label className="form-field wide"><span>Item notes</span><input value={draft.notes} onChange={(event) => updateItem(item.item_id, { notes: event.target.value })} /></label>
                 </div>
-                <footer><span>{item.rma || "RMA pending"} · {item.new_sn || "New SN pending"}{item.return_condition ? ` · ${item.return_condition}` : ""}</span>{(item.warehouse_confirmed_at || item.warehouse_candidate_at) && <strong className="green-text">Warehouse evidence received · explicit user confirmation still required</strong>}</footer>
+                <footer>
+                  <span>{item.rma || "RMA pending"} · {item.new_sn || "New SN pending"}{item.return_condition ? ` · ${item.return_condition}` : ""}</span>
+                  {(item.warehouse_confirmed_at || item.warehouse_candidate_at) && <strong className="green-text">Warehouse evidence received · explicit user confirmation still required</strong>}
+                  <div className="item-lifecycle-actions">
+                    {item.lifecycle.stage === 4
+                      ? item.return_export_filename || item.return_condition
+                        ? <span>Fault Tag already linked</span>
+                        : <button type="button" className="primary-button" disabled={working || !item.rma} onClick={() => onFaultTag(item.item_id)}>Export Fault Tag</button>
+                      : NEXT_ACTION_LABELS[item.lifecycle.stage] && <button type="button" className="primary-button" disabled={working || (item.lifecycle.stage === 1 && !(request.spareSr && item.rma))} onClick={() => onLifecycle(item.item_id, "advance")}>{NEXT_ACTION_LABELS[item.lifecycle.stage]}</button>}
+                    {item.lifecycle.stage > 0 && <button type="button" className="secondary-button" disabled={working || !rollbackAvailable} title={rollbackAvailable ? "Roll back exactly one stage" : "Roll later-stage sibling items back first"} onClick={() => onLifecycle(item.item_id, "rollback")}>Roll back last stage</button>}
+                  </div>
+                </footer>
               </article>;
             })}
           </div>
           <section className="archive-controls">
             <label className="form-field full"><span>Audit note</span><textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} /></label>
             <div><button type="button" className="primary-button" disabled={working} onClick={save}>{working ? "Working…" : "Save manual facts"}</button>{request.canDelete && <button type="button" className="danger-button delete-request-button" disabled={working} onClick={() => setDeleteOpen(true)}>Delete unconfirmed request</button>}</div>
-            <small>Lifecycle confirmation, rollback, Fault Tag export, and warehouse completion are bulk actions in the Active Requests dashboard.</small>
+            <small>Use each item’s current action here, or select multiple rows in Active Requests for the same stage-aware bulk action.</small>
           </section>
         </div>}
         {tab === "emails" && <div className="tab-content spare-email-list">{request.email.messages.length ? request.email.messages.map((message, index) => <article key={String(message.message_key || index)}><header><strong>{String(message.subject || "(no subject)")}</strong><span>{String(message.timestamp || "")}</span></header><small>{String(message.direction || "")} · {String(message.sender || "")}</small><pre>{String(message.latest_reply_body || message.body || "Body purged or unavailable.")}</pre></article>) : <div className="empty-panel">No spare-related email retained for this request.</div>}</div>}

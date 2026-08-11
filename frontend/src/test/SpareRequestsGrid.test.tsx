@@ -109,7 +109,7 @@ describe("SpareRequestsGrid", () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 
-  it("uses received and sent triangular badges in Active Requests", () => {
+  it("uses fixed received and sent count slots in Active Requests", () => {
     render(
       <SpareRequestsGrid
         rows={[row(), row({ rowId: "260808123456-0002", itemId: "260808123456-0002", emailCount: 0, received: 0, sent: 0 })]}
@@ -124,6 +124,7 @@ describe("SpareRequestsGrid", () => {
 
     expect(screen.getByLabelText("2 received email(s)")).toHaveClass("received");
     expect(screen.getByLabelText("1 sent email(s)")).toHaveClass("sent");
+    expect(screen.getByLabelText("0 total emails")).toHaveClass("zero");
     expect(screen.queryByLabelText("3 total emails")).not.toBeInTheDocument();
   });
 
@@ -159,10 +160,24 @@ describe("SpareRequestsGrid", () => {
     );
 
     const scroll = screen.getByTestId("dashboard-scroll");
-    expect(screen.getByRole("row", { name: /TT RMA Last Email Tracking ID Lifecycle/ }).parentElement).toBe(scroll);
+    expect(screen.getByRole("row", { name: /TT RMA Last Email.*Tracking ID Lifecycle/ }).parentElement?.parentElement).toBe(scroll);
     expect(scroll).toContainElement(screen.getByText("No matching Spare Request items."));
     expect(styles).toMatch(/\.ticket-grid\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidden/s);
     expect(styles).toMatch(/\.ticket-scroll\s*\{[^}]*overflow:\s*auto/s);
     expect(styles).toMatch(/\.empty-grid\s*\{[^}]*position:\s*sticky[^}]*left:\s*0[^}]*width:\s*100%/s);
+  });
+
+  it("resets horizontal scroll when detail opens and reserves checkbox geometry", () => {
+    const props = {
+      rows: [row()], columns, selectedRowId: null, onHighlight: vi.fn(), onOpen: vi.fn(), onCloseDetail: vi.fn(),
+      onToggleBulk: vi.fn(), bulkSelectedRowIds: new Set<string>(),
+    };
+    const { rerender } = render(<SpareRequestsGrid {...props} detailOpen={false} />);
+    const scroll = screen.getByTestId("dashboard-scroll");
+    scroll.scrollLeft = 180;
+    rerender(<SpareRequestsGrid {...props} detailOpen />);
+    expect(scroll.scrollLeft).toBe(0);
+    expect(screen.getByRole("checkbox")).toBeInTheDocument();
+    expect(styles).toMatch(/\.ticket-identity\.selectable\s*\{[^}]*grid-template-columns:\s*15px minmax\(0, 1fr\) auto/s);
   });
 });

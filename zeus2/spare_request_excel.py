@@ -38,6 +38,7 @@ LIGHT_GREEN = "D9EAD3"
 ARCHIVE_HEADERS = [
     "TT",
     "RMA",
+    "RMA Aliases",
     "Email inactivity days",
     "Emails received",
     "Emails sent",
@@ -68,6 +69,9 @@ ARCHIVE_HEADERS = [
     "Source",
     "Item ID",
 ]
+LEGACY_ARCHIVE_HEADERS = [
+    header for header in ARCHIVE_HEADERS if header != "RMA Aliases"
+]
 ARCHIVE_EMAIL_HEADERS = [
     "TT",
     "Spare SR",
@@ -85,6 +89,20 @@ ARCHIVE_EMAIL_HEADERS = [
 
 class SpareRequestWorkbookError(RuntimeError):
     pass
+
+
+def archived_rma_values(row: dict[str, Any]) -> set[str]:
+    """Return every current or historical RMA reserved by an archive row."""
+
+    candidates = [row.get("RMA")]
+    candidates.extend(re.split(r"[\r\n,;]+", str(row.get("RMA Aliases") or "")))
+    return {
+        normalized
+        for candidate in candidates
+        if str(candidate or "").strip()
+        for normalized in [normalize_rma(candidate, required=True)]
+        if normalized
+    }
 
 
 def _require_template(path: Path, expected_sheet_count: int) -> tuple[Path, tuple[str, ...]]:
@@ -572,6 +590,23 @@ def _ensure_archive_sheet(workbook: Any, name: str, headers: list[str]) -> Any:
     if name in workbook.sheetnames:
         worksheet = workbook[name]
         current = [str(cell.value or "").strip() for cell in worksheet[1]]
+        if (
+            name == SPARE_ARCHIVE_SHEET
+            and headers == ARCHIVE_HEADERS
+            and current == LEGACY_ARCHIVE_HEADERS
+        ):
+            alias_column = ARCHIVE_HEADERS.index("RMA Aliases") + 1
+            worksheet.insert_cols(alias_column)
+            source = worksheet.cell(1, alias_column - 1)
+            target = worksheet.cell(1, alias_column)
+            target.value = "RMA Aliases"
+            target._style = copy(source._style)
+            target.alignment = copy(source.alignment)
+            target.protection = copy(source.protection)
+            worksheet.auto_filter.ref = (
+                f"A1:{get_column_letter(len(ARCHIVE_HEADERS))}1"
+            )
+            current = [str(cell.value or "").strip() for cell in worksheet[1]]
         if current != headers:
             raise SpareRequestWorkbookError(f"{name} in Closed.xlsx has an unsupported schema")
         return worksheet
@@ -631,6 +666,7 @@ def append_archived_item(
             row = {
                 "TT": request.get("tt"),
                 "RMA": item.get("rma"),
+                "RMA Aliases": "\n".join(item.get("rma_aliases") or []) or None,
                 "Email inactivity days": _archive_email_inactivity(request, timestamp),
                 "Emails received": int(email.get("total_received") or 0),
                 "Emails sent": int(email.get("total_sent") or 0),
@@ -717,7 +753,10 @@ def read_archived_items(closed_path: Path) -> list[dict[str, Any]]:
             return []
         worksheet = workbook[SPARE_ARCHIVE_SHEET]
         headers = [str(cell.value or "").strip() for cell in worksheet[1]]
-        if headers != ARCHIVE_HEADERS:
+        if tuple(headers) not in {
+            tuple(ARCHIVE_HEADERS),
+            tuple(LEGACY_ARCHIVE_HEADERS),
+        }:
             raise SpareRequestWorkbookError(
                 f"{SPARE_ARCHIVE_SHEET} in Closed.xlsx has an unsupported schema"
             )
@@ -725,7 +764,9 @@ def read_archived_items(closed_path: Path) -> list[dict[str, Any]]:
         for values in worksheet.iter_rows(min_row=2, values_only=True):
             if not any(value not in (None, "") for value in values):
                 continue
-            rows.append(dict(zip(headers, values)))
+            row = dict(zip(headers, values))
+            row.setdefault("RMA Aliases", None)
+            rows.append(row)
         return rows
     finally:
         workbook.close()
@@ -747,7 +788,10 @@ def purge_archived_items(
             return {"removed": 0, "remaining": 0}
         archive = workbook[SPARE_ARCHIVE_SHEET]
         headers = [str(cell.value or "").strip() for cell in archive[1]]
-        if headers != ARCHIVE_HEADERS:
+        if tuple(headers) not in {
+            tuple(ARCHIVE_HEADERS),
+            tuple(LEGACY_ARCHIVE_HEADERS),
+        }:
             raise SpareRequestWorkbookError(
                 f"{SPARE_ARCHIVE_SHEET} in Closed.xlsx has an unsupported schema"
             )

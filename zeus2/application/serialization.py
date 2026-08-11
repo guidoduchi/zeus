@@ -18,6 +18,7 @@ from ..spare_requests import (
     dispatch_age_days,
     item_status,
     lifecycle_color,
+    lifecycle_stage,
     lifecycle_stage_details,
     request_overall_status,
     source_part_key,
@@ -221,10 +222,10 @@ def serialize_ticket_summary(
         "spareBadges": deepcopy(
             spare_badges
             or {
-                "eligible": 0,
-                "active": 0,
-                "activeColor": "green",
-                "completed": 0,
+                "pendingDispatch": 0,
+                "dispatched": 0,
+                "overdue": 0,
+                "returned": 0,
             }
         ),
         "summary": upstream.get("Problem Summary") or "",
@@ -472,10 +473,10 @@ def dashboard_payload(
     occupied = active_source_part_keys(active_requests)
     badge_counts: dict[str, dict[str, Any]] = {
         str(ticket.get("ticket_id")): {
-            "eligible": 0,
-            "active": 0,
-            "activeColor": "green",
-            "completed": 0,
+            "pendingDispatch": 0,
+            "dispatched": 0,
+            "overdue": 0,
+            "returned": 0,
         }
         for ticket in all_records
     }
@@ -484,7 +485,7 @@ def dashboard_payload(
         ticket_id = str(ticket.get("ticket_id") or "")
         counts = badge_counts.setdefault(
             ticket_id,
-            {"eligible": 0, "active": 0, "activeColor": "green", "completed": 0},
+            {"pendingDispatch": 0, "dispatched": 0, "overdue": 0, "returned": 0},
         )
         local = normalize_local(ticket.get("local"))
         for device_index, device in enumerate(local.get("spare_parts", []), start=1):
@@ -495,29 +496,32 @@ def dashboard_payload(
                     continue
                 if (ticket_id, device_number, part_number) in occupied:
                     continue
-                counts["eligible"] += max(1, len(newline_values(part.get("slot"))))
+                counts["pendingDispatch"] += max(
+                    1, len(newline_values(part.get("slot")))
+                )
     for request in active_requests:
         ticket_id = str(request.get("tt") or "")
         counts = badge_counts.setdefault(
             ticket_id,
-            {"eligible": 0, "active": 0, "activeColor": "green", "completed": 0},
+            {"pendingDispatch": 0, "dispatched": 0, "overdue": 0, "returned": 0},
         )
         for item in request.get("items", []):
-            counts["active"] += 1
-            age = dispatch_age_days(item)
-            if (
-                not item.get("completion_confirmed_at")
-                and age is not None
-                and age > red_days
-            ):
-                counts["activeColor"] = "red"
+            stage = lifecycle_stage(item, request)
+            if stage >= 5:
+                counts["returned"] += 1
+            elif stage >= 3:
+                age = dispatch_age_days(item)
+                counts["overdue" if age is not None and age >= red_days else "dispatched"] += 1
+            else:
+                counts["pendingDispatch"] += 1
     workbook_directory = store.configured_directory("workbook_directory")
     closed_path = workbook_directory / "Closed.xlsx" if workbook_directory else None
     if closed_path is not None and closed_path.is_file():
         for row in read_archived_items(closed_path):
             ticket_id = str(row.get("TT") or row.get("SRNo") or "")
-            if ticket_id in badge_counts:
-                badge_counts[ticket_id]["completed"] += 1
+            reason = str(row.get("Archive Reason") or row.get("Status") or "").casefold()
+            if ticket_id in badge_counts and reason == "returned":
+                badge_counts[ticket_id]["returned"] += 1
 
     return {
         "workspace": "service-requests",
@@ -783,6 +787,21 @@ def _request_conflict_count(request: dict[str, Any]) -> int:
     )
 
 
+def _rollback_requires_email_override(
+    request: dict[str, Any], item: dict[str, Any], stage: dict[str, Any]
+) -> bool:
+    stage_number = int(stage.get("stage") or 0)
+    message_key = {
+        1: request.get("request_sent_message_key"),
+        2: item.get("attendance_message_key"),
+        3: item.get("dispatch_message_key"),
+        5: item.get("warehouse_message_key"),
+    }.get(stage_number)
+    return bool(message_key) or str(stage.get("source") or "").casefold().startswith(
+        "email"
+    )
+
+
 def serialize_spare_request_item(
     request: dict[str, Any], item: dict[str, Any], config: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -838,21 +857,28 @@ def serialize_spare_request_item(
         "risk": "red" if conflicts or age_color == "red" else "yellow" if age_color == "yellow" or email_color == "yellow" else "grey" if lifecycle == "grey" else "none",
         "readOnly": False,
         "source": "active",
-        "canAdvance": stage["stage"] in {2, 3, 5}
+        "canAdvance": stage["stage"] in {0, 2, 3, 5}
         or (
             stage["stage"] == 1
             and bool(request.get("spare_sr"))
             and bool(item.get("rma"))
         ),
-        "canRollback": stage["stage"] > 0,
+        "canRollback": stage["stage"] > 0
+        and not (
+            stage["stage"] == 1
+            and any(
+                lifecycle_stage(candidate, request) != 1
+                for candidate in request.get("items", [])
+            )
+        ),
         "nextStageLabel": (
             LIFECYCLE_STAGE_LABELS[stage["stage"] + 1]
             if stage["stage"] < 6
             else None
         ),
-        "rollbackRequiresDoubleConfirmation": str(stage.get("source") or "")
-        .casefold()
-        .startswith("email"),
+        "rollbackRequiresDoubleConfirmation": _rollback_requires_email_override(
+            request, item, stage
+        ),
     }
 
 
@@ -1122,6 +1148,9 @@ def serialize_spare_request_detail(
                     ),
                 ),
                 "lifecycle": lifecycle_stage_details(item, request),
+                "rollbackRequiresDoubleConfirmation": _rollback_requires_email_override(
+                    request, item, lifecycle_stage_details(item, request)
+                ),
             }
             for item in request.get("items", [])
         ],

@@ -84,6 +84,7 @@ function detail(stage = 0, confirmed = false): Detail {
       faulty_sn: "FAULTY-1",
       faulty_sns: ["FAULTY-1"],
       rma: confirmed ? "C3209937826" : null,
+      rma_aliases: [],
       delivered_bom: null,
       new_sn: null,
       dispatch_at: null,
@@ -146,6 +147,8 @@ function props(request: Detail) {
     onRefresh: vi.fn().mockResolvedValue(undefined),
     onError: vi.fn(),
     onNotice: vi.fn(),
+    onLifecycle: vi.fn(),
+    onFaultTag: vi.fn(),
   };
 }
 
@@ -162,10 +165,10 @@ describe("SpareRequestDetail", () => {
     expect(within(lifecycle).getAllByRole("listitem")).toHaveLength(7);
     expect(screen.getByText("Lifecycle · Added to Zeus")).toBeVisible();
     expect(screen.queryByText(/Stage \d|S\d/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Confirm next/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm request email sent" })).toBeEnabled();
   });
 
-  it("saves SR and RMA facts without a per-item lifecycle action", async () => {
+  it("saves SR and RMA facts before enabling the contextual confirmation", async () => {
     const user = userEvent.setup();
     const request = detail(1);
     const confirmed = detail(1, true);
@@ -174,7 +177,8 @@ describe("SpareRequestDetail", () => {
     render(<SpareRequestDetail {...handlers} />);
 
     await user.type(screen.getByLabelText("Spare SR"), "SR4956964");
-    await user.type(screen.getByLabelText(/RMA · immutable once set/), "C3209937826");
+    expect(screen.getByRole("button", { name: "Confirm SR and RMA" })).toBeDisabled();
+    await user.type(screen.getByLabelText(/RMA · C \+ 10 digits/), "C3209937826");
     await user.click(screen.getByRole("button", { name: "Save manual facts" }));
 
     await waitFor(() => expect(apiMocks.saveSpareRequest).toHaveBeenCalledWith(
@@ -186,6 +190,18 @@ describe("SpareRequestDetail", () => {
     expect(apiMocks.advanceSpareRequestStage).not.toHaveBeenCalled();
     expect(handlers.onChanged).toHaveBeenCalledWith(confirmed);
     expect(handlers.onNotice).toHaveBeenCalledWith(expect.stringContaining("Spare Request saved"));
+  });
+
+  it("offers Fault Tag export only at Spare replaced and keeps rollback contextual", async () => {
+    const user = userEvent.setup();
+    const request = detail(4, true);
+    const handlers = props(request);
+    render(<SpareRequestDetail {...handlers} />);
+    expect(screen.queryByRole("button", { name: /Confirm spare/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Export Fault Tag" }));
+    expect(handlers.onFaultTag).toHaveBeenCalledWith(request.items[0].item_id);
+    await user.click(screen.getByRole("button", { name: "Roll back last stage" }));
+    expect(handlers.onLifecycle).toHaveBeenCalledWith(request.items[0].item_id, "rollback");
   });
 
   it("deletes an unconfirmed active request only after the explicit confirmation", async () => {

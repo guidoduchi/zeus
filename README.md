@@ -1,4 +1,4 @@
-# Zeus 3.1.7
+# Zeus 3.1.8
 
 Zeus is a strictly local ticket workstation. Its Python backend runs in the
 background, serves a bundled React interface on `127.0.0.1`, and opens that
@@ -92,17 +92,21 @@ The blue title rail switches seamlessly between two management workspaces:
   SR Parts**, independent **Fault Tags**, and read-only **Completed** archive
   views.
 
-Last Email shows days plus separate colored triangular received and sent counts;
-there is no total badge or separate count column. Beside it, Service Request
-rows show individual-unit Spare Parts badges: yellow eligible, green active,
-red active after 20 full days (day 21), and gray completed. Zero-count badges
-are hidden. Lifecycle and dispatch aging remain separate signals.
+Last Email uses green received and cyan sent legends in the header with fixed
+rounded count slots in every row. A no-email row shows one red zero across both
+slots; a missing direction on an active thread stays visible as a gray zero.
+Beside it, Service Request rows show individual-unit Spare Parts badges: gray
+eligible/not dispatched, yellow dispatched below threshold, red at the
+configured displayed age (day 20 by default), and green warehouse-returned.
+Zero-count spare badges are hidden. Lifecycle and dispatch aging remain separate
+signals.
 
 The damaged-device **Spare Parts** editor remains inside SR detail and saves
 directly to the database. **New Request** offers Cancel, Create, and Export.
 Create records an independent request without writing XLSX; Export writes the
-template-based XLSX. Both begin at **Added to Zeus**, and only detected outbound
-email advances **Request email sent**. The exact source part leaves eligibility
+template-based XLSX. Both begin at **Added to Zeus**. A user can manually confirm
+the editable sent time or let detected outbound email advance **Request email
+sent**; later matching mail attaches without advancing twice. The exact source part leaves eligibility
 while active and remains reserved after archival so a new replacement requires
 a new part record.
 

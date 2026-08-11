@@ -47,6 +47,7 @@ from ..reference_data import (
 )
 from ..spare_request_excel import (
     append_archived_item,
+    archived_rma_values,
     export_initial_request,
     export_return_workbook,
     purge_archived_items,
@@ -67,6 +68,7 @@ from ..spare_requests import (
     normalize_report_date,
     normalize_request_lines,
     normalize_rma,
+    normalize_rma_aliases,
     normalize_spare_sr,
     normalize_tt,
     request_filename,
@@ -82,7 +84,7 @@ from ..storage_migration import (
 from ..startup import StartupResult, reconcile_advanced_and_new_mail, run_startup
 from ..store import StoreError, ZeusStore
 from ..tickets import empty_email, newline_values, normalize_local
-from ..utils import iso_now, local_today, normalize_ticket_id
+from ..utils import iso_now, local_today, normalize_ticket_id, parse_datetime
 from .edits import (
     confirm_maintenance_window_in_database,
     edit_ticket_in_database,
@@ -1352,6 +1354,7 @@ class ApplicationService:
         expected_revisions: dict[str, str] | None = None,
         email_override_confirmed: bool = False,
         note: str = "",
+        confirmed_at: str | None = None,
     ) -> dict[str, Any]:
         normalized_action = str(action or "").strip().casefold()
         if normalized_action not in {"advance", "rollback"}:
@@ -1364,13 +1367,13 @@ class ApplicationService:
             raise BusyError("Another Zeus operation is changing data")
         try:
             requests = list(self.store.iter_spare_requests())
-            pairs = {
+            all_pairs = {
                 str(item.get("item_id")): (request, item)
                 for request in requests
                 for item in request.get("items", [])
-                if item.get("item_id") in clean_ids
+                if item.get("item_id")
             }
-            missing = sorted(set(clean_ids) - set(pairs))
+            missing = sorted(set(clean_ids) - set(all_pairs))
             if missing:
                 raise ValidationError("Active items were not found: " + ", ".join(missing))
             for request_id, revision in (expected_revisions or {}).items():
@@ -1382,6 +1385,23 @@ class ApplicationService:
                     raise ConflictError("A selected Spare Request changed. Reload and try again.")
 
             timestamp = iso_now()
+            if normalized_action == "advance" and confirmed_at:
+                parsed_confirmation = parse_datetime(confirmed_at)
+                if parsed_confirmation is None:
+                    raise ValidationError("Manual confirmation time is invalid")
+                if parsed_confirmation.tzinfo is None:
+                    parsed_confirmation = parsed_confirmation.replace(
+                        tzinfo=ECUADOR_TIMEZONE
+                    )
+                else:
+                    parsed_confirmation = parsed_confirmation.astimezone(
+                        ECUADOR_TIMEZONE
+                    )
+                if parsed_confirmation > datetime.now(ECUADOR_TIMEZONE) + timedelta(
+                    minutes=5
+                ):
+                    raise ValidationError("Manual confirmation time cannot be in the future")
+                timestamp = parsed_confirmation.isoformat(timespec="seconds")
             selected_ids = set(clean_ids)
             for request in requests:
                 request_items = list(request.get("items") or [])
@@ -1420,12 +1440,24 @@ class ApplicationService:
                         "Roll every later-stage item back to Request email sent before "
                         f"rolling back the shared email stage in request {request.get('request_id')}"
                     )
-                if shared_stage_change and selected_request_ids != request_item_ids:
-                    raise ValidationError(
-                        "Request email stage is shared; select all active items in "
-                        f"request {request.get('request_id')}"
-                    )
+                if shared_stage_change:
+                    selected_ids.update(request_item_ids)
+            clean_ids = list(
+                dict.fromkeys(
+                    [
+                        *clean_ids,
+                        *(
+                            str(item.get("item_id"))
+                            for request in requests
+                            for item in request.get("items", [])
+                            if item.get("item_id") in selected_ids
+                        ),
+                    ]
+                )
+            )
+            pairs = {item_id: all_pairs[item_id] for item_id in clean_ids}
             plans: list[dict[str, Any]] = []
+            planned_shared_requests: set[str] = set()
             for item_id in clean_ids:
                 request, item = pairs[item_id]
                 stage = lifecycle_stage(item, request)
@@ -1434,11 +1466,6 @@ class ApplicationService:
                     raise ValidationError(f"{item_id} is already complete")
                 if normalized_action == "rollback" and stage == 0:
                     raise ValidationError(f"{item_id} is already at the first lifecycle stage")
-                if normalized_action == "advance" and target == 1:
-                    raise ValidationError(
-                        f"{item_id} needs detected outbound email evidence; "
-                        "Request email sent cannot be confirmed manually"
-                    )
                 if normalized_action == "advance" and target == 2 and not (
                     request.get("spare_sr") and item.get("rma")
                 ):
@@ -1464,28 +1491,57 @@ class ApplicationService:
                         3: item.get("dispatch_message_key"),
                         5: item.get("warehouse_message_key"),
                     }.get(stage)
-                    email_backed = str(source or "").casefold().startswith("email")
+                    email_backed = str(source or "").casefold().startswith(
+                        "email"
+                    ) or bool(message_key)
                     if email_backed and (not email_override_confirmed or not note.strip()):
                         raise ValidationError(
                             "Rolling back an email-backed stage requires the second confirmation and an audit note"
                         )
+                    if stage == 1 and request["request_id"] in planned_shared_requests:
+                        continue
                     plans.append(
                         {
                             "item_id": item_id,
                             "request_id": request["request_id"],
                             "stage": stage,
                             "email_backed": email_backed,
+                            "source": source,
                             "message_key": message_key,
+                            "shared_item_ids": (
+                                sorted(
+                                    str(value.get("item_id"))
+                                    for value in request.get("items", [])
+                                    if value.get("item_id")
+                                )
+                                if stage == 1
+                                else []
+                            ),
                         }
                     )
                 else:
+                    if target == 1 and request["request_id"] in planned_shared_requests:
+                        continue
                     plans.append(
                         {
                             "item_id": item_id,
                             "request_id": request["request_id"],
                             "stage": target,
+                            "shared_item_ids": (
+                                sorted(
+                                    str(value.get("item_id"))
+                                    for value in request.get("items", [])
+                                    if value.get("item_id")
+                                )
+                                if target == 1
+                                else []
+                            ),
                         }
                     )
+                if (normalized_action == "advance" and target == 1) or (
+                    normalized_action == "rollback" and stage == 1
+                ):
+                    planned_shared_requests.add(str(request["request_id"]))
 
             completed_ids: set[str] = set()
             closed_path = None
@@ -1543,6 +1599,9 @@ class ApplicationService:
                             item["completion_confirmed_at"] = timestamp
                             item["completion_confirmation_source"] = "manual"
                     else:
+                        clear_manual_fact = not plan["email_backed"] or not str(
+                            plan.get("source") or ""
+                        ).casefold().startswith("email")
                         if plan["email_backed"]:
                             staged_target = request if stage == 1 else item
                             self._suppress_stage(
@@ -1551,25 +1610,25 @@ class ApplicationService:
                                 message_key=plan["message_key"],
                                 note=note.strip(),
                             )
-                        elif stage == 1:
+                        if clear_manual_fact and stage == 1:
                             request["request_sent_at"] = None
                             request["request_sent_source"] = None
                             request["request_sent_message_key"] = None
-                        elif stage == 2:
+                        elif clear_manual_fact and stage == 2:
                             item["attendance_confirmed_at"] = None
                             item["attendance_source"] = None
                             item["attendance_message_key"] = None
-                        elif stage == 3:
+                        elif clear_manual_fact and stage == 3:
                             item["dispatch_at"] = None
                             item["dispatch_source"] = None
                             item["dispatch_message_key"] = None
-                        elif stage == 4:
+                        elif clear_manual_fact and stage == 4:
                             item["replacement_confirmed_at"] = None
                             item["replacement_confirmation_source"] = None
-                        elif stage == 5:
+                        elif clear_manual_fact and stage == 5:
                             item["warehouse_candidate_at"] = None
                             item["warehouse_confirmation_source"] = None
-                        elif stage == 6:
+                        elif clear_manual_fact and stage == 6:
                             item["completion_confirmed_at"] = None
                             item["completion_confirmation_source"] = None
                     request_history(
@@ -1577,9 +1636,11 @@ class ApplicationService:
                         f"lifecycle-stage-{normalized_action}",
                         {
                             "itemId": plan["item_id"],
+                            "items": plan.get("shared_item_ids") or [plan["item_id"]],
                             "stage": stage,
                             "label": LIFECYCLE_STAGE_LABELS[stage],
                             "emailOverride": bool(plan.get("email_backed")),
+                            "confirmedAt": timestamp if normalized_action == "advance" else None,
                             "note": note.strip() or None,
                         },
                     )
@@ -1699,11 +1760,34 @@ class ApplicationService:
             note = str(changes.get("note") or "").strip()
             active_requests = list(self.store.iter_spare_requests())
             closed_path = self._closed_workbook_path()
-            archived_rmas = {
-                str(row.get("RMA"))
-                for row in read_archived_items(closed_path)
-                if row.get("RMA")
-            } if closed_path is not None else set()
+            archived_rmas = set().union(
+                *(
+                    archived_rma_values(row)
+                    for row in read_archived_items(closed_path)
+                )
+            ) if closed_path is not None else set()
+            active_rma_owners: dict[str, set[str]] = {}
+            for candidate in active_requests:
+                for candidate_item in candidate.get("items", []):
+                    candidate_item_id = str(candidate_item.get("item_id") or "")
+                    identities = [
+                        candidate_item.get("rma"),
+                        *list(candidate_item.get("rma_aliases") or []),
+                    ]
+                    for identity in identities:
+                        if identity:
+                            active_rma_owners.setdefault(str(identity), set()).add(
+                                candidate_item_id
+                            )
+            fault_tag_rma_owners: dict[str, set[str]] = {}
+            for completed in (False, True):
+                for record in self.store.iter_fault_tags(completed=completed):
+                    for member in record.get("members", []):
+                        identity = str(member.get("rma") or "")
+                        if identity:
+                            fault_tag_rma_owners.setdefault(identity, set()).add(
+                                str(member.get("item_id") or "")
+                            )
             with self.store.transaction(
                 "spare-request-edit", {"request_id": request_id}
             ) as staging:
@@ -1742,25 +1826,108 @@ class ApplicationService:
                     item = self._find_request_item(request, str(update.get("itemId") or ""))
                     if "rma" in update:
                         incoming_rma = normalize_rma(update.get("rma"))
-                        if item.get("rma") and incoming_rma != item.get("rma"):
-                            raise ValidationError(f"RMA {item['rma']} is immutable")
-                        if incoming_rma and any(
-                            candidate.get("request_id") != request_id
-                            and any(
-                                candidate_item.get("rma") == incoming_rma
-                                for candidate_item in candidate.get("items", [])
+                        item_id = str(item.get("item_id") or "")
+                        previous_rma = normalize_rma(item.get("rma"))
+                        if previous_rma and not incoming_rma:
+                            raise ValidationError(
+                                "An assigned RMA can be corrected but not cleared"
                             )
-                            for candidate in active_requests
-                        ):
-                            raise ValidationError(f"RMA {incoming_rma} already belongs to another active request")
+                        if previous_rma and incoming_rma != previous_rma and not note:
+                            raise ValidationError(
+                                "Correcting an assigned RMA requires an audit note"
+                            )
                         if incoming_rma and any(
-                            candidate_item is not item and candidate_item.get("rma") == incoming_rma
-                            for candidate_item in request.get("items", [])
+                            owner != item_id
+                            for owner in active_rma_owners.get(incoming_rma, set())
                         ):
-                            raise ValidationError(f"RMA {incoming_rma} already belongs to another item")
+                            raise ValidationError(
+                                f"RMA {incoming_rma} already belongs to another active item or historical alias"
+                            )
                         if incoming_rma and incoming_rma in archived_rmas:
-                            raise ValidationError(f"RMA {incoming_rma} already belongs to a completed item")
+                            raise ValidationError(
+                                f"RMA {incoming_rma} already belongs to a completed item or historical alias"
+                            )
+                        if incoming_rma and any(
+                            owner != item_id
+                            for owner in fault_tag_rma_owners.get(incoming_rma, set())
+                        ):
+                            raise ValidationError(
+                                f"RMA {incoming_rma} already belongs to another Fault Tag item"
+                            )
+                        if previous_rma and incoming_rma != previous_rma:
+                            for fault_tag_id in list(item.get("fault_tag_ids") or []):
+                                record = self.store.read_fault_tag(
+                                    str(fault_tag_id), staging, completed=False
+                                )
+                                member = next(
+                                    (
+                                        value
+                                        for value in record.get("members", [])
+                                        if value.get("item_id") == item_id
+                                    ),
+                                    None,
+                                )
+                                if member is None:
+                                    raise ValidationError(
+                                        f"Fault Tag {fault_tag_id} no longer contains {item_id}"
+                                    )
+                                if (
+                                    record.get("locked_at")
+                                    or record.get("email", {}).get("sent_at")
+                                    or member.get("warehouse_evidence_at")
+                                ):
+                                    raise ValidationError(
+                                        f"Delete Fault Tag {fault_tag_id} before correcting RMA {previous_rma}; sent-email or warehouse evidence already exists"
+                                    )
+                                member["rma"] = incoming_rma
+                                if isinstance(member.get("item_snapshot"), dict):
+                                    member["item_snapshot"]["rma"] = incoming_rma
+                                    member["item_snapshot"]["rma_aliases"] = (
+                                        normalize_rma_aliases(
+                                            [
+                                                *list(item.get("rma_aliases") or []),
+                                                previous_rma,
+                                            ],
+                                            current=incoming_rma,
+                                        )
+                                    )
+                                record.setdefault("export", {})[
+                                    "needs_reexport"
+                                ] = True
+                                fault_tag_history(
+                                    record,
+                                    "member-rma-corrected",
+                                    {
+                                        "item": item_id,
+                                        "previous": previous_rma,
+                                        "current": incoming_rma,
+                                    },
+                                )
+                                self.store.write_fault_tag(staging, record)
+                            aliases = normalize_rma_aliases(
+                                [*list(item.get("rma_aliases") or []), previous_rma],
+                                current=incoming_rma,
+                            )
+                            item["rma_aliases"] = aliases
+                            request_history(
+                                request,
+                                "rma-corrected",
+                                {
+                                    "itemId": item_id,
+                                    "previous": previous_rma,
+                                    "current": incoming_rma,
+                                    "note": note,
+                                },
+                            )
                         item["rma"] = incoming_rma
+                        if incoming_rma:
+                            active_rma_owners.setdefault(incoming_rma, set()).add(
+                                item_id
+                            )
+                        for alias in item.get("rma_aliases", []):
+                            active_rma_owners.setdefault(str(alias), set()).add(
+                                item_id
+                            )
                     if "deliveredBom" in update:
                         incoming_bom = str(update.get("deliveredBom") or "").strip() or None
                         if item.get("delivered_bom") and incoming_bom != item.get("delivered_bom"):
@@ -2166,6 +2333,7 @@ class ApplicationService:
                         "filename": result["filename"],
                         "path": result["path"],
                         "subject": result["subject"],
+                        "needs_reexport": False,
                     }
                 )
                 updated["export"].setdefault("revisions", []).append(

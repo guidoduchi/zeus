@@ -24,7 +24,7 @@ const detail: TicketDetailType = {
   lastEmailDirection: "received",
   received: 1,
   sent: 0,
-  spareBadges: { eligible: 0, active: 0, activeColor: "green", completed: 0 },
+  spareBadges: { pendingDispatch: 0, dispatched: 0, overdue: 0, returned: 0 },
   summary: "A compact detail",
   customerOrganization: "Customer Org",
   customerContact: "Customer Contact",

@@ -1,4 +1,4 @@
-# Zeus 3.1.7 release scope
+# Zeus 3.1.8 release scope
 
 Included:
 
@@ -65,7 +65,7 @@ Included:
   and unit-count Spare Parts badges with day-21 active escalation;
 - one date-first MW column and editor, with batched overdue outcomes, complete
   and incomplete transitions, optional new-date rescheduling, and durable attempt history;
-- preview-first Database Maintenance with full backup, staged 3.1.7 migration,
+- preview-first Database Maintenance with full backup, staged 3.1.8 migration,
   readable-Markdown repair, blocked-record review, validation, and atomic swap;
 - locally persisted dark/light theme, filters, sort field, and
   ascending/descending direction;

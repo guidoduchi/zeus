@@ -247,6 +247,7 @@ export function bulkSpareLifecycle(payload: {
   revisions?: Record<string, string>;
   emailOverrideConfirmed?: boolean;
   note?: string;
+  confirmedAt?: string;
 }): Promise<{ action: string; items: string[]; completed: string[]; closedPath: string | null }> {
   return request("/api/spare-requests/lifecycle/bulk", {
     method: "POST",

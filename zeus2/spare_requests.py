@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 SPARE_REQUEST_MARKER = "<!-- ZEUS_SPARE_REQUEST_V1:"
-SPARE_REQUEST_SCHEMA_VERSION = 2
+SPARE_REQUEST_SCHEMA_VERSION = 3
 ECUADOR_TIMEZONE = ZoneInfo("America/Guayaquil")
 TT_PATTERN = re.compile(r"(?<!\d)(\d{8})(?!\d)")
 SPARE_SR_PATTERN = re.compile(r"\bSR\s*[:#-]?\s*(\d{7})(?!\d)", re.IGNORECASE)
@@ -85,6 +85,27 @@ def normalize_rma(value: Any, *, required: bool = False) -> str | None:
     if not re.fullmatch(r"C\d{10}", text):
         raise SpareRequestError("RMA must use C followed by exactly ten digits")
     return text
+
+
+def normalize_rma_aliases(value: Any, *, current: Any = None) -> list[str]:
+    """Return canonical, unique historical RMA identities for one item."""
+
+    if value in (None, ""):
+        candidates: Iterable[Any] = ()
+    elif isinstance(value, str):
+        candidates = re.split(r"[\r\n,;]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        candidates = value
+    else:
+        raise SpareRequestError("RMA aliases must be a list of valid RMAs")
+    current_rma = normalize_rma(current)
+    aliases: list[str] = []
+    for candidate in candidates:
+        alias = normalize_rma(candidate, required=True)
+        if alias == current_rma or alias in aliases:
+            continue
+        aliases.append(alias)
+    return aliases
 
 
 def source_part_key(
@@ -394,6 +415,7 @@ def _new_item(
         "source_device_number": line.get("source_device_number"),
         "source_part_number": line.get("source_part_number"),
         "rma": None,
+        "rma_aliases": [],
         "delivered_bom": None,
         "new_sn": None,
         "attendance_confirmed_at": None,
@@ -532,6 +554,9 @@ def upgrade_request_record(request: dict[str, Any]) -> dict[str, Any]:
         item.setdefault("completion_confirmed_at", None)
         item.setdefault("completion_confirmation_source", None)
         item.setdefault("warehouse_evidence", [])
+        item["rma_aliases"] = normalize_rma_aliases(
+            item.get("rma_aliases"), current=item.get("rma")
+        )
         legacy_replacement = item.get("fault_tag_generated_at") or item.get(
             "return_exported_at"
         )
@@ -734,8 +759,8 @@ def aging_color(
 ) -> str | None:
     if age_days is None:
         return None
-    # "More than 20 days" begins on day 21, not at the start of day 20.
-    if age_days > red_days:
+    # The configured value is the first displayed age considered overdue.
+    if age_days >= red_days:
         return "red"
     if yellow_days is not None and age_days >= yellow_days:
         return "yellow"
@@ -819,8 +844,8 @@ def render_request_markdown(request: dict[str, Any]) -> str:
             "",
             "## Items",
             "",
-            "| Item | Requested BOM | Delivered BOM | RMA | New SN | State | Dispatch age |",
-            "|---|---|---|---|---|---|---|",
+            "| Item | Requested BOM | Delivered BOM | RMA | Previous RMAs | New SN | State | Dispatch age |",
+            "|---|---|---|---|---|---|---|---|",
         ]
     )
     for item in request.get("items", []):
@@ -833,6 +858,7 @@ def render_request_markdown(request: dict[str, Any]) -> str:
                     _display(item.get("requested_bom")),
                     _display(item.get("delivered_bom")),
                     _display(item.get("rma")),
+                    _display(", ".join(item.get("rma_aliases") or [])),
                     _display(item.get("new_sn")),
                     _display(item_status(item, request)),
                     _display(f"{age} days" if age is not None else None),
@@ -904,7 +930,7 @@ def validate_request_record(request: dict[str, Any], directory_name: str | None 
     if not isinstance(items, list) or not items:
         raise SpareRequestError(f"Spare Request {request_id} must contain active items")
     item_ids: set[str] = set()
-    rmas: set[str] = set()
+    rma_identities: set[str] = set()
     for item in items:
         if not isinstance(item, dict):
             raise SpareRequestError(f"Spare Request {request_id} contains an invalid item")
@@ -914,10 +940,21 @@ def validate_request_record(request: dict[str, Any], directory_name: str | None 
         item_ids.add(item_id)
         _required_text(item.get("requested_bom"), "Requested BOM", maximum=120)
         rma = normalize_rma(item.get("rma"))
-        if rma and rma in rmas:
-            raise SpareRequestError(f"Spare Request {request_id} contains duplicate RMA {rma}")
-        if rma:
-            rmas.add(rma)
+        if not isinstance(item.get("rma_aliases", []), list):
+            raise SpareRequestError(
+                f"Spare Request {request_id} has invalid RMA aliases"
+            )
+        aliases = normalize_rma_aliases(item.get("rma_aliases"), current=rma)
+        if aliases != item.get("rma_aliases", []):
+            raise SpareRequestError(
+                f"Spare Request {request_id} has non-canonical RMA aliases"
+            )
+        for identity in ([rma] if rma else []) + aliases:
+            if identity in rma_identities:
+                raise SpareRequestError(
+                    f"Spare Request {request_id} contains duplicate RMA identity {identity}"
+                )
+            rma_identities.add(identity)
         if not isinstance(item.get("conflicts", []), list):
             raise SpareRequestError(f"Spare Request {request_id} has invalid conflicts")
         if not isinstance(item.get("fault_tag_ids", []), list):

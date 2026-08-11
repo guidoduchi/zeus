@@ -10,6 +10,7 @@ const columns: ColumnDefinition[] = [
   { key: "done", label: "MW", width: 128, default: true },
   { key: "ticketAgeDays", label: "Age", width: 62, default: true },
   { key: "emailLabel", label: "Last Email", width: 154, default: true },
+  { key: "spareBadges", label: "Spare Parts", width: 132, default: true },
   { key: "severity", label: "Severity", width: 92, default: true },
   { key: "summary", label: "Summary", width: 360, default: true, flex: true },
 ];
@@ -38,12 +39,12 @@ function ticket(ticketId: string): TicketSummary {
     ticketAgeColor: null,
     emailInactivityDays: null,
     emailLabel: "No email",
-    emailCount: 7,
+    emailCount: 0,
     emailColor: "grey",
     lastEmailDirection: null,
     received: 0,
     sent: 0,
-    spareBadges: { eligible: 0, active: 0, activeColor: "green", completed: 0 },
+    spareBadges: { pendingDispatch: 0, dispatched: 0, overdue: 0, returned: 0 },
     summary: `Ticket ${ticketId}`,
     customerOrganization: "Organization",
     customerContact: `Customer ${ticketId}`,
@@ -184,11 +185,14 @@ describe("TicketGrid", () => {
     expect(screen.queryByText("Incomplete")).not.toBeInTheDocument();
   });
 
-  it("shows received and sent triangular badges without a total badge", () => {
+  it("uses the header triangles as a legend and fixed rounded count slots", () => {
     const positive = ticket("12345678");
+    positive.emailCount = 7;
+    positive.emailLabel = "2d inactive";
     positive.received = 4;
     positive.sent = 3;
-    const zero = { ...ticket("87654321"), emailCount: 0, received: 0, sent: 0 };
+    positive.spareBadges = { pendingDispatch: 2, dispatched: 3, overdue: 1, returned: 4 };
+    const zero = { ...ticket("87654321"), emailCount: 1, received: 1, sent: 0 };
     render(
       <TicketGrid
         tickets={[positive, zero]}
@@ -203,10 +207,22 @@ describe("TicketGrid", () => {
 
     expect(screen.getByLabelText("4 received email(s)")).toHaveClass("received");
     expect(screen.getByLabelText("3 sent email(s)")).toHaveClass("sent");
-    expect(screen.getAllByLabelText("0 received email(s)")).not.toHaveLength(0);
+    expect(screen.getByLabelText("0 sent email(s)")).toHaveClass("empty");
+    expect(screen.getByRole("columnheader", { name: /Last Email.*Received email count.*Sent email count/i })).toBeVisible();
     expect(screen.queryByLabelText("7 total emails")).not.toBeInTheDocument();
-    expect(styles).toMatch(/\.email-direction-badge\.received\s*\{[^}]*color:\s*var\(--green\)/s);
-    expect(styles).toMatch(/\.email-direction-badge\.sent\s*\{[^}]*color:\s*var\(--cyan\)/s);
+    expect(screen.getByTitle("Eligible or not yet dispatched")).toHaveTextContent("2");
+    expect(screen.getByTitle("Dispatched, below overdue threshold")).toHaveTextContent("3");
+    expect(screen.getByTitle("Dispatched and overdue")).toHaveTextContent("1");
+    expect(screen.getByTitle("Warehouse evidence or completed return")).toHaveTextContent("4");
+    expect(styles).toMatch(/\.email-count-badge\.received\s*\{[^}]*background:\s*var\(--green\)/s);
+    expect(styles).toMatch(/\.email-count-badge\.sent\s*\{[^}]*background:\s*var\(--cyan\)/s);
+  });
+
+  it("shows one red zero spanning both count slots when no email exists", () => {
+    renderGrid();
+    expect(screen.getAllByLabelText("0 total emails")[0]).toHaveClass("zero");
+    expect(styles).toMatch(/\.email-count-badge\.zero\s*\{[^}]*grid-column:\s*2 \/ 4[^}]*background:\s*var\(--red\)/s);
+    expect(styles).toMatch(/\.grid-table\s*\{[^}]*width:\s*100%/s);
   });
 
   it("marks protected SR drafts without confusing them with row selection", () => {

@@ -738,11 +738,14 @@ class ZeusStore:
             if spare_sr:
                 global_spare_srs.add(str(spare_sr))
             for item in request.get("items", []):
-                rma = item.get("rma")
-                if rma and rma in global_rmas:
-                    raise StoreError(f"RMA {rma} belongs to more than one active Spare Request")
-                if rma:
-                    global_rmas.add(str(rma))
+                identities = [item.get("rma"), *list(item.get("rma_aliases") or [])]
+                for identity in identities:
+                    if identity and identity in global_rmas:
+                        raise StoreError(
+                            f"RMA identity {identity} belongs to more than one active Spare Request"
+                        )
+                    if identity:
+                        global_rmas.add(str(identity))
         active_item_ids = {
             str(item.get("item_id"))
             for request in self.iter_spare_requests(current_path)

@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.1.8 - 2026-08-10
+
+- Stabilizes Service Request and Spare Request table geometry and replaces row
+  email triangles with a shared Last Email header legend plus fixed received,
+  sent, gray-zero, and no-email red-zero badges.
+- Reclassifies Service Request spare-unit summaries as gray pending dispatch,
+  yellow dispatched, red overdue from displayed day 20 by default, and green
+  warehouse-returned, including returned archive items while their SR is open.
+- Makes Spare Request controls stage-specific in both item detail and bulk
+  selection, restores audited manual request-email confirmation with an
+  editable timestamp, and keeps Advanced Search actions in Service Requests.
+- Allows audited RMA correction while permanently reserving previous aliases;
+  unlocked Fault Tags update and require re-export, while tags with sent or
+  warehouse evidence must be deleted and recreated first.
+
 ## 3.1.7 - 2026-08-10
 
 - Rebuilds the Spare Request lifecycle as seven fully named stages with

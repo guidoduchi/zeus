@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .fault_tags import fault_tag_history
-from .spare_request_excel import read_archived_items
+from .spare_request_excel import archived_rma_values, read_archived_items
 from .spare_requests import (
     ECUADOR_TIMEZONE,
     REQUEST_ID_PATTERN,
@@ -493,9 +493,10 @@ def _global_indices(requests: list[dict[str, Any]]) -> tuple[dict[str, dict[str,
         if spare_sr:
             spare_sr_index[str(spare_sr)] = request
         for item in request.get("items", []):
-            rma = item.get("rma")
-            if rma:
-                rma_index[str(rma)] = (request, item)
+            identities = [item.get("rma"), *list(item.get("rma_aliases") or [])]
+            for identity in identities:
+                if identity:
+                    rma_index[str(identity)] = (request, item)
     return spare_sr_index, rma_index
 
 
@@ -797,8 +798,9 @@ def _associate_outbound(
     request = request_id_index[request_id]
     message_key = message.get("message_key")
     if not lifecycle_effect_suppressed(request, 1, message_key):
-        request["request_sent_at"] = message.get("timestamp") or iso_now()
-        request["request_sent_source"] = "email"
+        if not request.get("request_sent_at"):
+            request["request_sent_at"] = message.get("timestamp") or iso_now()
+            request["request_sent_source"] = "email"
         request["request_sent_message_key"] = message_key
     item_ids = [item.get("item_id") for item in request.get("items", []) if item.get("item_id")]
     _associate_message(request, message, item_ids, retained)
@@ -982,11 +984,12 @@ def apply_spare_request_messages(
     request_id_index = {request["request_id"]: request for request in requests}
     workbook_directory = store.configured_directory("workbook_directory")
     closed_path = workbook_directory / "Closed.xlsx" if workbook_directory is not None else None
-    archived_rmas = {
-        str(row.get("RMA"))
-        for row in read_archived_items(closed_path)
-        if row.get("RMA")
-    } if closed_path is not None else set()
+    archived_rmas = set().union(
+        *(
+            archived_rma_values(row)
+            for row in read_archived_items(closed_path)
+        )
+    ) if closed_path is not None else set()
     retained = int(store.config.get("email", {}).get("retained_message_count", 7))
     trust = spare_mail_trust(store.config)
     message_state: dict[str, dict[str, Any]] = {

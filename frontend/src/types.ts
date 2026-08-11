@@ -51,10 +51,10 @@ export interface TicketSummary {
   received: number;
   sent: number;
   spareBadges: {
-    eligible: number;
-    active: number;
-    activeColor: "green" | "red";
-    completed: number;
+    pendingDispatch: number;
+    dispatched: number;
+    overdue: number;
+    returned: number;
   };
   summary: string;
   customerOrganization: string;
@@ -313,6 +313,7 @@ export interface SpareRequestItem {
   faulty_sn: string | null;
   faulty_sns: string[];
   rma: string | null;
+  rma_aliases: string[];
   delivered_bom: string | null;
   new_sn: string | null;
   dispatch_at: string | null;
@@ -331,6 +332,7 @@ export interface SpareRequestItem {
   dispatchAgeColor: Risk | null;
   notes: string | null;
   lifecycle: SpareLifecycle;
+  rollbackRequiresDoubleConfirmation?: boolean;
 }
 
 export interface SpareLifecycleStage {

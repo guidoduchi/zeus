@@ -32,7 +32,7 @@ const ticket: TicketSummary = {
   lastEmailDirection: null,
   received: 0,
   sent: 0,
-  spareBadges: { eligible: 0, active: 0, activeColor: "green", completed: 0 },
+  spareBadges: { pendingDispatch: 0, dispatched: 0, overdue: 0, returned: 0 },
   summary: "MW decision",
   customerOrganization: "Organization",
   customerContact: "Customer",

@@ -303,7 +303,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Spare dispatch overdue threshold",
         "Aging",
         "integer",
-        "Complete calendar days after dispatch before an unresolved active spare turns red; 20 means red on day 21.",
+        "Displayed dispatch age when an unresolved active spare turns red; 20 means red on day 20.",
         minimum=0,
     ),
     SettingSpec(

@@ -470,6 +470,11 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                         payload.get("emailOverrideConfirmed")
                     ),
                     note=str(payload.get("note") or ""),
+                    confirmed_at=(
+                        str(payload.get("confirmedAt"))
+                        if payload.get("confirmedAt")
+                        else None
+                    ),
                 ),
             )
             return
