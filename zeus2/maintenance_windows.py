@@ -289,6 +289,7 @@ def maintenance_window_summary(
     confirmation_required = bool(
         status == STATUS_PLANNED and parsed is not None and parsed < current_day
     )
+    effective_status = STATUS_INCOMPLETE if confirmation_required else status
     if status == STATUS_COMPLETED:
         display = STATUS_LABELS[STATUS_COMPLETED]
         color = "green"
@@ -306,7 +307,7 @@ def maintenance_window_summary(
         color = "yellow"
     return {
         "schemaVersion": int(window.get("schema_version") or 1),
-        "status": status,
+        "status": effective_status,
         "date": planned_date,
         "display": display,
         "color": color,

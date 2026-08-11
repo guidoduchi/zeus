@@ -69,6 +69,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "open_browser": True,
         "system_tray": True,
         "font_scale": "standard",
+        "show_detail_history": False,
     },
 }
 
@@ -359,6 +360,13 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Use one consistent typography scale throughout Zeus.",
         choices=("compact", "standard", "large"),
     ),
+    SettingSpec(
+        "web.show_detail_history",
+        "Show raw detail history",
+        "Developer options",
+        "boolean",
+        "Expose the raw History tab in Service Request and Active Request details. Off by default for ordinary users.",
+    ),
 )
 
 SETTING_SPEC_BY_KEY = {spec.key: spec for spec in SETTING_SPECS}
@@ -598,7 +606,7 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
     port = _require_integer(config, "web.port")
     if not 1024 <= port <= 65535:
         raise ValueError("web.port must be between 1024 and 65535")
-    for key in ("open_browser", "system_tray"):
+    for key in ("open_browser", "system_tray", "show_detail_history"):
         if not isinstance(config.get("web", {}).get(key), bool):
             raise ValueError(f"web.{key} must be true or false")
     if config.get("web", {}).get("font_scale") not in {"compact", "standard", "large"}:

@@ -912,6 +912,20 @@ class ApplicationServiceContractTests(WebFixture):
         finally:
             service.stop()
 
+    def test_raw_detail_history_setting_is_off_by_default_and_updates_bootstrap(self) -> None:
+        service = ApplicationService(self.store)
+        try:
+            self.assertFalse(service.bootstrap_payload()["appearance"]["showDetailHistory"])
+            settings = service.save_settings({"web.show_detail_history": True})
+            configured = next(
+                item for item in settings["settings"]
+                if item["key"] == "web.show_detail_history"
+            )
+            self.assertTrue(configured["value"])
+            self.assertTrue(service.bootstrap_payload()["appearance"]["showDetailHistory"])
+        finally:
+            service.stop()
+
     def test_spare_prefill_maps_customer_and_multislot_device_data(self) -> None:
         self.seed_database()
         ticket = self.store.read_ticket("12345678")
@@ -1285,7 +1299,10 @@ class WebServerTests(WebFixture):
         self.assertEqual(status, 200)
         self.assertEqual(dashboard["stats"]["active"], 1)  # type: ignore[index]
         self.assertEqual(index["instanceId"], "test-instance")
-        self.assertEqual(index["appearance"], {"fontScale": "standard"})
+        self.assertEqual(
+            index["appearance"],
+            {"fontScale": "standard", "showDetailHistory": False},
+        )
         self.assertEqual(audit_before, audit_after)
 
     def test_first_run_requires_profile_then_unlocks_the_workbench(self) -> None:

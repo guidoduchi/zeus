@@ -1,4 +1,4 @@
-# Zeus 3.1.10 release scope
+# Zeus 3.1.11 release scope
 
 Included:
 
@@ -43,6 +43,8 @@ Included:
   request-email selection enforcement, immediate same-stage selection locking,
   SR/RMA auto-save on confirmation, current-time dispatch, and exact-message
   lifecycle suppression after a confirmed email-backed rollback;
+- responsive upper-row New Request, BOM catalog, and contextual lifecycle
+  controls that collapse to hover-labelled icons on constrained screens;
 - mandatory cancellation reasons and dedicated Closed.xlsx archive/email tabs;
 - local-only structured Global data and BOM managers that ship empty plus fixed
   180-day active-email and completed-archive retention;
@@ -65,8 +67,9 @@ Included:
 - severity in the default dense dashboard, one structured MW field with legacy
   workbook projections, Last Email age plus directional received/sent triangles,
   and compact unit-count Spare Parts badges with day-20 active escalation;
-- one date-first MW column and editor, with batched overdue outcomes, complete
-  and incomplete transitions, optional new-date rescheduling, and durable attempt history;
+- one date-first MW column and full-width editor, with automatic
+  Unplanned/Planned/Incomplete states, manual completion after the date passes,
+  a New MW cycle action after completion, and durable archived attempt history;
 - preview-first Database Maintenance with full backup, staged 3.1.8 migration,
   readable-Markdown repair, blocked-record review, validation, and atomic swap;
 - locally persisted dark/light theme, filters, sort field, and
@@ -76,6 +79,9 @@ Included:
   and ←/→ changes detail tabs without wrap;
 - browser-persisted Work/Spare drafts, row-move notices, stale-draft recovery,
   and reload protection until a draft is saved or discarded;
+- browser-persisted Active Request drafts for every editable request/item fact
+  at every lifecycle stage, with global draft count/manager visibility and
+  one-step field or discard undo in request detail;
 - visible protected-draft row markers plus a selectable Drafts manager for
   review, selective discard, confirmed all-or-nothing multi-SR saves, and
   one-level undo for the latest Save or Discard;
@@ -83,6 +89,8 @@ Included:
   create false conflicts and a successful save cannot recreate its own draft;
 - keyboard focus that follows the selected row and active detail tab instead of
   leaving a stale cyan focus rectangle on an earlier control;
+- raw Service Request and Active Request History tabs hidden by default and
+  exposed only by an off-by-default Configuration → Developer options toggle;
 - a dirty-state-aware Global data manager that remains open after saving,
   disables no-op saves, blocks accidental dismissal while dirty, autocompletes
   SR-based contact imports, explains each collection, and visibly includes the

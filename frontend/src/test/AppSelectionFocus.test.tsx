@@ -66,7 +66,7 @@ const bootstrap: BootstrapPayload = {
   },
   outlook: { enabled: false, configuredPathAvailable: false, stagedMessageCount: 0 },
   polling: { intervalMinutes: 15, enabled: true },
-  appearance: { fontScale: "standard" },
+  appearance: { fontScale: "standard", showDetailHistory: false },
 };
 
 function serviceSummary(ticketId: string): TicketSummary {
@@ -428,6 +428,7 @@ class FakeEventSource {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   vi.stubGlobal("EventSource", FakeEventSource);
   apiMocks.getBootstrap.mockResolvedValue(bootstrap);
   apiMocks.getTemplates.mockResolvedValue({ templates: [] });
@@ -485,6 +486,8 @@ describe("workspace selection and detail focus", () => {
     expect(screen.getByText("R Check source")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Spare Requests" }));
     const spareRow = await screen.findByRole("row", { name: /C3209937821/ });
+    const newRequest = screen.getByRole("button", { name: "New Request" });
+    expect(newRequest.closest(".spare-toolbar-actions")?.parentElement).toHaveClass("spare-view-row");
     expect(screen.queryByRole("button", { name: "Check Advanced Search" })).not.toBeInTheDocument();
     expect(screen.queryByText("R Check source")).not.toBeInTheDocument();
 
@@ -495,6 +498,7 @@ describe("workspace selection and detail focus", () => {
     await user.click(screen.getByRole("button", { name: /Confirm dispatched \(1\)/ }));
     expect(screen.getByRole("dialog", { name: /Confirm spare dispatched for 1 item/ })).toBeVisible();
     expect(screen.queryByLabelText("Confirmation time")).not.toBeInTheDocument();
+    expect(styles).toMatch(/@media \(max-width: 1280px\)[\s\S]*?\.spare-toolbar-actions \.toolbar-label\s*\{\s*display:\s*none/s);
     expect(styles).toMatch(/@container dashboard-controls \(max-width: 1480px\)[\s\S]*?\.toolbar-label\s*\{\s*display:\s*none/s);
     expect(styles).toMatch(/\.stage-action\.stage-2[^}]*background:\s*rgb\(255 217 26 \/ 12%\)/s);
   });
@@ -589,7 +593,7 @@ describe("workspace selection and detail focus", () => {
   });
 
   it("applies the persisted interface text-size preset", async () => {
-    apiMocks.getBootstrap.mockResolvedValue({ ...bootstrap, appearance: { fontScale: "large" } });
+    apiMocks.getBootstrap.mockResolvedValue({ ...bootstrap, appearance: { fontScale: "large", showDetailHistory: false } });
     render(<App />);
 
     await screen.findByRole("row", { name: /20000001/ });
@@ -637,6 +641,22 @@ describe("workspace selection and detail focus", () => {
     await screen.findByRole("complementary", { name: `Spare Request ${spareRows[1].requestId} detail` });
     expect(second).toHaveAttribute("aria-selected", "true");
     expect(apiMocks.getSpareRequest).toHaveBeenCalledWith(spareRows[1].requestId);
+  });
+
+  it("counts Active Request edits as protected drafts and exposes them for review", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("row", { name: /20000001/ });
+    await user.click(screen.getByRole("button", { name: "Spare Requests" }));
+    await user.dblClick(await screen.findByRole("row", { name: /C3209937821/ }));
+    await user.type(await screen.findByLabelText("Delivered BOM"), "BOM-PROTECTED");
+    const drafts = await screen.findByRole("button", { name: /1 protected draft/i });
+    await user.click(drafts);
+
+    expect(await screen.findByRole("dialog", { name: "Protected drafts" })).toBeVisible();
+    expect(screen.getByText(`Request ${spareRows[0].requestId}`)).toBeVisible();
+    expect(screen.getByText("Unit 1 Delivered BOM")).toBeVisible();
   });
 
   it("ignores stale detail responses during rapid arrow navigation", async () => {

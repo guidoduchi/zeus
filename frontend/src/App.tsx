@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ACTIVE_REQUEST_DRAFTS_CHANGED_EVENT,
+  countActiveRequestDrafts,
+} from "./activeRequestDrafts";
+import {
   ApiError,
   bulkSpareLifecycle,
   cancelJob,
@@ -31,7 +35,6 @@ import { FaultTagsGrid } from "./components/FaultTagsGrid";
 import { GlobalDataModal } from "./components/GlobalDataModal";
 import { JobBanner } from "./components/JobBanner";
 import { Modal } from "./components/Modal";
-import { MaintenanceWindowPrompt, type MaintenanceWindowDecision } from "./components/MaintenanceWindowPrompt";
 import { NoticeStrip } from "./components/NoticeStrip";
 import { OperationsModal } from "./components/OperationsModal";
 import { ProfileSetup } from "./components/ProfileSetup";
@@ -90,6 +93,10 @@ interface WorkspaceConfiguration {
   defaultDirections: Record<string, SortDirection>;
   searchPlaceholder: string;
   columnsStorageKey: string;
+}
+
+function countProtectedDrafts(): number {
+  return countUnsavedDrafts() + countActiveRequestDrafts();
 }
 
 const WORKSPACES: Record<WorkspaceKey, WorkspaceConfiguration> = {
@@ -280,11 +287,9 @@ export default function App() {
   const [spareLifecycleTargets, setSpareLifecycleTargets] = useState<SpareLifecycleTarget[]>([]);
   const [faultTagTargets, setFaultTagTargets] = useState<FaultTagTarget[]>([]);
   const [spareBulkBusy, setSpareBulkBusy] = useState(false);
-  const [dismissedMaintenanceWindows, setDismissedMaintenanceWindows] = useState<Set<string>>(() => new Set());
-  const [maintenanceWindowBusy, setMaintenanceWindowBusy] = useState(false);
   const [templates, setTemplates] = useState<Array<{ name: string; path: string }>>([]);
   const [toast, setToast] = useState<{ tone: "error" | "success" | "info"; message: string } | null>(null);
-  const [draftCount, setDraftCount] = useState(countUnsavedDrafts);
+  const [draftCount, setDraftCount] = useState(countProtectedDrafts);
   const [draftUndoAvailable, setDraftUndoAvailable] = useState(hasDraftUndo);
   const [reloadUndoPrompt, setReloadUndoPrompt] = useState(false);
   const [draftTicketIds, setDraftTicketIds] = useState<Set<string>>(ticketIdsWithDrafts);
@@ -490,15 +495,17 @@ export default function App() {
 
   useEffect(() => {
     const refreshDraftCount = () => {
-      setDraftCount(countUnsavedDrafts());
+      setDraftCount(countProtectedDrafts());
       setDraftTicketIds(ticketIdsWithDrafts());
     };
     const refreshUndo = () => setDraftUndoAvailable(hasDraftUndo());
     window.addEventListener(DRAFTS_CHANGED_EVENT, refreshDraftCount);
+    window.addEventListener(ACTIVE_REQUEST_DRAFTS_CHANGED_EVENT, refreshDraftCount);
     window.addEventListener(DRAFT_UNDO_CHANGED_EVENT, refreshUndo);
     window.addEventListener("storage", refreshDraftCount);
     return () => {
       window.removeEventListener(DRAFTS_CHANGED_EVENT, refreshDraftCount);
+      window.removeEventListener(ACTIVE_REQUEST_DRAFTS_CHANGED_EVENT, refreshDraftCount);
       window.removeEventListener(DRAFT_UNDO_CHANGED_EVENT, refreshUndo);
       window.removeEventListener("storage", refreshDraftCount);
     };
@@ -506,13 +513,13 @@ export default function App() {
 
   useEffect(() => {
     function protectDrafts(event: BeforeUnloadEvent) {
-      if (!countUnsavedDrafts() && !hasDraftUndo()) return;
+      if (!countProtectedDrafts() && !hasDraftUndo()) return;
       event.preventDefault();
       event.returnValue = "";
     }
     function blockKeyboardReload(event: KeyboardEvent) {
       const reload = event.key === "F5" || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r");
-      if (!reload || (!countUnsavedDrafts() && !hasDraftUndo())) return;
+      if (!reload || (!countProtectedDrafts() && !hasDraftUndo())) return;
       event.preventDefault();
       if (hasDraftUndo()) {
         setReloadUndoPrompt(true);
@@ -669,6 +676,25 @@ export default function App() {
         tone: "error",
         message: `SR ${ticketId} was saved successfully, but the dashboard reread failed: ${message}.`,
       });
+    }
+  }
+
+  async function completeMaintenanceWindow(ticketId: string, revision: string, plannedDate: string) {
+    try {
+      const result = await confirmMaintenanceWindow(ticketId, revision, plannedDate, true);
+      setTicket(result.ticket);
+      dashboardCache.current.clear();
+      await Promise.all([loadDashboard(), loadBootstrap()]);
+      setToast({
+        tone: "success",
+        message: `SR ${ticketId} Maintenance Window marked Completed. The completed cycle remains archived in MW history.`,
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.code.includes("conflict")) {
+        await loadTicket(ticketId).catch(reportError);
+      }
+      reportError(error);
+      throw error;
     }
   }
 
@@ -882,67 +908,6 @@ export default function App() {
       setSpareBulkBusy(false);
     }
   }
-  const overdueMaintenanceWindows = useMemo(() => {
-    const candidates = dashboard?.workspace === "service-requests"
-      ? dashboard.tickets
-      : bootstrap?.maintenanceWindowsDue || [];
-    return candidates.filter((candidate) => {
-      const date = candidate.maintenanceWindow?.date;
-      return candidate.maintenanceWindow?.confirmationRequired
-        && Boolean(date)
-        && !draftTicketIds.has(candidate.ticketId)
-        && !dismissedMaintenanceWindows.has(`${candidate.ticketId}:${date}`);
-    });
-  }, [bootstrap?.maintenanceWindowsDue, dashboard, dismissedMaintenanceWindows, draftTicketIds]);
-
-  function dismissMaintenanceWindow(ticket: TicketSummary) {
-    const key = `${ticket.ticketId}:${ticket.maintenanceWindow?.date || ticket.plannedDate}`;
-    setDismissedMaintenanceWindows((current) => new Set([...current, key]));
-  }
-
-  async function recordMaintenanceWindowBatch(decisions: MaintenanceWindowDecision[]) {
-    setMaintenanceWindowBusy(true);
-    try {
-      let saved = 0;
-      for (const decision of decisions) {
-        if (decision.outcome === "later") {
-          dismissMaintenanceWindow(decision.ticket);
-          continue;
-        }
-        const plannedDate = decision.ticket.maintenanceWindow?.date;
-        if (!plannedDate) continue;
-        let result = await confirmMaintenanceWindow(
-          decision.ticket.ticketId,
-          decision.ticket.revision,
-          plannedDate,
-          decision.outcome === "successful",
-        );
-        if (decision.outcome === "incomplete" && decision.rescheduleDate) {
-          result = await saveTicket(
-            decision.ticket.ticketId,
-            result.ticket.revision,
-            { "Planned Date": decision.rescheduleDate, "Done?": "N" },
-          );
-        }
-        dismissMaintenanceWindow(decision.ticket);
-        if (selectedTicketId === decision.ticket.ticketId) setTicket(result.ticket);
-        saved += 1;
-      }
-      dashboardCache.current.clear();
-      await Promise.all([loadDashboard(), loadBootstrap()]);
-      setToast({
-        tone: "success",
-        message: `Saved ${saved} Maintenance Window outcome${saved === 1 ? "" : "s"}. Failed dates remain in attempt history.`,
-      });
-    } catch (error) {
-      reportError(error);
-      if (error instanceof ApiError && error.code.includes("conflict")) {
-        await loadDashboard().catch(reportError);
-      }
-    } finally {
-      setMaintenanceWindowBusy(false);
-    }
-  }
   const chooseSort = useCallback((next: string) => {
     updateWorkspacePreference({
       sort: next,
@@ -1117,6 +1082,27 @@ export default function App() {
     setSelectedTicketId(ticketId);
     setSelectedRowId(ticketId);
   }, [workspace, workspacePreferences]);
+
+  const reviewProtectedActiveRequest = useCallback((requestId: string) => {
+    if (workspace !== "spare-requests" || spareView !== "active") {
+      dashboardRequest.current += 1;
+      const preference = workspacePreferences["spare-requests"];
+      setWorkspace("spare-requests");
+      setSpareView("active");
+      setDashboard(dashboardCache.current.get(dashboardCacheKey(
+        "spare-requests",
+        preference.sort,
+        preference.direction,
+        preference.search,
+        "active",
+      )) || null);
+    }
+    setDraftsOpen(false);
+    setSelectedTicketId(null);
+    setSelectedFaultTagId(null);
+    setSelectedRequestId(requestId);
+    setSelectedRowId(null);
+  }, [spareView, workspace, workspacePreferences]);
 
   const openSpareExport = useCallback((ticketId?: string, part: SparePartSummary | null = null, action: "export" | "manual" = "export") => {
     setSpareExportTicketId(ticketId);
@@ -1325,6 +1311,17 @@ export default function App() {
     );
   }
 
+  const spareToolbarActions = workspace === "spare-requests" ? <div className="spare-toolbar-actions" aria-label="Spare Request actions">
+    <button type="button" className="toolbar-button compactable-button" aria-label="New Request" title="New Request" onClick={() => openSpareExport()}><span className="toolbar-icon" aria-hidden="true">+</span><span className="toolbar-label">New Request</span></button>
+    <button type="button" className="toolbar-button compactable-button" aria-label="BOM catalog" title="BOM catalog" onClick={() => setBomCatalogOpen(true)}><span className="toolbar-icon" aria-hidden="true">▤</span><span className="toolbar-label">BOM catalog</span></button>
+    {spareView === "active" && selectedActiveSpareItems.length > 0 && selectedSpareStage !== null && <>
+      {[0, 1, 2, 3, 5].includes(selectedSpareStage) && <button type="button" className={`toolbar-button compactable-button stage-action stage-${selectedSpareStage}`} disabled={selectedActiveSpareItems.some((row) => !row.canAdvance)} title={`${({ 0: "Confirm email sent", 1: "Confirm SR + RMA", 2: "Confirm dispatched", 3: "Confirm replaced", 5: "Confirm return" } as Record<number, string>)[selectedSpareStage]} (${selectedActiveSpareItems.length})`} onClick={() => openSelectedSpareLifecycle("advance")}><span className="toolbar-icon" aria-hidden="true">✓</span><span className="toolbar-label">{({ 0: "Confirm email sent", 1: "Confirm SR + RMA", 2: "Confirm dispatched", 3: "Confirm replaced", 5: "Confirm return" } as Record<number, string>)[selectedSpareStage]} ({selectedActiveSpareItems.length})</span></button>}
+      {selectedSpareStage === 4 && <button type="button" className="toolbar-button compactable-button stage-action stage-fault-tag" disabled={selectedActiveSpareItems.some((row) => Boolean(row.faultTagId))} title="Fault Tag · generate and export, or record as manually sent" onClick={openSelectedFaultTag}><span className="toolbar-icon" aria-hidden="true">⬒</span><span className="toolbar-label">Fault Tag ({selectedActiveSpareItems.length})</span></button>}
+      {selectedSpareStage > 0 && <button type="button" className="toolbar-button compactable-button rollback-action" disabled={selectedActiveSpareItems.some((row) => !row.canRollback)} title={`Roll back last stage (${selectedActiveSpareItems.length})`} onClick={() => openSelectedSpareLifecycle("rollback")}><span className="toolbar-icon" aria-hidden="true">↶</span><span className="toolbar-label">Roll back</span></button>}
+    </>}
+    {spareView === "completed" && <button type="button" className="toolbar-button compactable-button danger-text" aria-label="Purge selected" title="Purge selected" disabled={!selectedCompletedItem} onClick={() => setPurgeConfirmationOpen(true)}><span className="toolbar-icon" aria-hidden="true">⌫</span><span className="toolbar-label">Purge selected</span></button>}
+  </div> : null;
+
   return (
     <main
       className={`app-shell ${selectedTicketId || selectedRequestId || selectedFaultTagId ? "with-detail" : ""}`}
@@ -1332,7 +1329,7 @@ export default function App() {
       data-spare-view={workspace === "spare-requests" ? spareView : undefined}
     >
       <TopBar
-        version={bootstrap.version || "3.1.10"}
+        version={bootstrap.version || "3.1.11"}
         detailOpen={Boolean(selectedTicketId || selectedRequestId || selectedFaultTagId)}
         workspace={workspace}
         stagedMessages={bootstrap?.outlook.stagedMessageCount || 0}
@@ -1352,7 +1349,7 @@ export default function App() {
       <JobBanner jobs={jobs} onCancel={stopJob} onOpenActivity={() => setOperationsOpen(true)} />
       <StatsBar dashboard={dashboard} />
       <section className="dashboard-toolbar">
-        {workspace === "spare-requests" && <div className="spare-view-row"><div className="spare-view-switcher" role="tablist" aria-label="Spare Request view">{(["active", "eligible", "fault-tags", "completed"] as SpareRequestView[]).map((view) => <button type="button" role="tab" aria-selected={spareView === view} className={spareView === view ? "active" : ""} onClick={() => chooseSpareView(view)} key={view}>{view === "active" ? "Active Requests" : view === "eligible" ? "Eligible SR Parts" : view === "fault-tags" ? "Fault Tags" : "Completed"}</button>)}</div></div>}
+        {workspace === "spare-requests" && <div className="spare-view-row"><div className="spare-view-switcher" role="tablist" aria-label="Spare Request view">{(["active", "eligible", "fault-tags", "completed"] as SpareRequestView[]).map((view) => <button type="button" role="tab" aria-selected={spareView === view} className={spareView === view ? "active" : ""} onClick={() => chooseSpareView(view)} key={view}>{view === "active" ? "Active Requests" : view === "eligible" ? "Eligible SR Parts" : view === "fault-tags" ? "Fault Tags" : "Completed"}</button>)}</div>{spareToolbarActions}</div>}
         <div className="dashboard-controls">
           <label className="search-box">
             <span>⌕</span>
@@ -1387,16 +1384,6 @@ export default function App() {
             </select>
           </div>
           {workspace === "service-requests" && <button type="button" className="toolbar-button compactable-button" aria-label="Check Advanced Search" title="Check Advanced Search" onClick={queryData} disabled={Boolean(activeJob)}><span className="toolbar-icon" aria-hidden="true">↻</span><span className="toolbar-label">Check Advanced Search</span></button>}
-          {workspace === "spare-requests" && <>
-            <button type="button" className="toolbar-button compactable-button" aria-label="New Request" title="New Request" onClick={() => openSpareExport()}><span className="toolbar-icon" aria-hidden="true">+</span><span className="toolbar-label">New Request</span></button>
-            <button type="button" className="toolbar-button compactable-button" aria-label="BOM catalog" title="BOM catalog" onClick={() => setBomCatalogOpen(true)}><span className="toolbar-icon" aria-hidden="true">▤</span><span className="toolbar-label">BOM catalog</span></button>
-            {spareView === "active" && selectedActiveSpareItems.length > 0 && selectedSpareStage !== null && <>
-              {[0, 1, 2, 3, 5].includes(selectedSpareStage) && <button type="button" className={`toolbar-button compactable-button stage-action stage-${selectedSpareStage}`} disabled={selectedActiveSpareItems.some((row) => !row.canAdvance)} title={`${({ 0: "Confirm email sent", 1: "Confirm SR + RMA", 2: "Confirm dispatched", 3: "Confirm replaced", 5: "Confirm return" } as Record<number, string>)[selectedSpareStage]} (${selectedActiveSpareItems.length})`} onClick={() => openSelectedSpareLifecycle("advance")}><span className="toolbar-icon" aria-hidden="true">✓</span><span className="toolbar-label">{({ 0: "Confirm email sent", 1: "Confirm SR + RMA", 2: "Confirm dispatched", 3: "Confirm replaced", 5: "Confirm return" } as Record<number, string>)[selectedSpareStage]} ({selectedActiveSpareItems.length})</span></button>}
-              {selectedSpareStage === 4 && <button type="button" className="toolbar-button compactable-button stage-action stage-fault-tag" disabled={selectedActiveSpareItems.some((row) => Boolean(row.faultTagId))} title="Fault Tag · generate and export, or record as manually sent" onClick={openSelectedFaultTag}><span className="toolbar-icon" aria-hidden="true">⬒</span><span className="toolbar-label">Fault Tag ({selectedActiveSpareItems.length})</span></button>}
-              {selectedSpareStage > 0 && <button type="button" className="toolbar-button compactable-button rollback-action" disabled={selectedActiveSpareItems.some((row) => !row.canRollback)} title={`Roll back last stage (${selectedActiveSpareItems.length})`} onClick={() => openSelectedSpareLifecycle("rollback")}><span className="toolbar-icon" aria-hidden="true">↶</span><span className="toolbar-label">Roll back</span></button>}
-            </>}
-            {spareView === "completed" && <button type="button" className="toolbar-button compactable-button danger-text" aria-label="Purge selected" title="Purge selected" disabled={!selectedCompletedItem} onClick={() => setPurgeConfirmationOpen(true)}><span className="toolbar-icon" aria-hidden="true">⌫</span><span className="toolbar-label">Purge selected</span></button>}
-          </>}
         </div>
       </section>
       <section className="workspace">
@@ -1453,8 +1440,10 @@ export default function App() {
           templates={templates}
           onClose={closeDetail}
           onSave={saveLocalFields}
+          onConfirmMaintenanceWindow={completeMaintenanceWindow}
           onGenerateMop={(ticketId, template) => runJob("mop", { ticketId, template })}
           onRegisterSpareRequest={(ticketId) => openSpareExport(ticketId, selectedEligiblePart?.ticketId === ticketId ? selectedEligiblePart : null, "manual")}
+          showHistory={Boolean(bootstrap?.appearance.showDetailHistory)}
         />}
         {selectedRequestId && <SpareRequestDetail
           request={spareRequest}
@@ -1466,6 +1455,7 @@ export default function App() {
           onNotice={(message) => setToast({ tone: "success", message })}
           onLifecycle={openDetailSpareLifecycle}
           onFaultTag={openDetailFaultTag}
+          showHistory={Boolean(bootstrap?.appearance.showDetailHistory)}
         />}
         {selectedFaultTagId && <FaultTagDetail
           faultTag={faultTag}
@@ -1518,18 +1508,12 @@ export default function App() {
         />
       )}
       {globalDataOpen && <GlobalDataModal onClose={() => setGlobalDataOpen(false)} onSaved={() => { loadBootstrap().catch(reportError); setToast({ tone: "success", message: "Global data saved locally." }); }} onError={reportError} />}
-      {draftsOpen && <DraftsModal onClose={() => setDraftsOpen(false)} onReview={reviewProtectedDraft} onSaved={(tickets) => { if (selectedTicketId && tickets[selectedTicketId]) setTicket(tickets[selectedTicketId]); loadDashboard().catch(reportError); }} onError={reportError} onNotice={(message) => setToast({ tone: "success", message })} />}
+      {draftsOpen && <DraftsModal onClose={() => setDraftsOpen(false)} onReview={reviewProtectedDraft} onReviewActiveRequest={reviewProtectedActiveRequest} onSaved={(tickets) => { if (selectedTicketId && tickets[selectedTicketId]) setTicket(tickets[selectedTicketId]); loadDashboard().catch(reportError); }} onError={reportError} onNotice={(message) => setToast({ tone: "success", message })} />}
       {bomCatalogOpen && <BomCatalogModal onClose={() => setBomCatalogOpen(false)} onSaved={() => setToast({ tone: "success", message: "BOM catalog saved locally." })} onError={reportError} />}
       {purgeConfirmationOpen && selectedCompletedItem && <ConfirmationDialog title={`Purge ${selectedCompletedItem.itemId}?`} message="This permanently removes the completed item and its retained email from the local archive. This action cannot be undone." confirmLabel="Permanently purge" tone="danger" onCancel={() => setPurgeConfirmationOpen(false)} onConfirm={() => void purgeSelectedCompleted()} />}
       {reloadUndoPrompt && <ConfirmationDialog title="Reload and lose Undo?" message="Reloading now permanently removes the one-time Undo for your last Save or Discard. Existing protected drafts remain in browser storage." confirmLabel="Reload anyway" tone="danger" onCancel={() => setReloadUndoPrompt(false)} onConfirm={() => { clearDraftUndo(); window.location.reload(); }} />}
       {(spareBulkDialog === "advance" || spareBulkDialog === "rollback") && <SpareLifecycleBulkDialog rows={spareLifecycleTargets} action={spareBulkDialog} busy={spareBulkBusy} onCancel={() => { setSpareBulkDialog(null); setSpareLifecycleTargets([]); }} onConfirm={(emailOverrideConfirmed, note, confirmedAt) => void runBulkSpareLifecycle(spareBulkDialog, emailOverrideConfirmed, note, confirmedAt)} />}
       {spareBulkDialog === "fault-tag" && <FaultTagDialog rows={faultTagTargets} busy={spareBulkBusy} onCancel={() => { setSpareBulkDialog(null); setFaultTagTargets([]); }} onConfirm={(mode, selections, returnSite) => void createFaultTagFromSelection(mode, selections, returnSite)} />}
-      {overdueMaintenanceWindows.length > 0 && !settingsOpen && !operationsOpen && !globalDataOpen && !bomCatalogOpen && !draftsOpen && !spareExportOpen && !purgeConfirmationOpen && !spareEmailReminder && <MaintenanceWindowPrompt
-        tickets={overdueMaintenanceWindows}
-        busy={maintenanceWindowBusy}
-        onClose={() => overdueMaintenanceWindows.forEach(dismissMaintenanceWindow)}
-        onSubmit={(decisions) => void recordMaintenanceWindowBatch(decisions)}
-      />}
       {spareEmailReminder && !spareExportOpen && <Modal
         title="Spare Request created"
         subtitle="The request is now registered in Active Requests."

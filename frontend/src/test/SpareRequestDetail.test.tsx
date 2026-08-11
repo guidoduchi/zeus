@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readActiveRequestDraft } from "../activeRequestDrafts";
 import type { SpareRequestDetail as Detail } from "../types";
 
 const apiMocks = vi.hoisted(() => ({
@@ -153,7 +154,10 @@ function props(request: Detail) {
 }
 
 describe("SpareRequestDetail", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
 
   it("shows the provisional tracking ID in red with all seven lifecycle stages", () => {
     const request = detail();
@@ -204,6 +208,63 @@ describe("SpareRequestDetail", () => {
       "advance",
       { spareSr: "SR4956964", rma: "C3209937826", note: "" },
     );
+  });
+
+  it("protects every editable Active Request fact across remounts and undoes the last field action", async () => {
+    const user = userEvent.setup();
+    const request = detail(5, true);
+    const first = render(<SpareRequestDetail {...props(request)} />);
+
+    await user.type(screen.getByLabelText("Delivered BOM"), "BOM-DELIVERED");
+    await user.type(screen.getByLabelText("New SN"), "NEW-SN-01");
+    await user.type(screen.getByLabelText("Item notes"), "Warehouse notes");
+    await user.type(screen.getByLabelText("Audit note"), "Correction evidence");
+    expect(screen.getByText(/4 changed fields · Active Request draft protected/i)).toBeVisible();
+    expect(readActiveRequestDraft(request.requestId)).not.toBeNull();
+    first.unmount();
+
+    render(<SpareRequestDetail {...props(request)} />);
+    expect(screen.getByLabelText("Delivered BOM")).toHaveValue("BOM-DELIVERED");
+    expect(screen.getByLabelText("New SN")).toHaveValue("NEW-SN-01");
+    expect(screen.getByLabelText("Item notes")).toHaveValue("Warehouse notes");
+    expect(screen.getByLabelText("Audit note")).toHaveValue("Correction evidence");
+    await user.click(screen.getByRole("button", { name: "Undo last draft action" }));
+    expect(screen.getByLabelText("Audit note")).toHaveValue("");
+    expect(screen.getByLabelText("Item notes")).toHaveValue("Warehouse notes");
+    await user.click(screen.getByRole("button", { name: "Discard draft" }));
+    expect(screen.getByLabelText("Item notes")).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Undo last draft action" }));
+    expect(screen.getByLabelText("Item notes")).toHaveValue("Warehouse notes");
+  });
+
+  it("saves the protected Active Request draft and then clears its browser copy", async () => {
+    const user = userEvent.setup();
+    const request = detail(2, true);
+    const saved = detail(2, true);
+    saved.revision = "saved-revision";
+    saved.items[0].delivered_bom = "BOM-SAVED";
+    apiMocks.saveSpareRequest.mockResolvedValue({ request: saved });
+    const handlers = props(request);
+    render(<SpareRequestDetail {...handlers} />);
+
+    await user.type(screen.getByLabelText("Delivered BOM"), "BOM-SAVED");
+    await user.click(screen.getByRole("button", { name: "Save manual facts" }));
+    await waitFor(() => expect(apiMocks.saveSpareRequest).toHaveBeenCalledWith(
+      request.requestId,
+      request.revision,
+      {},
+      [{ itemId: request.items[0].item_id, deliveredBom: "BOM-SAVED" }],
+    ));
+    expect(readActiveRequestDraft(request.requestId)).toBeNull();
+    expect(handlers.onChanged).toHaveBeenCalledWith(saved);
+  });
+
+  it("hides raw History by default and exposes it only through the developer setting", () => {
+    const request = detail();
+    const view = render(<SpareRequestDetail {...props(request)} />);
+    expect(screen.queryByRole("button", { name: /History/ })).not.toBeInTheDocument();
+    view.rerender(<SpareRequestDetail {...props(request)} showHistory />);
+    expect(screen.getByRole("button", { name: /History/ })).toBeVisible();
   });
 
   it("offers Fault Tag export only at Spare replaced and keeps rollback contextual", async () => {

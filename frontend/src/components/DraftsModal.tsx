@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getTicket, saveTicketDraftBatch } from "../api";
+import {
+  analyzeActiveRequestDraft,
+  clearActiveRequestDraft,
+  listActiveRequestDrafts,
+} from "../activeRequestDrafts";
+import { getSpareRequest, getTicket, saveTicketDraftBatch } from "../api";
 import {
   clearTicketDraft,
   listTicketDrafts,
@@ -8,7 +13,7 @@ import {
   type TicketDraftRecord,
 } from "../drafts";
 import { analyzeTicketDraft, displayDraftField, WORK_FIELDS, type DraftAnalysis } from "../ticketDraftModel";
-import type { TicketDetail } from "../types";
+import type { SpareRequestDetail, TicketDetail } from "../types";
 import { Modal } from "./Modal";
 
 type Action = "save" | "discard";
@@ -24,9 +29,19 @@ interface DraftGroup {
   unavailable: string | null;
 }
 
+interface ActiveDraftGroup {
+  requestId: string;
+  request: SpareRequestDetail | null;
+  fields: string[];
+  conflicts: string[];
+  updatedAt: string | null;
+  unavailable: string | null;
+}
+
 interface Props {
   onClose: () => void;
   onReview: (ticketId: string, kind: TicketDraftKind) => void;
+  onReviewActiveRequest: (requestId: string) => void;
   onSaved: (tickets: Record<string, TicketDetail>) => void;
   onError: (error: unknown) => void;
   onNotice: (message: string) => void;
@@ -70,8 +85,9 @@ function actionCopy(action: Action, count: number): { title: string; body: strin
   };
 }
 
-export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: Props) {
+export function DraftsModal({ onClose, onReview, onReviewActiveRequest, onSaved, onError, onNotice }: Props) {
   const [groups, setGroups] = useState<DraftGroup[]>([]);
+  const [activeGroups, setActiveGroups] = useState<ActiveDraftGroup[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -82,8 +98,12 @@ export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: P
     setLoading(true);
     try {
       const records = listTicketDrafts();
+      const activeRecords = listActiveRequestDrafts();
       const ticketIds = [...new Set(records.map((record) => record.ticketId))];
-      const tickets = await Promise.allSettled(ticketIds.map((ticketId) => getTicket(ticketId)));
+      const [tickets, activeRequests] = await Promise.all([
+        Promise.allSettled(ticketIds.map((ticketId) => getTicket(ticketId))),
+        Promise.allSettled(activeRecords.map((record) => getSpareRequest(record.requestId))),
+      ]);
       const ticketMap = new Map(ticketIds.map((ticketId, index) => [ticketId, tickets[index]]));
       const next: DraftGroup[] = [];
       for (const ticketId of ticketIds) {
@@ -129,6 +149,35 @@ export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: P
         });
       }
       setGroups(next);
+      const nextActive: ActiveDraftGroup[] = [];
+      for (const [index, record] of activeRecords.entries()) {
+        const outcome = activeRequests[index];
+        if (!outcome || outcome.status === "rejected") {
+          nextActive.push({
+            requestId: record.requestId,
+            request: null,
+            fields: ["Manual facts"],
+            conflicts: [],
+            updatedAt: record.draft.updatedAt || null,
+            unavailable: "Active Request is unavailable · draft retained",
+          });
+          continue;
+        }
+        const analysis = analyzeActiveRequestDraft(outcome.value, record.draft);
+        if (!analysis || !analysis.fields.length) {
+          clearActiveRequestDraft(record.requestId);
+          continue;
+        }
+        nextActive.push({
+          requestId: record.requestId,
+          request: outcome.value,
+          fields: analysis.fields,
+          conflicts: analysis.conflictFields,
+          updatedAt: record.draft.updatedAt || null,
+          unavailable: null,
+        });
+      }
+      setActiveGroups(nextActive);
       setSelected((current) => {
         if (!initializedSelection.current) {
           initializedSelection.current = true;
@@ -236,11 +285,11 @@ export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: P
   return (
     <Modal
       title="Protected drafts"
-      subtitle="Review, save, or discard browser-protected SR changes without losing track of their ticket."
+      subtitle="Review browser-protected Service Request and Active Request changes without losing track of their record."
       onClose={onClose}
       wide
       actions={<>
-        <span>{selected.size} of {groups.length} SR(s) selected</span>
+        <span>{selected.size} of {groups.length} SR(s) selected · {activeGroups.length} Active Request draft(s)</span>
         <button type="button" className="secondary-button" disabled={working} onClick={onClose}>Close</button>
         <button type="button" className="text-button danger-text" disabled={!selectedGroups.length || working} onClick={() => setPendingAction("discard")}>Discard selected</button>
         <button type="button" className="primary-button" disabled={!selectedGroups.length || selectedHasConflict || selectedHasUnavailable || working} title={selectedHasUnavailable ? "Deselect or discard unavailable SR drafts" : selectedHasConflict ? "Review conflicting drafts before saving" : ""} onClick={() => setPendingAction("save")}>Save Selected</button>
@@ -259,10 +308,10 @@ export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: P
       )}
       <div className="source-contract">
         <strong>Drafts are local safety copies, not database saves.</strong>
-        <span>Save is the only action that writes to Zeus, and a batch is committed all-or-nothing. The latest Save or Discard can be undone once.</span>
+        <span>Service Request drafts can be saved here in one all-or-nothing batch. Review an Active Request draft to validate and save its lifecycle facts from that request; its last field edit can be undone there.</span>
       </div>
-      {loading ? <div className="detail-loading">Checking protected SR drafts…</div> : groups.length ? (
-        <div className="draft-manager-list">
+      {loading ? <div className="detail-loading">Checking protected drafts…</div> : groups.length || activeGroups.length ? <>
+        {!!groups.length && <div className="draft-manager-list">
           <header>
             <label><input type="checkbox" checked={selected.size === groups.length} onChange={(event) => setSelected(event.target.checked ? new Set(groups.map((group) => group.ticketId)) : new Set())} /> <span>Select all</span></label>
             <span>Pending fields</span>
@@ -280,8 +329,24 @@ export function DraftsModal({ onClose, onReview, onSaved, onError, onNotice }: P
               <span>{formatTimestamp(group.updatedAt)}<button type="button" className="text-button" disabled={Boolean(group.unavailable)} onClick={() => onReview(group.ticketId, group.records[0].kind)}>Review</button></span>
             </article>
           ))}
-        </div>
-      ) : <div className="manager-empty"><strong>No protected drafts</strong><span>Every local editor is synchronized with Zeus.</span></div>}
+        </div>}
+        {!!activeGroups.length && <div className="draft-manager-list active-request-draft-list">
+          <header>
+            <span>Active Request</span>
+            <span>Pending fields</span>
+            <span>Status</span>
+            <span>Last protected</span>
+          </header>
+          {activeGroups.map((group) => (
+            <article className={group.conflicts.length ? "has-conflict" : ""} key={group.requestId}>
+              <label><span><strong>Request {group.requestId}</strong><small>{group.request ? `TT ${group.request.ticketId} · ${group.request.spareSr || "Spare SR pending"}` : "Record unavailable"}</small></span></label>
+              <span>{group.fields.join(", ")}</span>
+              <span>{group.unavailable ? <em>{group.unavailable}</em> : group.conflicts.length ? <em>Review required · {group.conflicts.join(", ")}</em> : "Ready for request-level save"}</span>
+              <span>{formatTimestamp(group.updatedAt)}<button type="button" className="text-button" disabled={Boolean(group.unavailable)} onClick={() => onReviewActiveRequest(group.requestId)}>Review</button></span>
+            </article>
+          ))}
+        </div>}
+      </> : <div className="manager-empty"><strong>No protected drafts</strong><span>Every local editor is synchronized with Zeus.</span></div>}
     </Modal>
   );
 }

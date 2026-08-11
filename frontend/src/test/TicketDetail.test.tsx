@@ -132,12 +132,61 @@ describe("TicketDetail", () => {
     expect(screen.getByText("Unplanned")).toBeVisible();
     await user.click(screen.getByRole("button", { name: /work fields/i }));
     expect(screen.getByLabelText("MW date")).toHaveValue("");
-    const mwState = screen.getByLabelText("MW state while no date exists");
-    expect(mwState).toHaveValue("N");
-    expect(screen.getByRole("option", { name: "Unplanned" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /Incomplete.*waiting for another date/ })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "No visibility" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /Complete.*date unknown/ })).toBeInTheDocument();
+    const visibility = screen.getByRole("button", { name: "MW visibility unknown" });
+    expect(visibility).toHaveAttribute("aria-pressed", "false");
+    await user.click(visibility);
+    expect(visibility).toHaveAttribute("aria-pressed", "true");
+    const mw = screen.getByRole("region", { name: "Maintenance Window (MW)" });
+    const site = screen.getByRole("region", { name: "Site information" });
+    const devices = screen.getByText("Affected / intervened devices").closest("section")!;
+    expect(mw.compareDocumentPosition(site) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(site.compareDocumentPosition(devices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByLabelText("Notes")).toHaveAttribute("rows", "2");
+  });
+
+  it("confirms an overdue MW from the fixed action row and starts a new archived cycle", async () => {
+    const user = userEvent.setup();
+    const onConfirmMaintenanceWindow = vi.fn().mockResolvedValue(undefined);
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const overdue: TicketDetailType = {
+      ...detail,
+      done: "N",
+      maintenanceWindow: {
+        schemaVersion: 1,
+        status: "incomplete",
+        date: "2000-01-01",
+        display: "2000-01-01",
+        color: "red",
+        confirmationRequired: true,
+        attempts: [],
+        reviewRequired: false,
+      },
+      localFields: { ...detail.localFields, "Done?": "N", "Planned Date": "2000-01-01" },
+    };
+    const view = render(<TicketDetail ticket={overdue} loading={false} initialTab="work" templates={[]} onClose={vi.fn()} onSave={onSave} onConfirmMaintenanceWindow={onConfirmMaintenanceWindow} onGenerateMop={vi.fn()} />);
+
+    expect(screen.getByText("Incomplete")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Completed" }));
+    expect(onConfirmMaintenanceWindow).toHaveBeenCalledWith("12345678", "revision", "2000-01-01");
+
+    const completed: TicketDetailType = {
+      ...overdue,
+      revision: "revision-completed",
+      done: "Y",
+      maintenanceWindow: { ...overdue.maintenanceWindow!, status: "completed", display: "Complete", color: "green", confirmationRequired: false },
+      localFields: { ...overdue.localFields, "Done?": "Y" },
+    };
+    view.rerender(<TicketDetail ticket={completed} loading={false} initialTab="work" templates={[]} onClose={vi.fn()} onSave={onSave} onConfirmMaintenanceWindow={onConfirmMaintenanceWindow} onGenerateMop={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "New MW" }));
+    expect(onSave).toHaveBeenCalledWith("12345678", "revision-completed", { "Planned Date": null, "Done?": "N" });
+  });
+
+  it("keeps raw detail History hidden unless the developer setting enables it", () => {
+    const props = { ticket: detail, loading: false, templates: [], onClose: vi.fn(), onSave: vi.fn(), onGenerateMop: vi.fn() };
+    const view = render(<TicketDetail {...props} />);
+    expect(screen.queryByRole("button", { name: /History/ })).not.toBeInTheDocument();
+    view.rerender(<TicketDetail {...props} showHistory />);
+    expect(screen.getByRole("button", { name: /History/ })).toBeVisible();
   });
 
   it("renders email content as escaped plain text and toggles full history", async () => {
@@ -289,7 +338,7 @@ describe("TicketDetail", () => {
     };
     render(<TicketDetail ticket={incomplete} loading={false} templates={[]} onClose={vi.fn()} onSave={onSave} onGenerateMop={vi.fn()} initialTab="work" />);
 
-    expect(screen.getByText("Incomplete · waiting for another MW date")).toBeVisible();
+    expect(screen.getByText("Unplanned")).toBeVisible();
     expect(screen.getByText("2026-08-08 · Incomplete")).toBeVisible();
     fireEvent.change(screen.getByLabelText("MW date"), { target: { value: "2026-08-21" } });
     await user.click(screen.getByRole("button", { name: /save to zeus/i }));
@@ -486,6 +535,7 @@ describe("TicketDetail", () => {
       onClose: vi.fn(),
       onSave: vi.fn(),
       onGenerateMop: vi.fn(),
+      showHistory: true,
     };
     const first = render(<TicketDetail {...props} />);
     fireEvent.keyDown(window, { key: "ArrowRight" });

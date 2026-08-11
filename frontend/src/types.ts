@@ -609,7 +609,10 @@ export interface BootstrapPayload {
     fetchScheduled: boolean;
     syncScheduled: boolean;
   };
-  appearance: { fontScale: "compact" | "standard" | "large" };
+  appearance: {
+    fontScale: "compact" | "standard" | "large";
+    showDetailHistory: boolean;
+  };
 }
 
 export interface Setting {

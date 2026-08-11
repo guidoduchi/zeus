@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.1.11 - 2026-08-11
+
+- Reorders Service Request work fields around one full-width Maintenance Window
+  editor, derives Unplanned/Planned/Incomplete automatically from its date, and
+  places manual **Completed** and archived-cycle **New MW** actions beside Save.
+- Protects every editable Active Request fact in browser drafts at every
+  lifecycle stage, includes those drafts in the global manager/count, restores
+  them after navigation or reload, and supports one-step field/discard undo.
+- Moves New Request, BOM catalog, and contextual lifecycle actions into the
+  Active Requests upper row, collapsing them to hover-labelled icons on narrow
+  screens.
+- Hides raw detail History by default in both Service Requests and Active
+  Requests, with an off-by-default toggle under Configuration → Developer
+  options.
+
 ## 3.1.10 - 2026-08-11
 
 - Makes **Confirm SR and RMA** validate and persist the visible Spare SR/RMA

@@ -13,7 +13,6 @@ import {
   requestedQuantity,
   spareDraft,
   workFieldValues,
-  WORK_FIELDS,
   type DraftDevice,
   type DraftPart,
   type WorkDraft,
@@ -36,15 +35,22 @@ interface Props {
   templates: TemplateOption[];
   onClose: () => void;
   onSave: (ticketId: string, revision: string, changes: Record<string, unknown>) => Promise<void>;
+  onConfirmMaintenanceWindow?: (ticketId: string, revision: string, plannedDate: string) => Promise<void>;
   onGenerateMop: (ticketId: string, template: string) => void;
   onRegisterSpareRequest?: (ticketId: string) => void;
+  showHistory?: boolean;
 }
-
-const TAB_ORDER: Tab[] = ["overview", "work", "spares", "emails", "mops", "history"];
 
 function display(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   return String(value);
+}
+
+function localDateText(now = new Date()): string {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function nextDeviceNumber(devices: DraftDevice[]): number {
@@ -78,7 +84,7 @@ function FieldList({ fields }: { fields: Record<string, unknown> }) {
   );
 }
 
-function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket: TicketDetailType }) {
+function WorkTab({ ticket, onSave, onConfirmMaintenanceWindow }: Pick<Props, "ticket" | "onSave" | "onConfirmMaintenanceWindow"> & { ticket: TicketDetailType }) {
   const [draft, setDraft] = useState<WorkDraft>(() => workFieldValues(ticket));
   const [draftRevision, setDraftRevision] = useState(ticket.revision);
   const [baseValue, setBaseValue] = useState<Record<string, string>>(() => workFieldValues(ticket));
@@ -164,6 +170,19 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
   const cleanedDevices = useMemo(() => cleanSpareParts(devices), [devices]);
   const devicesChanged = JSON.stringify(cleanedDevices) !== JSON.stringify(cleanSpareParts(ticket.spareParts));
   const changedCount = Object.keys(changes).length + (devicesChanged ? 1 : 0);
+  const maintenanceWindowChanged = "Planned Date" in changes || "Done?" in changes;
+  const currentMaintenanceWindow = ticket.maintenanceWindow;
+  const canCompleteMaintenanceWindow = Boolean(
+    currentMaintenanceWindow?.confirmationRequired
+    && currentMaintenanceWindow.date
+    && !maintenanceWindowChanged
+    && !stale,
+  );
+  const canStartNewMaintenanceWindow = Boolean(
+    currentMaintenanceWindow?.status === "completed"
+    && !maintenanceWindowChanged
+    && !stale,
+  );
 
   function setFields(values: Record<string, string>) {
     setDraft((current) => {
@@ -267,6 +286,30 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
     }
   }
 
+  async function completeMaintenanceWindow() {
+    const plannedDate = currentMaintenanceWindow?.date;
+    if (!canCompleteMaintenanceWindow || !plannedDate || !onConfirmMaintenanceWindow) return;
+    setSaving(true);
+    try {
+      await onConfirmMaintenanceWindow(ticket.ticketId, ticket.revision, plannedDate);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function startNewMaintenanceWindow() {
+    if (!canStartNewMaintenanceWindow) return;
+    setSaving(true);
+    try {
+      await onSave(ticket.ticketId, ticket.revision, {
+        "Planned Date": null,
+        "Done?": "N",
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function addDeviceBatch() {
     const names = [...new Set(deviceBatch.names.split(/\r?\n/).map((value) => value.trim()).filter(Boolean))];
     if (!names.length) return;
@@ -283,6 +326,18 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
     setDeviceBatch({ names: "", model: "", notes: "" });
   }
 
+  const maintenanceWindowCode = draft["Done?"] || "N";
+  const maintenanceWindowDate = draft["Planned Date"] || "";
+  const maintenanceWindowCompleted = maintenanceWindowCode === "Y";
+  const maintenanceWindowInvisible = maintenanceWindowCode === "?";
+  const maintenanceWindowState = maintenanceWindowCompleted
+    ? "Completed"
+    : maintenanceWindowInvisible
+      ? "No visibility"
+      : maintenanceWindowDate
+        ? maintenanceWindowDate < localDateText() ? "Incomplete" : "Planned"
+        : "Unplanned";
+
   return <>
     <div className="bounded-edit-tab">
       <div className="edit-tab-scroll">
@@ -294,70 +349,48 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
           {stale && <div className="inline-warning">The same database work fields changed after this draft began. Restore the protected changes over the latest values for review, or discard this draft. Restoring does not save.</div>}
           {deviceStale && <div className="inline-warning">The affected-device record changed after this draft began. Restore the protected device changes over the latest values for review, or discard the draft.</div>}
           <div className="work-form">
-            {WORK_FIELDS.map((field) => {
-              const label = field === "Done?" ? "MW" : field;
-              if (field === "Done?") return null;
-              if (field === "Notes") {
-                return (
-                  <label className="form-field full" key={field}>
-                    <span>{label}</span>
-                    <textarea rows={7} value={draft[field] || ""} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)} />
-                  </label>
-                );
-              }
-              if (field === "Planned Date") {
-                const code = draft["Done?"] || "N";
-                const completed = code === "Y";
-                const dateValue = draft[field] || "";
-                const stateLabel = code === "P"
-                  ? "Incomplete · waiting for another MW date"
-                  : code === "?"
-                    ? "No visibility"
-                    : "Unplanned";
-                return (
-                  <section className="maintenance-window-editor full" key={field} aria-label="Maintenance Window (MW)">
-                    <div className="section-heading">
-                      <strong>Maintenance Window (MW)</strong>
-                      <span>{completed ? "Complete" : dateValue || stateLabel}</span>
-                    </div>
-                    {completed ? (
-                      <div className="mw-complete-state">
-                        <div><strong>Complete</strong><span>{dateValue ? `Successful MW · ${dateValue}` : "Successful date not available in the legacy record"}</span></div>
-                        {!ticket.readOnly && <button type="button" className="secondary-button" onClick={() => setFields({ "Done?": "N", "Planned Date": "" })}>Schedule another MW</button>}
-                      </div>
-                    ) : <>
-                      <label className="form-field">
-                        <span>MW date</span>
-                        <input type="date" value={dateValue} disabled={ticket.readOnly} onChange={(event) => setFields({ "Planned Date": event.target.value, ...(event.target.value ? { "Done?": "N" } : {}) })} />
-                      </label>
-                      {dateValue ? (
-                        <p className="mw-editor-help">The dashboard shows this date. After it passes, Zeus will ask whether the intervention succeeded.</p>
-                      ) : (
-                        <label className="form-field">
-                          <span>State while no date exists</span>
-                          <select aria-label="MW state while no date exists" value={code} disabled={ticket.readOnly} onChange={(event) => setFields({ "Done?": event.target.value, "Planned Date": "" })}>
-                            <option value="N">Unplanned</option>
-                            <option value="P">Incomplete · waiting for another date</option>
-                            <option value="?">No visibility</option>
-                            <option value="Y">Complete · date unknown</option>
-                          </select>
-                        </label>
-                      )}
-                    </>}
-                    {!!ticket.maintenanceWindow?.attempts.length && <div className="mw-attempt-history">
-                      <strong>Attempt history</strong>
-                      {ticket.maintenanceWindow.attempts.map((attempt, index) => <span key={`${attempt.date}-${attempt.outcome}-${index}`}>{attempt.date} · {attempt.outcome === "completed" ? "Complete" : "Incomplete"}</span>)}
-                    </div>}
-                  </section>
-                );
-              }
-              return (
-                <label className="form-field" key={field}>
-                  <span>{label}</span>
-                  <input value={draft[field] || ""} disabled={ticket.readOnly} onChange={(event) => setField(field, event.target.value)} placeholder="—" />
+            <section className="maintenance-window-editor full" aria-label="Maintenance Window (MW)">
+              <div className="section-heading">
+                <strong>Maintenance Window (MW)</strong>
+                <span className={`mw-state mw-state-${maintenanceWindowState.toLowerCase().replace(" ", "-")}`}>{maintenanceWindowState}</span>
+              </div>
+              <div className="mw-control-row">
+                <label className="form-field mw-date-field">
+                  <span>MW date</span>
+                  <input
+                    type="date"
+                    value={maintenanceWindowDate}
+                    disabled={ticket.readOnly || maintenanceWindowCompleted}
+                    onChange={(event) => setFields({ "Planned Date": event.target.value, "Done?": "N" })}
+                  />
                 </label>
-              );
-            })}
+                <button
+                  type="button"
+                  className={`mw-visibility-toggle${maintenanceWindowInvisible ? " active" : ""}`}
+                  aria-label="MW visibility unknown"
+                  aria-pressed={maintenanceWindowInvisible}
+                  title="Toggle when the Maintenance Window date is not visible to you"
+                  disabled={ticket.readOnly || maintenanceWindowCompleted}
+                  onClick={() => setFields(maintenanceWindowInvisible
+                    ? { "Done?": "N", "Planned Date": "" }
+                    : { "Done?": "?", "Planned Date": "" })}
+                ><strong>?</strong><span>No visibility</span></button>
+              </div>
+              <p className="mw-editor-help">No date is Unplanned. Today or a future date is Planned. After the date passes, Zeus marks it Incomplete until you confirm Completed.</p>
+              {!!ticket.maintenanceWindow?.attempts.length && <div className="mw-attempt-history">
+                <strong>Archived MW cycles</strong>
+                {ticket.maintenanceWindow.attempts.map((attempt, index) => <span key={`${attempt.date}-${attempt.outcome}-${index}`}>{attempt.date} · {attempt.outcome === "completed" ? "Completed" : "Incomplete"}</span>)}
+              </div>}
+            </section>
+            <section className="site-information-section full" aria-label="Site information">
+              <div className="section-heading"><strong>Site information</strong><span>Service location and cross-reference</span></div>
+              <div className="site-information-grid">
+                <label className="form-field"><span>Site</span><input value={draft.Site || ""} disabled={ticket.readOnly} onChange={(event) => setField("Site", event.target.value)} placeholder="—" /></label>
+                <label className="form-field"><span>Cloud</span><input value={draft.Cloud || ""} disabled={ticket.readOnly} onChange={(event) => setField("Cloud", event.target.value)} placeholder="—" /></label>
+                <label className="form-field"><span>Related SR</span><input value={draft.RelatedSR || ""} disabled={ticket.readOnly} onChange={(event) => setField("RelatedSR", event.target.value)} placeholder="—" /></label>
+                <label className="form-field compact-notes-field"><span>Notes</span><textarea rows={2} value={draft.Notes || ""} disabled={ticket.readOnly} onChange={(event) => setField("Notes", event.target.value)} /></label>
+              </div>
+            </section>
           </div>
           <section className="affected-devices-section">
             <header className="section-heading">
@@ -405,6 +438,8 @@ function WorkTab({ ticket, onSave }: Pick<Props, "ticket" | "onSave"> & { ticket
             {changedCount > 0 && <button type="button" className="text-button danger-text" disabled={saving} onClick={() => setConfirmAction({ kind: "discard" })}>Discard draft</button>}
             {stale && <button type="button" className="secondary-button" disabled={saving} onClick={() => setRestoreOpen(true)}>Restore work changes</button>}
             {deviceStale && <button type="button" className="secondary-button" disabled={saving} onClick={restoreDeviceDraft}>Restore device changes</button>}
+            {canCompleteMaintenanceWindow && onConfirmMaintenanceWindow && <button type="button" className="mw-completed-button" disabled={saving || deviceStale} onClick={() => void completeMaintenanceWindow()}>Completed</button>}
+            {canStartNewMaintenanceWindow && <button type="button" className="secondary-button mw-new-button" disabled={saving || deviceStale} onClick={() => void startNewMaintenanceWindow()}>New MW</button>}
             <button type="button" className="primary-button" disabled={!changedCount || saving || stale || deviceStale} onClick={save}>
               {saving ? "Saving…" : "Save to Zeus"}
             </button>
@@ -736,10 +771,19 @@ function MopsTab({ ticket, templates, onGenerateMop }: { ticket: TicketDetailTyp
   );
 }
 
-export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onGenerateMop, onRegisterSpareRequest }: Props) {
+export function TicketDetail({ ticket, loading, initialTab = "overview", templates, onClose, onSave, onConfirmMaintenanceWindow, onGenerateMop, onRegisterSpareRequest, showHistory = false }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
-  useEffect(() => setTab(initialTab), [initialTab]);
+  const tabOrder = useMemo<Tab[]>(
+    () => showHistory
+      ? ["overview", "work", "spares", "emails", "mops", "history"]
+      : ["overview", "work", "spares", "emails", "mops"],
+    [showHistory],
+  );
+  useEffect(() => setTab(initialTab === "history" && !showHistory ? "overview" : initialTab), [initialTab, showHistory]);
+  useEffect(() => {
+    if (!showHistory && tab === "history") setTab("overview");
+  }, [showHistory, tab]);
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (
@@ -756,8 +800,8 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
       if (!delta) return;
       let nextTab: Tab | null = null;
       setTab((current) => {
-        const index = TAB_ORDER.indexOf(current);
-        nextTab = TAB_ORDER[Math.max(0, Math.min(TAB_ORDER.length - 1, index + delta))];
+        const index = tabOrder.indexOf(current);
+        nextTab = tabOrder[Math.max(0, Math.min(tabOrder.length - 1, index + delta))];
         return nextTab;
       });
       window.requestAnimationFrame(() => {
@@ -767,7 +811,7 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [tabOrder]);
   if (loading && !ticket) return <aside className="detail-panel"><div className="detail-loading">Reading ticket…</div></aside>;
   if (!ticket) return null;
   const tabs: Array<[Tab, string, number | null]> = [
@@ -776,7 +820,7 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
     ["spares", "Spare Parts", ticket.spareParts.reduce((total, device) => total + device.parts.length, 0)],
     ["emails", "Emails", ticket.emailCount],
     ["mops", "MOPs", ticket.mops.length],
-    ["history", "History", ticket.history.length],
+    ...(showHistory ? [["history", "History", ticket.history.length] as [Tab, string, number]] : []),
   ];
   return (
     <aside className="detail-panel" aria-label={`SR ${ticket.ticketId} detail`}>
@@ -808,11 +852,11 @@ export function TicketDetail({ ticket, loading, initialTab = "overview", templat
             <FieldList fields={ticket.upstreamFields} />
           </div>
         )}
-        {tab === "work" && <WorkTab ticket={ticket} onSave={onSave} />}
+        {tab === "work" && <WorkTab ticket={ticket} onSave={onSave} onConfirmMaintenanceWindow={onConfirmMaintenanceWindow} />}
         {tab === "spares" && <SparePartsTab ticket={ticket} onSave={onSave} onRegisterSpareRequest={onRegisterSpareRequest} />}
         {tab === "emails" && <EmailsTab messages={ticket.email.messages} />}
         {tab === "mops" && <MopsTab ticket={ticket} templates={templates} onGenerateMop={onGenerateMop} />}
-        {tab === "history" && (
+        {showHistory && tab === "history" && (
           <div className="history-list">
             {ticket.history.length ? ticket.history.map((event, index) => (
               <article key={`${event.timestamp}-${index}`}>

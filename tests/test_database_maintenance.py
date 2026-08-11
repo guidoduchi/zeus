@@ -221,6 +221,7 @@ class MaintenanceWindowLifecycleTests(unittest.TestCase):
         before = self.store.read_ticket("12345678")
         summary = serialize_ticket_summary(before, self.store.config)
         self.assertEqual(summary["maintenanceWindow"]["display"], failed_date)
+        self.assertEqual(summary["maintenanceWindow"]["status"], "incomplete")
         self.assertTrue(summary["maintenanceWindow"]["confirmationRequired"])
 
         confirm_maintenance_window_in_database(
@@ -271,6 +272,34 @@ class MaintenanceWindowLifecycleTests(unittest.TestCase):
         self.assertEqual(summary["maintenanceWindow"]["display"], "Complete")
         self.assertFalse(summary["maintenanceWindow"]["confirmationRequired"])
         self.assertEqual(summary["plannedState"], "unplanned")
+
+    def test_new_cycle_after_completion_keeps_the_completed_attempt(self) -> None:
+        planned = self.seed_planned()
+        before = self.store.read_ticket("12345678")
+        confirm_maintenance_window_in_database(
+            self.store,
+            "12345678",
+            planned_date=planned,
+            successful=True,
+            expected_revision=ticket_revision(before),
+        )
+        completed = self.store.read_ticket("12345678")
+
+        edit_ticket_in_database(
+            self.store,
+            "12345678",
+            {"Planned Date": None, "Done?": "N"},
+            expected_revision=ticket_revision(completed),
+        )
+
+        restarted = self.store.read_ticket("12345678")
+        window = restarted["local"]["maintenance_window"]
+        summary = serialize_ticket_summary(restarted, self.store.config)
+        self.assertEqual(window["status"], "unplanned")
+        self.assertIsNone(window["date"])
+        self.assertEqual(window["attempts"][-1]["date"], planned)
+        self.assertEqual(window["attempts"][-1]["outcome"], "completed")
+        self.assertEqual(summary["maintenanceWindow"]["display"], "Unplanned")
 
     def test_bootstrap_surfaces_overdue_prompts_from_any_saved_workspace(self) -> None:
         planned = self.seed_planned()

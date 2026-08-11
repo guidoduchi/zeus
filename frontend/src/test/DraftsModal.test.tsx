@@ -2,10 +2,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DraftsModal } from "../components/DraftsModal";
+import { activeRequestDraftValue, writeActiveRequestDraft } from "../activeRequestDrafts";
 import { clearDraftUndo, countUnsavedDrafts, getDraftUndo, writeTicketDraft } from "../drafts";
-import type { TicketDetail } from "../types";
+import type { SpareRequestDetail, TicketDetail } from "../types";
 
 const api = vi.hoisted(() => ({
+  getSpareRequest: vi.fn(),
   getTicket: vi.fn(),
   saveTicketDraftBatch: vi.fn(),
 }));
@@ -46,10 +48,28 @@ function protectWorkDraft(value: TicketDetail, notes: string) {
   });
 }
 
+function activeRequest(): SpareRequestDetail {
+  return {
+    requestId: "260810123456",
+    revision: "active-revision",
+    ticketId: "39416095",
+    spareSr: null,
+    items: [{
+      item_id: "260810123456-0001",
+      ordinal: 1,
+      rma: null,
+      delivered_bom: null,
+      new_sn: null,
+      notes: null,
+    }],
+  } as unknown as SpareRequestDetail;
+}
+
 describe("DraftsModal", () => {
   beforeEach(() => {
     localStorage.clear();
     clearDraftUndo();
+    api.getSpareRequest.mockReset();
     api.getTicket.mockReset();
     api.saveTicketDraftBatch.mockReset();
   });
@@ -68,7 +88,7 @@ describe("DraftsModal", () => {
     });
     const onSaved = vi.fn();
     const user = userEvent.setup();
-    render(<DraftsModal onClose={vi.fn()} onReview={vi.fn()} onSaved={onSaved} onError={vi.fn()} onNotice={vi.fn()} />);
+    render(<DraftsModal onClose={vi.fn()} onReview={vi.fn()} onReviewActiveRequest={vi.fn()} onSaved={onSaved} onError={vi.fn()} onNotice={vi.fn()} />);
 
     expect(await screen.findByText("SR 12345678")).toBeVisible();
     expect(screen.getByText("SR 87654321")).toBeVisible();
@@ -98,7 +118,7 @@ describe("DraftsModal", () => {
     protectWorkDraft(current, "Protected note");
     api.getTicket.mockResolvedValue(current);
     const user = userEvent.setup();
-    render(<DraftsModal onClose={vi.fn()} onReview={vi.fn()} onSaved={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} />);
+    render(<DraftsModal onClose={vi.fn()} onReview={vi.fn()} onReviewActiveRequest={vi.fn()} onSaved={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} />);
 
     expect(await screen.findByText("SR 12345678")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Discard selected" }));
@@ -127,7 +147,7 @@ describe("DraftsModal", () => {
     api.getTicket.mockResolvedValue(current);
     const user = userEvent.setup();
     const onReview = vi.fn();
-    render(<DraftsModal onClose={vi.fn()} onReview={onReview} onSaved={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} />);
+    render(<DraftsModal onClose={vi.fn()} onReview={onReview} onReviewActiveRequest={vi.fn()} onSaved={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} />);
 
     expect(await screen.findByText(/Review required · Notes/)).toBeVisible();
     expect(screen.getByRole("button", { name: "Save Selected" })).toBeDisabled();
@@ -135,5 +155,33 @@ describe("DraftsModal", () => {
     await user.click(screen.getByRole("button", { name: "Review" }));
     expect(onReview).toHaveBeenCalledWith("12345678", "work");
     expect(countUnsavedDrafts()).toBe(1);
+  });
+
+  it("lists protected Active Request facts and opens their request-level review", async () => {
+    const request = activeRequest();
+    const baseValue = activeRequestDraftValue(request);
+    writeActiveRequestDraft(request.requestId, {
+      revision: request.revision,
+      baseValue,
+      value: {
+        ...baseValue,
+        items: {
+          ...baseValue.items,
+          [request.items[0].item_id]: {
+            ...baseValue.items[request.items[0].item_id],
+            deliveredBom: "BOM-PROTECTED",
+          },
+        },
+      },
+    });
+    api.getSpareRequest.mockResolvedValue(request);
+    const onReviewActiveRequest = vi.fn();
+    const user = userEvent.setup();
+    render(<DraftsModal onClose={vi.fn()} onReview={vi.fn()} onReviewActiveRequest={onReviewActiveRequest} onSaved={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} />);
+
+    expect(await screen.findByText(`Request ${request.requestId}`)).toBeVisible();
+    expect(screen.getByText("Unit 1 Delivered BOM")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Review" }));
+    expect(onReviewActiveRequest).toHaveBeenCalledWith(request.requestId);
   });
 });

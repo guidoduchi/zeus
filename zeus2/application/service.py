@@ -458,6 +458,9 @@ class ApplicationService:
                 "fontScale": str(
                     self.store.config.get("web", {}).get("font_scale") or "standard"
                 ),
+                "showDetailHistory": bool(
+                    self.store.config.get("web", {}).get("show_detail_history", False)
+                ),
             },
         }
 

@@ -61,6 +61,17 @@ function settingsPayload(fontScale = "standard") {
       nullable: false,
       editable: true,
       value: fontScale,
+    }, {
+      key: "web.show_detail_history",
+      label: "Show raw detail history",
+      category: "Developer options",
+      kind: "boolean",
+      description: "Expose raw detail History tabs.",
+      minimum: null,
+      choices: [],
+      nullable: false,
+      editable: true,
+      value: false,
     }],
   };
 }
@@ -119,6 +130,17 @@ describe("SettingsModal data storage", () => {
     await user.click(screen.getByRole("button", { name: "Save configuration" }));
     await waitFor(() => expect(api.saveSettings).toHaveBeenCalledWith({ "web.font_scale": "large" }));
     expect(scale).toHaveValue("large");
+  });
+
+  it("keeps raw detail History off by default and exposes a developer toggle", async () => {
+    const user = userEvent.setup();
+    render(<SettingsModal onClose={vi.fn()} onSaved={vi.fn()} onError={vi.fn()} />);
+
+    const toggle = await screen.findByLabelText("Show raw detail history");
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    await user.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => expect(api.saveSettings).toHaveBeenCalledWith({ "web.show_detail_history": true }));
   });
 
   it("previews and explicitly confirms a backup-backed database upgrade", async () => {

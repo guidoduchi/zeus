@@ -1,4 +1,4 @@
-# Zeus 3.1.10
+# Zeus 3.1.11
 
 Zeus is a strictly local ticket workstation. Its Python backend runs in the
 background, serves a bundled React interface on `127.0.0.1`, and opens that

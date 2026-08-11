@@ -225,6 +225,7 @@ class UtilityAndConfigTests(ZeusCase):
         self.assertEqual(config["email"]["retained_message_count"], 7)
         self.assertTrue(config["email"]["fetch_new_ticket_history_automatically"])
         self.assertEqual(config["web"]["font_scale"], "standard")
+        self.assertFalse(config["web"]["show_detail_history"])
         bad = deepcopy(config)
         bad["email"]["fetch_interval_minutes"] = -2
         with self.assertRaises(ValueError):
@@ -245,12 +246,14 @@ class UtilityAndConfigTests(ZeusCase):
         legacy = deepcopy(self.store.config)
         legacy["schema_version"] = 8
         legacy["web"].pop("font_scale", None)
+        legacy["web"].pop("show_detail_history", None)
         self.store.config_file.write_text(json.dumps(legacy), encoding="utf-8")
 
         migrated = load_config(self.home)
 
         self.assertEqual(migrated["schema_version"], 10)
         self.assertEqual(migrated["web"]["font_scale"], "standard")
+        self.assertFalse(migrated["web"]["show_detail_history"])
 
     def test_outlook_configuration_requires_an_exact_store_file(self) -> None:
         folder = self.root / "email"
