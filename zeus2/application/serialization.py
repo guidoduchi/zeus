@@ -34,8 +34,8 @@ COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "lifecycle", "label": "Life", "width": 108, "default": True},
     {"key": "done", "label": "MW", "width": 128, "default": True},
     {"key": "ticketAgeDays", "label": "Age", "width": 62, "default": True},
-    {"key": "emailLabel", "label": "Last Email", "width": 154, "default": True},
-    {"key": "spareBadges", "label": "Spare Parts", "width": 132, "default": True},
+    {"key": "emailLabel", "label": "Last Email", "width": 140, "default": True},
+    {"key": "spareBadges", "label": "Spare Parts", "width": 116, "default": True},
     {"key": "severity", "label": "Severity", "width": 92, "default": True},
     {"key": "summary", "label": "Summary", "width": 360, "default": True, "flex": True},
     {"key": "customerOrganization", "label": "Customer Org.", "width": 180, "default": False},
@@ -89,7 +89,7 @@ SPARE_PART_DEFAULT_SORT_DIRECTIONS = {
 SPARE_REQUEST_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "ticketId", "label": "TT", "width": 94, "default": True},
     {"key": "rma", "label": "RMA", "width": 132, "default": True},
-    {"key": "emailLabel", "label": "Last Email", "width": 154, "default": True},
+    {"key": "emailLabel", "label": "Last Email", "width": 140, "default": True},
     {"key": "risk", "label": "", "width": 18, "default": True},
     {"key": "trackingId", "label": "Tracking ID", "width": 128, "default": True},
     {"key": "lifecycleStage", "label": "Lifecycle", "width": 220, "default": True},
@@ -887,7 +887,7 @@ def _fault_tag_row(record: dict[str, Any]) -> dict[str, Any]:
     status = fault_tag_status(record)
     status_labels = {
         "exported": "Exported",
-        "sent": "Email sent · membership locked",
+        "sent": "Sent · membership locked",
         "partial_warehouse": "Partial warehouse evidence",
         "awaiting_user_confirmation": "Ready for user confirmation",
         "completed": "Completed",

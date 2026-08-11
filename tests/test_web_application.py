@@ -1411,6 +1411,38 @@ class WebServerTests(WebFixture):
         self.assertEqual(deleted["deleted"], request_id)
         self.assertIsNone(deleted["exportPreserved"])
 
+    def test_manually_sent_fault_tag_route_preserves_the_mode_and_selection(self) -> None:
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        response_payload = {
+            "faultTagId": "FT-260811151500",
+            "faultTag": {"faultTagId": "FT-260811151500", "status": "sent"},
+        }
+        payload = {
+            "selections": [
+                {"itemId": "260811150000-0001", "condition": "Faulty"}
+            ]
+        }
+        with patch.object(
+            self.service,
+            "register_sent_fault_tag",
+            return_value=response_payload,
+        ) as register:
+            request = urllib.request.Request(
+                self.url + "/api/spare-requests/fault-tags/register-sent",
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+                },
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                result = json.loads(response.read())
+                self.assertEqual(response.status, 201)
+
+        self.assertEqual(result, response_payload)
+        register.assert_called_once_with(payload["selections"], return_site=None)
+
     def test_ticket_patch_returns_the_complete_detail_contract(self) -> None:
         _, bootstrap, _ = self.read_json("/api/bootstrap")
         _, detail, _ = self.read_json("/api/tickets/12345678")

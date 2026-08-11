@@ -239,6 +239,7 @@ export interface FaultTagDetail {
   email: { sent_at: string | null; message_key: string | null; subject: string | null };
   lockedAt: string | null;
   locked: boolean;
+  lockedSource: string | null;
   createdAt: string;
   updatedAt: string;
 }

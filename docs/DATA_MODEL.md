@@ -102,12 +102,14 @@ return site, export revisions, sent-email identity, lock state, and one or more
 members with request/item identity, Faulty/New condition, warehouse evidence,
 and explicit-user-confirmation time.
 
-Export and re-export do not change request lifecycle. The first detected sent
-Fault Tag email sets the immutable membership lock. Only one active Fault Tag
-may own an item. Deleting a mistaken batch removes its links from active items
-without changing their stages. A confirmed member can leave active request
-Markdown while a partial batch remains active; stored member snapshots keep
-same-ID re-export possible. The final confirmed member archives the batch.
+Export, re-export, and manual sent registration do not change request lifecycle.
+The first detected sent Fault Tag email sets the immutable membership lock for
+an exported tag; registering a tag already sent outside Zeus creates the
+internal ID and sets the same lock with `locked_source=manual`. Only one active
+Fault Tag may own an item. Deleting a mistaken batch removes its links from
+active items without changing their stages. A confirmed member can leave active
+request Markdown while a partial batch remains active; stored member snapshots
+keep same-ID re-export possible. The final confirmed member archives the batch.
 
 ## Local profile and global reference data
 

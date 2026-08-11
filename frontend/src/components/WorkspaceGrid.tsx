@@ -26,6 +26,7 @@ interface Props<Row extends WorkspaceGridRow> {
   onCloseDetail: () => void;
   bulkSelectedRowIds?: ReadonlySet<string>;
   onToggleBulk?: (row: Row) => void;
+  bulkSelectable?: (row: Row) => boolean;
 }
 
 function displayValue(row: WorkspaceGridRow, key: string): string {
@@ -95,6 +96,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
   onCloseDetail,
   bulkSelectedRowIds,
   onToggleBulk,
+  bulkSelectable,
 }: Props<Row>) {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -178,6 +180,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
           const received = directionalEmailCount(row, "received");
           const sent = directionalEmailCount(row, "sent");
           const emailTotal = totalEmailCount(row);
+          const bulkAllowed = bulkSelectable ? bulkSelectable(row) : true;
           return (
             <button
               type="button"
@@ -239,7 +242,7 @@ export function WorkspaceGrid<Row extends WorkspaceGridRow>({
                     </span>
                   ) : column.key === "ticketId" ? (
                     <span className={`ticket-identity ${onToggleBulk ? "selectable" : ""}`}>
-                      {onToggleBulk && <i role="checkbox" aria-checked={Boolean(bulkSelectedRowIds?.has(row.rowId))} className={`bulk-row-check ${bulkSelectedRowIds?.has(row.rowId) ? "checked" : ""}`} title="Select for bulk action" onClick={(event) => { event.stopPropagation(); onToggleBulk(row); }}>{bulkSelectedRowIds?.has(row.rowId) ? "✓" : ""}</i>}
+                      {onToggleBulk && <i role="checkbox" aria-checked={Boolean(bulkSelectedRowIds?.has(row.rowId))} aria-disabled={!bulkAllowed} className={`bulk-row-check ${bulkSelectedRowIds?.has(row.rowId) ? "checked" : ""} ${bulkAllowed ? "" : "blocked"}`} title={bulkAllowed ? "Select for bulk action" : "Bulk selection is locked to one lifecycle stage"} onClick={(event) => { event.stopPropagation(); if (bulkAllowed) onToggleBulk(row); }}>{bulkSelectedRowIds?.has(row.rowId) ? "✓" : ""}</i>}
                       <span>{displayValue(row, column.key)}</span>
                       {hasDraft && <i className="draft-mark" aria-label="Protected draft" title="This SR has protected unsaved changes">✎</i>}
                     </span>

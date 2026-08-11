@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.1.10 - 2026-08-11
+
+- Makes **Confirm SR and RMA** validate and persist the visible Spare SR/RMA
+  drafts before advancing, while retaining the existing RMA uniqueness,
+  historical-alias, and Fault Tag correction safeguards.
+- Records manual dispatch at the current Ecuador time without asking the user
+  for a redundant timestamp, and locks dashboard bulk selection to one
+  lifecycle stage as soon as its first item is selected.
+- Replaces the stage-four export-only action with a **Fault Tag** choice:
+  generate/export a new workbook, or create an internal Fault Tag ID and mark
+  an externally sent tag as manual. Both paths still require matching warehouse
+  email evidence plus final user confirmation.
+- Keeps one **Create Request** entry point in SR detail, distinguishes Create
+  from Export inside the themed request form, collapses constrained toolbar
+  actions to hover-labelled icons, and gives lifecycle actions visible colors.
+- Centers the no-email zero in one square badge and narrows Last Email and Spare
+  Parts columns to their actual two- and four-badge capacities.
+
 ## 3.1.9 - 2026-08-10
 
 - Keeps pre-migration Active Requests usable by supplying safe empty detail

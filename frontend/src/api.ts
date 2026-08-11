@@ -223,6 +223,19 @@ export function exportSpareReturn(
   });
 }
 
+export function registerSentFaultTag(
+  selections: Array<{ itemId: string; condition: "Faulty" | "New" }>,
+  returnSite?: { code: string; name?: string; address: string; cloud: string },
+): Promise<{
+  faultTagId: string;
+  faultTag: FaultTagDetail;
+}> {
+  return request("/api/spare-requests/fault-tags/register-sent", {
+    method: "POST",
+    body: JSON.stringify({ selections, ...(returnSite ? { returnSite } : {}) }),
+  });
+}
+
 export function getFaultTag(faultTagId: string): Promise<FaultTagDetail> {
   return request<FaultTagDetail>(`/api/spare-requests/fault-tags/${faultTagId}`);
 }

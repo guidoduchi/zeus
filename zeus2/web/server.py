@@ -451,6 +451,22 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if path == "/api/spare-requests/fault-tags/register-sent":
+            selections = payload.get("selections")
+            if not isinstance(selections, list):
+                raise ValidationError("Fault Tag selections must be a list")
+            self._send_json(
+                HTTPStatus.CREATED,
+                self.server.service.register_sent_fault_tag(
+                    selections,
+                    return_site=(
+                        payload.get("returnSite")
+                        if isinstance(payload.get("returnSite"), dict)
+                        else None
+                    ),
+                ),
+            )
+            return
         if path == "/api/spare-requests/lifecycle/bulk":
             item_ids = payload.get("itemIds")
             if not isinstance(item_ids, list):

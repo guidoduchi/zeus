@@ -1,4 +1,4 @@
-# Zeus 3.1.9 release scope
+# Zeus 3.1.10 release scope
 
 Included:
 
@@ -21,8 +21,8 @@ Included:
 - a Service Requests / Spare Requests workspace switcher with independent
   search, sort, direction, and field preferences;
 - independent active Spare Request Markdown records, unit-level items, partial
-  stock, requested/delivered BOM separation, immutable RMAs, and visible
-  conflict handling;
+  stock, requested/delivered BOM separation, unique correction-safe RMAs with
+  reserved historical aliases, and visible conflict handling;
 - Active Requests, Eligible SR Parts, independent Fault Tags, and Completed
   archive subviews; archived source records remain reserved so a later
   replacement uses a new part record;
@@ -34,13 +34,15 @@ Included:
 - locally configured confirmation sender, dispatch/substitution sender, and
   warehouse domain parsing from HTML with plain-text fallback and out-of-order
   replay;
-- independent multi-item Fault Tag export with timestamp IDs, per-item return
-  condition, mixed-site destination entry, same-ID re-export, sent-email
-  membership lock, safe deletion, partial warehouse visibility, and archive
-  after every member has evidence plus explicit confirmation;
+- independent multi-item Fault Tag handling with timestamp IDs, per-item return
+  condition, mixed-site destination entry, generated export or internal
+  manually-sent registration, same-ID re-export, sent-state membership lock,
+  safe deletion, partial warehouse visibility, and archive after every member
+  has evidence plus explicit confirmation;
 - seven fully named Spare Request stages, bulk one-stage advance/rollback, shared
-  request-email selection enforcement, and exact-message lifecycle suppression
-  after a confirmed email-backed rollback;
+  request-email selection enforcement, immediate same-stage selection locking,
+  SR/RMA auto-save on confirmation, current-time dispatch, and exact-message
+  lifecycle suppression after a confirmed email-backed rollback;
 - mandatory cancellation reasons and dedicated Closed.xlsx archive/email tabs;
 - local-only structured Global data and BOM managers that ship empty plus fixed
   180-day active-email and completed-archive retention;
@@ -62,7 +64,7 @@ Included:
   Compact, Standard, and Large interface typography presets;
 - severity in the default dense dashboard, one structured MW field with legacy
   workbook projections, Last Email age plus directional received/sent triangles,
-  and unit-count Spare Parts badges with day-21 active escalation;
+  and compact unit-count Spare Parts badges with day-20 active escalation;
 - one date-first MW column and editor, with batched overdue outcomes, complete
   and incomplete transitions, optional new-date rescheduling, and durable attempt history;
 - preview-first Database Maintenance with full backup, staged 3.1.8 migration,

@@ -17,7 +17,11 @@ interface Props {
   onRefresh: () => Promise<void>;
   onError: (error: unknown) => void;
   onNotice: (message: string) => void;
-  onLifecycle: (itemId: string, action: "advance" | "rollback") => void;
+  onLifecycle: (
+    itemId: string,
+    action: "advance" | "rollback",
+    manualFacts?: { spareSr: string; rma: string; note: string },
+  ) => void;
   onFaultTag: (itemId: string) => void;
 }
 
@@ -25,7 +29,6 @@ interface ItemDraft {
   rma: string;
   deliveredBom: string;
   newSn: string;
-  dispatchAt: string;
   notes: string;
 }
 
@@ -33,10 +36,6 @@ interface PendingResolution {
   itemId: string | undefined;
   index: number;
   resolution: "keep-existing" | "accept-incoming";
-}
-
-function datetimeInput(value: string | null): string {
-  return value ? value.slice(0, 16) : "";
 }
 
 function conflictValue(conflict: Record<string, unknown>, key: string): string {
@@ -76,7 +75,6 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
       rma: item.rma || "",
       deliveredBom: item.delivered_bom || "",
       newSn: item.new_sn || "",
-      dispatchAt: datetimeInput(item.dispatch_at),
       notes: item.notes || "",
     }])));
   }, [request?.requestId, request?.revision]);
@@ -126,7 +124,6 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
         if (draft.rma !== (item.rma || "")) update.rma = draft.rma;
         if (draft.deliveredBom !== (item.delivered_bom || "")) update.deliveredBom = draft.deliveredBom;
         if (draft.newSn !== (item.new_sn || "")) update.newSn = draft.newSn;
-        if (draft.dispatchAt !== datetimeInput(item.dispatch_at)) update.dispatchAt = draft.dispatchAt;
         if (draft.notes !== (item.notes || "")) update.notes = draft.notes;
         return Object.keys(update).length > 1 ? [update] : [];
       });
@@ -240,6 +237,8 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
             {safeArray(request.items).map((item) => {
               const draft = drafts[item.item_id];
               if (!draft) return null;
+              const spareSrReady = /^(?:SR\s*)?\d{7}$/i.test(spareSr.trim());
+              const rmaReady = /^C\d{10}$/i.test(draft.rma.trim());
               const rollbackAvailable = item.lifecycle.stage > 0 && !(
                 item.lifecycle.stage === 1
                 && safeArray(request.items).some((candidate) => candidate.lifecycle.stage !== 1)
@@ -257,7 +256,6 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
                   <label className="form-field"><span>RMA · C + 10 digits</span><input value={draft.rma} maxLength={11} placeholder="C1234567890" onChange={(event) => updateItem(item.item_id, { rma: event.target.value.toUpperCase() })} />{safeArray(item.rma_aliases).length > 0 && <small>Previous: {safeArray(item.rma_aliases).join(", ")}</small>}</label>
                   <label className="form-field"><span>Delivered BOM</span><input value={draft.deliveredBom} onChange={(event) => updateItem(item.item_id, { deliveredBom: event.target.value })} /></label>
                   <label className="form-field"><span>New SN</span><input value={draft.newSn} onChange={(event) => updateItem(item.item_id, { newSn: event.target.value })} /></label>
-                  <label className="form-field"><span>Manual dispatch time</span><input type="datetime-local" value={draft.dispatchAt} onChange={(event) => updateItem(item.item_id, { dispatchAt: event.target.value })} /></label>
                   <label className="form-field wide"><span>Item notes</span><input value={draft.notes} onChange={(event) => updateItem(item.item_id, { notes: event.target.value })} /></label>
                 </div>
                 <footer>
@@ -267,8 +265,19 @@ export function SpareRequestDetail({ request, loading, onClose, onChanged, onRef
                     {item.lifecycle.stage === 4
                       ? item.return_export_filename || item.return_condition
                         ? <span>Fault Tag already linked</span>
-                        : <button type="button" className="primary-button" disabled={working || !item.rma} onClick={() => onFaultTag(item.item_id)}>Export Fault Tag</button>
-                      : NEXT_ACTION_LABELS[item.lifecycle.stage] && <button type="button" className="primary-button" disabled={working || (item.lifecycle.stage === 1 && !(request.spareSr && item.rma))} onClick={() => onLifecycle(item.item_id, "advance")}>{NEXT_ACTION_LABELS[item.lifecycle.stage]}</button>}
+                        : <button type="button" className="primary-button" disabled={working || !item.rma} onClick={() => onFaultTag(item.item_id)}>Fault Tag</button>
+                      : NEXT_ACTION_LABELS[item.lifecycle.stage] && <button
+                          type="button"
+                          className="primary-button"
+                          disabled={working || (item.lifecycle.stage === 1 && !(spareSrReady && rmaReady))}
+                          onClick={() => onLifecycle(
+                            item.item_id,
+                            "advance",
+                            item.lifecycle.stage === 1
+                              ? { spareSr: spareSr.trim(), rma: draft.rma.trim().toUpperCase(), note: note.trim() }
+                              : undefined,
+                          )}
+                        >{NEXT_ACTION_LABELS[item.lifecycle.stage]}</button>}
                     {item.lifecycle.stage > 0 && <button type="button" className="secondary-button" disabled={working || !rollbackAvailable} title={rollbackAvailable ? "Roll back exactly one stage" : "Roll later-stage sibling items back first"} onClick={() => onLifecycle(item.item_id, "rollback")}>Roll back last stage</button>}
                   </div>
                 </footer>

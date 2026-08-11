@@ -60,7 +60,11 @@ export function FaultTagDetail({ faultTag, loading, onClose, onChanged, onRefres
       <div className="detail-tabs"><span className="detail-tab active">{faultTag.status.replaceAll("_", " ")}</span></div>
       <div className="detail-scroll">
         <section className="source-contract">
-          <strong>{faultTag.locked ? "Membership locked by detected sent email" : "Membership fixed for this batch"}</strong>
+          <strong>{faultTag.locked
+            ? faultTag.lockedSource === "manual"
+              ? "Membership locked by manual sent confirmation"
+              : "Membership locked by detected sent email"
+            : "Membership fixed for this batch"}</strong>
           <span>Re-export keeps this ID and membership. Deleting releases the items without changing their Active Request lifecycle.</span>
         </section>
         <section className="detail-section">
@@ -71,7 +75,7 @@ export function FaultTagDetail({ faultTag, loading, onClose, onChanged, onRefres
           <header><strong>Members</strong><span>{faultTag.members.length}</span></header>
           <div className="fault-tag-members">{faultTag.members.map((member) => <article className={member.condition === "Faulty" ? "faulty" : "new"} key={member.itemId}><strong>{member.rma}</strong><span>TT {member.ticketId} · {member.spareSr} · {member.condition}</span><small>{member.warehouseEvidenceAt ? "Warehouse evidence received" : "Waiting for warehouse evidence"}{member.userConfirmedAt ? " · User confirmed" : ""}</small></article>)}</div>
         </section>
-        <div className="detail-actions"><button type="button" className="secondary-button" disabled={working} onClick={() => void reexport()}>Re-export same ID</button><button type="button" className="danger-button" disabled={working} onClick={() => setDeleteOpen(true)}>Delete Fault Tag</button></div>
+        <div className="detail-actions"><button type="button" className="secondary-button" disabled={working} onClick={() => void reexport()}>{faultTag.export.filename ? "Re-export same ID" : "Generate export with same ID"}</button><button type="button" className="danger-button" disabled={working} onClick={() => setDeleteOpen(true)}>Delete Fault Tag</button></div>
       </div>
       {deleteOpen && <ConfirmationDialog title={`Delete ${faultTag.faultTagId}?`} message="The exported XLSX stays on disk and linked email remains on the Active Request, but this Fault Tag record is deleted and its items become available for a new Fault Tag. Active Request lifecycle stages do not change." confirmLabel="Delete Fault Tag" tone="danger" onCancel={() => setDeleteOpen(false)} onConfirm={() => void remove()} />}
     </aside>

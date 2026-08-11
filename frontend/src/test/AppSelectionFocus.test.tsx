@@ -11,8 +11,10 @@ import type {
   TicketDetail,
   TicketSummary,
 } from "../types";
+import styles from "../styles.css?raw";
 
 const apiMocks = vi.hoisted(() => ({
+  bulkSpareLifecycle: vi.fn(),
   cancelJob: vi.fn(),
   exportSpareRequest: vi.fn(),
   getBootstrap: vi.fn(),
@@ -25,6 +27,7 @@ const apiMocks = vi.hoisted(() => ({
   getTicket: vi.fn(),
   purgeSpareArchive: vi.fn(),
   registerSpareRequest: vi.fn(),
+  saveSpareRequest: vi.fn(),
   saveTicket: vi.fn(),
   saveUserProfile: vi.fn(),
   startJob: vi.fn(),
@@ -424,6 +427,7 @@ class FakeEventSource {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.stubGlobal("EventSource", FakeEventSource);
   apiMocks.getBootstrap.mockResolvedValue(bootstrap);
   apiMocks.getTemplates.mockResolvedValue({ templates: [] });
@@ -458,6 +462,12 @@ beforeEach(() => {
     if (!row) throw new Error(`Unknown request ${requestId}`);
     return spareDetail(row);
   });
+  apiMocks.bulkSpareLifecycle.mockResolvedValue({
+    action: "advance",
+    items: [],
+    completed: [],
+    closedPath: null,
+  });
 });
 
 afterEach(() => {
@@ -484,7 +494,98 @@ describe("workspace selection and detail focus", () => {
     expect(screen.queryByRole("button", { name: /Export Fault Tag/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Confirm dispatched \(1\)/ }));
     expect(screen.getByRole("dialog", { name: /Confirm spare dispatched for 1 item/ })).toBeVisible();
-    expect(screen.getByLabelText("Confirmation time")).toBeVisible();
+    expect(screen.queryByLabelText("Confirmation time")).not.toBeInTheDocument();
+    expect(styles).toMatch(/@container dashboard-controls \(max-width: 1480px\)[\s\S]*?\.toolbar-label\s*\{\s*display:\s*none/s);
+    expect(styles).toMatch(/\.stage-action\.stage-2[^}]*background:\s*rgb\(255 217 26 \/ 12%\)/s);
+  });
+
+  it("locks a bulk selection to the lifecycle stage of the first selected spare", async () => {
+    const user = userEvent.setup();
+    const dispatchReady = spareSummary(1);
+    const alreadyDispatched = {
+      ...spareSummary(2),
+      lifecycleStage: 3,
+      lifecycleStageLabel: "Spare parts dispatched",
+      nextStageLabel: "Spare replaced",
+    };
+    const mixedDashboard = {
+      ...spareDashboard,
+      spareRequests: [dispatchReady, alreadyDispatched],
+    };
+    apiMocks.getDashboard.mockImplementation(async (nextWorkspace: string) => (
+      nextWorkspace === "spare-requests" ? mixedDashboard : serviceDashboard
+    ));
+    render(<App />);
+
+    await screen.findByRole("row", { name: /20000001/ });
+    await user.click(screen.getByRole("button", { name: "Spare Requests" }));
+    const first = await screen.findByRole("row", { name: /C3209937821/ });
+    const second = screen.getByRole("row", { name: /C3209937822/ });
+    await user.click(within(first).getByRole("checkbox"));
+
+    const blocked = within(second).getByRole("checkbox");
+    expect(blocked).toHaveAttribute("aria-disabled", "true");
+    await user.click(blocked);
+    expect(blocked).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("button", { name: /Confirm dispatched \(1\)/ })).toBeVisible();
+  });
+
+  it("saves valid visible SR and RMA facts before advancing them", async () => {
+    const user = userEvent.setup();
+    const stageOne = {
+      ...spareSummary(1),
+      rma: "",
+      spareSr: "",
+      trackingId: "260808123451",
+      trackingIdProvisional: true,
+      lifecycleStage: 1,
+      lifecycleStageLabel: "Request email sent",
+      nextStageLabel: "SR and RMA confirmed",
+      canAdvance: false,
+    };
+    const stageOneDashboard = { ...spareDashboard, spareRequests: [stageOne] };
+    const pending = spareDetail(stageOne);
+    pending.spareSr = null;
+    pending.items[0].rma = null;
+    const saved = {
+      ...pending,
+      revision: "revision-after-facts",
+      spareSr: "SR4956964",
+      items: pending.items.map((item) => ({ ...item, rma: "C3209937826" })),
+    };
+    apiMocks.getDashboard.mockImplementation(async (nextWorkspace: string) => (
+      nextWorkspace === "spare-requests" ? stageOneDashboard : serviceDashboard
+    ));
+    apiMocks.getSpareRequest.mockResolvedValue(pending);
+    apiMocks.saveSpareRequest.mockResolvedValue({ request: saved });
+    apiMocks.bulkSpareLifecycle.mockResolvedValue({
+      action: "advance",
+      items: [stageOne.itemId],
+      completed: [],
+      closedPath: null,
+    });
+    render(<App />);
+
+    await screen.findByRole("row", { name: /20000001/ });
+    await user.click(screen.getByRole("button", { name: "Spare Requests" }));
+    await user.dblClick(await screen.findByRole("row", { name: /39416091/ }));
+    await user.type(await screen.findByLabelText("Spare SR"), "SR4956964");
+    await user.type(screen.getByLabelText(/RMA · C \+ 10 digits/), "C3209937826");
+    await user.click(screen.getByRole("button", { name: "Confirm SR and RMA" }));
+    const confirmation = screen.getByRole("dialog", { name: /Confirm SR and RMA for 1 item/ });
+    await user.click(within(confirmation).getByRole("button", { name: "Confirm SR and RMA" }));
+
+    await waitFor(() => expect(apiMocks.saveSpareRequest).toHaveBeenCalledWith(
+      stageOne.requestId,
+      pending.revision,
+      { spareSr: "SR4956964", note: "" },
+      [{ itemId: stageOne.itemId, rma: "C3209937826" }],
+    ));
+    expect(apiMocks.bulkSpareLifecycle).toHaveBeenCalledWith(expect.objectContaining({
+      itemIds: [stageOne.itemId],
+      action: "advance",
+      revisions: { [stageOne.requestId]: "revision-after-facts" },
+    }));
   });
 
   it("applies the persisted interface text-size preset", async () => {

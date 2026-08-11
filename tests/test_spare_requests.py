@@ -11,6 +11,8 @@ from openpyxl import Workbook, load_workbook
 
 from zeus2.application.errors import ValidationError
 from zeus2.application.serialization import (
+    COLUMN_DEFINITIONS,
+    SPARE_REQUEST_COLUMN_DEFINITIONS,
     dashboard_payload,
     serialize_spare_request_detail,
     spare_requests_dashboard_payload,
@@ -173,6 +175,16 @@ def create_return_template(path: Path) -> None:
 
 
 class SpareRequestDomainTests(unittest.TestCase):
+    def test_email_and_spare_summary_columns_match_their_badge_capacity(self) -> None:
+        service_columns = {column["key"]: column for column in COLUMN_DEFINITIONS}
+        spare_columns = {
+            column["key"]: column for column in SPARE_REQUEST_COLUMN_DEFINITIONS
+        }
+
+        self.assertEqual(service_columns["emailLabel"]["width"], 140)
+        self.assertEqual(service_columns["spareBadges"]["width"], 116)
+        self.assertEqual(spare_columns["emailLabel"]["width"], 140)
+
     def test_detail_serialization_supplies_collections_before_database_upgrade(self) -> None:
         request = request_record(1)
         request["creation_method"] = "zeus_create"
@@ -1067,6 +1079,52 @@ class SpareRequestApplicationTests(unittest.TestCase):
             item_updates=[{"itemId": item_id, "rma": "C3209937888"}],
         )["request"]
         self.assertEqual(corrected_after_delete["items"][0]["lifecycle"]["stage"], 4)
+
+    def test_manually_sent_fault_tag_gets_internal_id_and_waits_for_warehouse_email(self) -> None:
+        config = self.store.config
+        config["email"]["warehouse_sender_domain"] = "@warehouse.example.test"
+        self.store.save_config(config)
+        request = self.request_at_spare_replaced()
+        item = request["items"][0]
+
+        registered = self.service.register_sent_fault_tag(
+            [{"itemId": item["item_id"], "condition": "Faulty"}]
+        )
+        fault_tag_id = registered["faultTagId"]
+        self.assertRegex(fault_tag_id, r"^FT-\d{12}$")
+        self.assertEqual(registered["faultTag"]["status"], "sent")
+        self.assertEqual(registered["faultTag"]["lockedSource"], "manual")
+        self.assertIsNone(registered["faultTag"]["export"]["filename"])
+        self.assertEqual(
+            self.service.spare_request(request["requestId"])["items"][0]["lifecycle"]["stage"],
+            4,
+        )
+        with self.assertRaisesRegex(ValidationError, "warehouse email evidence"):
+            self.service.bulk_spare_lifecycle(
+                item_ids=[item["item_id"]], action="advance"
+            )
+
+        warehouse = {
+            "message_key": "manual-tag-warehouse-reply",
+            "timestamp": "2026-08-10T09:00:00-05:00",
+            "direction": "received",
+            "sender": "Warehouse",
+            "sender_address": "agent@warehouse.example.test",
+            "subject": f"SR4956964 {item['rma']} RT12345678",
+            "body": f"SR4956964 {item['rma']} RT12345678",
+            "html_body": "",
+        }
+        with self.store.transaction("manual-tag-warehouse", {}) as staging:
+            apply_spare_request_messages(self.store, staging, [warehouse])
+
+        updated_request = self.service.spare_request(request["requestId"])
+        self.assertEqual(updated_request["items"][0]["lifecycle"]["stage"], 5)
+        updated_tag = self.service.fault_tag(fault_tag_id)
+        self.assertEqual(updated_tag["status"], "awaiting_user_confirmation")
+        self.assertEqual(
+            updated_tag["members"][0]["warehouseEvidenceAt"],
+            warehouse["timestamp"],
+        )
 
     def test_partial_fault_tag_stays_active_until_every_member_is_confirmed(self) -> None:
         config = self.store.config

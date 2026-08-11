@@ -2080,6 +2080,7 @@ class ApplicationService:
             "email": deepcopy(record.get("email") or {}),
             "lockedAt": record.get("locked_at"),
             "locked": bool(record.get("locked_at")),
+            "lockedSource": record.get("locked_source"),
             "createdAt": record.get("created_at"),
             "updatedAt": record.get("updated_at"),
         }
@@ -2089,6 +2090,161 @@ class ApplicationService:
             return self._serialize_fault_tag(self.store.read_fault_tag(fault_tag_id))
         except StoreError as exc:
             raise NotFoundError(str(exc)) from exc
+
+    def _prepare_fault_tag_selection(
+        self,
+        selections: list[dict[str, Any]],
+        return_site: dict[str, Any] | None,
+    ) -> tuple[
+        list[tuple[dict[str, Any], dict[str, Any], str]],
+        dict[str, str | None],
+    ]:
+        requests = list(self.store.iter_spare_requests())
+        by_item = {
+            item.get("item_id"): (request, item)
+            for request in requests
+            for item in request.get("items", [])
+        }
+        prepared: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+        active_members = {
+            str(member.get("item_id"))
+            for record in self.store.iter_fault_tags()
+            for member in record.get("members", [])
+        }
+        for selection in selections:
+            item_id = str(selection.get("itemId") or "")
+            pair = by_item.get(item_id)
+            if pair is None:
+                raise ValidationError(f"Active item {item_id} was not found")
+            request, item = pair
+            if not item.get("rma"):
+                raise ValidationError(f"Item {item_id} has no RMA")
+            condition = str(selection.get("condition") or "Faulty").title()
+            if condition not in {"Faulty", "New"}:
+                raise ValidationError("Return condition must be Faulty or New")
+            if lifecycle_stage(item, request) != 4:
+                raise ValidationError(
+                    f"{item_id} must be at Spare replaced before choosing its return condition"
+                )
+            if item_id in active_members:
+                raise ValidationError(
+                    f"{item_id} already belongs to an active Fault Tag; additions require a new Fault Tag"
+                )
+            prepared.append((request, item, condition))
+        source_sites = {
+            (
+                str(request.get("profile", {}).get("site_code") or "").strip(),
+                str(request.get("profile", {}).get("site_address") or "").strip(),
+                str(request.get("profile", {}).get("cloud") or "").strip(),
+            )
+            for request, _, _ in prepared
+        }
+        if len(source_sites) > 1 and not return_site:
+            raise ValidationError(
+                "Selected items come from different sites. Choose the actual return site."
+            )
+        if return_site:
+            actual_site = normalize_return_site(return_site)
+        else:
+            site_code, site_address, cloud = next(iter(source_sites))
+            first_profile = prepared[0][0].get("profile", {})
+            actual_site = normalize_return_site(
+                {
+                    "code": site_code,
+                    "name": first_profile.get("site_name"),
+                    "address": site_address,
+                    "cloud": cloud,
+                }
+            )
+        return prepared, actual_site
+
+    @staticmethod
+    def _fault_tag_members(
+        prepared: list[tuple[dict[str, Any], dict[str, Any], str]],
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "item_id": item.get("item_id"),
+                "request_id": request.get("request_id"),
+                "tt": request.get("tt"),
+                "spare_sr": request.get("spare_sr"),
+                "rma": item.get("rma"),
+                "condition": condition,
+                "source_site": request.get("profile", {}).get("site_code"),
+                "requested_bom": item.get("requested_bom"),
+                "new_sn": item.get("new_sn"),
+                # Re-export after a member completes needs only the immutable
+                # workbook facts, not a full copy of the multi-item request.
+                "request_snapshot": {
+                    "request_id": request.get("request_id"),
+                    "tt": request.get("tt"),
+                    "spare_sr": request.get("spare_sr"),
+                    "profile": deepcopy(request.get("profile") or {}),
+                },
+                "item_snapshot": {
+                    key: deepcopy(item.get(key))
+                    for key in (
+                        "item_id",
+                        "rma",
+                        "requested_bom",
+                        "delivered_bom",
+                        "requested_description",
+                        "part",
+                        "model",
+                        "device",
+                        "slot",
+                        "new_sn",
+                        "report_date",
+                    )
+                },
+            }
+            for request, item, condition in prepared
+        ]
+
+    def _persist_new_fault_tag(
+        self,
+        record: dict[str, Any],
+        prepared: list[tuple[dict[str, Any], dict[str, Any], str]],
+        *,
+        transaction_action: str,
+        request_history_action: str,
+    ) -> None:
+        fault_tag_id = str(record.get("fault_tag_id") or "")
+        selected = {
+            str(item.get("item_id")): condition for _, item, condition in prepared
+        }
+        filename = record.get("export", {}).get("filename")
+        with self.store.transaction(
+            transaction_action,
+            {
+                "fault_tag_id": fault_tag_id,
+                "items": sorted(selected),
+                "filename": filename,
+                "sent_source": record.get("locked_source"),
+            },
+        ) as staging:
+            self.store.write_fault_tag(staging, record)
+            for request_id in {request["request_id"] for request, _, _ in prepared}:
+                request = self.store.read_spare_request(request_id, staging)
+                affected = []
+                for item in request.get("items", []):
+                    condition = selected.get(item.get("item_id"))
+                    if condition is None:
+                        continue
+                    item["return_condition"] = condition
+                    if fault_tag_id not in item.setdefault("fault_tag_ids", []):
+                        item["fault_tag_ids"].append(fault_tag_id)
+                    affected.append(item["item_id"])
+                summary: dict[str, Any] = {
+                    "faultTagId": fault_tag_id,
+                    "items": affected,
+                }
+                if filename:
+                    summary["filename"] = filename
+                if record.get("locked_source"):
+                    summary["sentSource"] = record.get("locked_source")
+                request_history(request, request_history_action, summary)
+                self.store.write_spare_request(staging, request)
 
     def export_spare_return(
         self,
@@ -2103,63 +2259,9 @@ class ApplicationService:
         result: dict[str, Any] | None = None
         persisted = False
         try:
-            requests = list(self.store.iter_spare_requests())
-            by_item = {
-                item.get("item_id"): (request, item)
-                for request in requests
-                for item in request.get("items", [])
-            }
-            prepared: list[tuple[dict[str, Any], dict[str, Any], str]] = []
-            active_members = {
-                str(member.get("item_id"))
-                for record in self.store.iter_fault_tags()
-                for member in record.get("members", [])
-            }
-            for selection in selections:
-                item_id = str(selection.get("itemId") or "")
-                pair = by_item.get(item_id)
-                if pair is None:
-                    raise ValidationError(f"Active item {item_id} was not found")
-                request, item = pair
-                if not item.get("rma"):
-                    raise ValidationError(f"Item {item_id} has no RMA")
-                condition = str(selection.get("condition") or "Faulty").title()
-                if condition not in {"Faulty", "New"}:
-                    raise ValidationError("Return condition must be Faulty or New")
-                if lifecycle_stage(item, request) != 4:
-                    raise ValidationError(
-                        f"{item_id} must be at Spare replaced before choosing its return condition"
-                    )
-                if item_id in active_members:
-                    raise ValidationError(
-                        f"{item_id} already belongs to an active Fault Tag; additions require a new Fault Tag"
-                    )
-                prepared.append((request, item, condition))
-            source_sites = {
-                (
-                    str(request.get("profile", {}).get("site_code") or "").strip(),
-                    str(request.get("profile", {}).get("site_address") or "").strip(),
-                    str(request.get("profile", {}).get("cloud") or "").strip(),
-                )
-                for request, _, _ in prepared
-            }
-            if len(source_sites) > 1 and not return_site:
-                raise ValidationError(
-                    "Selected items come from different sites. Choose the actual return site."
-                )
-            if return_site:
-                actual_site = normalize_return_site(return_site)
-            else:
-                site_code, site_address, cloud = next(iter(source_sites))
-                first_profile = prepared[0][0].get("profile", {})
-                actual_site = normalize_return_site(
-                    {
-                        "code": site_code,
-                        "name": first_profile.get("site_name"),
-                        "address": site_address,
-                        "cloud": cloud,
-                    }
-                )
+            prepared, actual_site = self._prepare_fault_tag_selection(
+                selections, return_site
+            )
             fault_tag_id = next_fault_tag_id(
                 [
                     *self.store.iter_fault_tag_ids(),
@@ -2174,48 +2276,9 @@ class ApplicationService:
                 return_site=actual_site,
             )
             timestamp = iso_now()
-            selected = {item.get("item_id"): condition for _, item, condition in prepared}
             record = create_fault_tag_record(
                 fault_tag_id=fault_tag_id,
-                members=[
-                    {
-                        "item_id": item.get("item_id"),
-                        "request_id": request.get("request_id"),
-                        "tt": request.get("tt"),
-                        "spare_sr": request.get("spare_sr"),
-                        "rma": item.get("rma"),
-                        "condition": condition,
-                        "source_site": request.get("profile", {}).get("site_code"),
-                        "requested_bom": item.get("requested_bom"),
-                        "new_sn": item.get("new_sn"),
-                        # Re-export after a member completes needs only the
-                        # immutable workbook facts, not an O(n²) copy of the
-                        # entire multi-item request in every member.
-                        "request_snapshot": {
-                            "request_id": request.get("request_id"),
-                            "tt": request.get("tt"),
-                            "spare_sr": request.get("spare_sr"),
-                            "profile": deepcopy(request.get("profile") or {}),
-                        },
-                        "item_snapshot": {
-                            key: deepcopy(item.get(key))
-                            for key in (
-                                "item_id",
-                                "rma",
-                                "requested_bom",
-                                "delivered_bom",
-                                "requested_description",
-                                "part",
-                                "model",
-                                "device",
-                                "slot",
-                                "new_sn",
-                                "report_date",
-                            )
-                        },
-                    }
-                    for request, item, condition in prepared
-                ],
+                members=self._fault_tag_members(prepared),
                 return_site=actual_site,
                 export={
                     "filename": result["filename"],
@@ -2231,36 +2294,12 @@ class ApplicationService:
                 },
                 created_at=timestamp,
             )
-            with self.store.transaction(
-                "fault-tag-create",
-                {
-                    "fault_tag_id": fault_tag_id,
-                    "items": sorted(selected),
-                    "filename": result["filename"],
-                },
-            ) as staging:
-                self.store.write_fault_tag(staging, record)
-                for request_id in {request["request_id"] for request, _, _ in prepared}:
-                    request = self.store.read_spare_request(request_id, staging)
-                    affected = []
-                    for item in request.get("items", []):
-                        condition = selected.get(item.get("item_id"))
-                        if condition is None:
-                            continue
-                        item["return_condition"] = condition
-                        if fault_tag_id not in item.setdefault("fault_tag_ids", []):
-                            item["fault_tag_ids"].append(fault_tag_id)
-                        affected.append(item["item_id"])
-                    request_history(
-                        request,
-                        "fault-tag-linked",
-                        {
-                            "faultTagId": fault_tag_id,
-                            "filename": result["filename"],
-                            "items": affected,
-                        },
-                    )
-                    self.store.write_spare_request(staging, request)
+            self._persist_new_fault_tag(
+                record,
+                prepared,
+                transaction_action="fault-tag-create",
+                request_history_action="fault-tag-linked",
+            )
             persisted = True
             self._touch_data("fault-tag-create")
             return {
@@ -2280,6 +2319,75 @@ class ApplicationService:
                 if exported_path:
                     Path(exported_path).unlink(missing_ok=True)
             raise
+        finally:
+            self._operation_lock.release()
+
+    def register_sent_fault_tag(
+        self,
+        selections: list[dict[str, Any]],
+        *,
+        return_site: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(selections, list) or not selections:
+            raise ValidationError("Choose at least one RMA for the manually sent Fault Tag")
+        if not self._operation_lock.acquire(blocking=False):
+            raise BusyError("Another Zeus operation is changing data")
+        try:
+            prepared, actual_site = self._prepare_fault_tag_selection(
+                selections, return_site
+            )
+            fault_tag_id = next_fault_tag_id(
+                [
+                    *self.store.iter_fault_tag_ids(),
+                    *self.store.iter_fault_tag_ids(completed=True),
+                ]
+            )
+            timestamp = iso_now()
+            record = create_fault_tag_record(
+                fault_tag_id=fault_tag_id,
+                members=self._fault_tag_members(prepared),
+                return_site=actual_site,
+                export={
+                    "filename": None,
+                    "path": None,
+                    "subject": f"Fault Tag {fault_tag_id}",
+                    "revisions": [],
+                },
+                created_at=timestamp,
+            )
+            record["email"].update(
+                {
+                    "sent_at": timestamp,
+                    "message_key": None,
+                    "subject": None,
+                }
+            )
+            record["locked_at"] = timestamp
+            record["locked_source"] = "manual"
+            record["history"][0] = {
+                "timestamp": timestamp,
+                "action": "fault-tag-manually-sent",
+                "summary": {
+                    "items": sorted(
+                        str(item.get("item_id")) for _, item, _ in prepared
+                    ),
+                    "return_site": actual_site["code"],
+                    "sent_at": timestamp,
+                },
+            }
+            self._persist_new_fault_tag(
+                record,
+                prepared,
+                transaction_action="fault-tag-register-sent",
+                request_history_action="fault-tag-manually-sent",
+            )
+            self._touch_data("fault-tag-register-sent")
+            return {
+                "faultTagId": fault_tag_id,
+                "faultTag": self.fault_tag(fault_tag_id),
+            }
+        except (FaultTagError, SpareRequestError) as exc:
+            raise ValidationError(str(exc)) from exc
         finally:
             self._operation_lock.release()
 

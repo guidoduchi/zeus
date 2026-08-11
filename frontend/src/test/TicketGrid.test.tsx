@@ -225,6 +225,7 @@ describe("TicketGrid", () => {
     renderGrid();
     expect(screen.getAllByLabelText("0 total emails")[0]).toHaveClass("zero");
     expect(styles).toMatch(/\.email-count-badge\.zero\s*\{[^}]*grid-column:\s*2 \/ 4[^}]*background:\s*var\(--red\)/s);
+    expect(styles).toMatch(/\.email-count-badge\.zero\s*\{[^}]*width:\s*18px[^}]*justify-self:\s*center/s);
     expect(styles).toMatch(/\.grid-table\s*\{[^}]*width:\s*100%/s);
   });
 

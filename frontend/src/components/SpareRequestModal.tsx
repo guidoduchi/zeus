@@ -358,7 +358,7 @@ export function SpareRequestModal({ initialTicketId, initialPart, initialAction 
     <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
     {onRegisterManual && <button
       type="button"
-      className="secondary-button manual-registration-button"
+      className="create-button manual-registration-button"
       disabled={!references || saving || !canAttemptExport}
       title="Create this request at Added to Zeus without exporting an XLSX"
       autoFocus={initialAction === "manual"}

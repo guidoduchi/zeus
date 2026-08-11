@@ -11,9 +11,10 @@ interface Props {
   onCloseDetail: () => void;
   bulkSelectedRowIds?: ReadonlySet<string>;
   onToggleBulk?: (row: SpareRequestItemSummary) => void;
+  bulkSelectable?: (row: SpareRequestItemSummary) => boolean;
 }
 
-export function SpareRequestsGrid({ rows, columns, selectedRowId, detailOpen, onHighlight, onOpen, onCloseDetail, bulkSelectedRowIds, onToggleBulk }: Props) {
+export function SpareRequestsGrid({ rows, columns, selectedRowId, detailOpen, onHighlight, onOpen, onCloseDetail, bulkSelectedRowIds, onToggleBulk, bulkSelectable }: Props) {
   return (
     <WorkspaceGrid
       rows={rows as Array<SpareRequestItemSummary & WorkspaceGridRow>}
@@ -30,6 +31,7 @@ export function SpareRequestsGrid({ rows, columns, selectedRowId, detailOpen, on
       onCloseDetail={onCloseDetail}
       bulkSelectedRowIds={bulkSelectedRowIds}
       onToggleBulk={onToggleBulk}
+      bulkSelectable={bulkSelectable}
     />
   );
 }

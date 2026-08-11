@@ -92,9 +92,8 @@ describe("TicketDetail", () => {
     expect(screen.getByRole("button", { name: /^Spare Parts/ })).toHaveClass("active");
   });
 
-  it("offers stage-zero creation beside export for saved Spare Parts", async () => {
+  it("offers one request-creation entry point for saved Spare Parts", async () => {
     const user = userEvent.setup();
-    const onExportSpareRequest = vi.fn();
     const onRegisterSpareRequest = vi.fn();
     const withPart: TicketDetailType = {
       ...detail,
@@ -114,14 +113,14 @@ describe("TicketDetail", () => {
         onClose={vi.fn()}
         onSave={vi.fn()}
         onGenerateMop={vi.fn()}
-        onExportSpareRequest={onExportSpareRequest}
         onRegisterSpareRequest={onRegisterSpareRequest}
       />,
     );
 
     await user.click(screen.getByRole("button", { name: "Create Request" }));
     expect(onRegisterSpareRequest).toHaveBeenCalledWith("12345678");
-    expect(screen.getByRole("button", { name: "Export Request" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Export Request" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Request" })).toHaveClass("create-button");
     expect(styles).toMatch(/\.edit-actions, \.edit-actions > \.inline-actions\s*\{[^}]*flex-wrap:\s*wrap/s);
   });
 

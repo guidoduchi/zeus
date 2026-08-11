@@ -185,28 +185,25 @@ describe("SpareRequestDetail", () => {
     expect(screen.getByText("No spare-related email retained for this request.")).toBeVisible();
   });
 
-  it("saves SR and RMA facts before enabling the contextual confirmation", async () => {
+  it("enables SR and RMA confirmation from valid visible drafts without a separate save", async () => {
     const user = userEvent.setup();
     const request = detail(1);
-    const confirmed = detail(1, true);
-    apiMocks.saveSpareRequest.mockResolvedValue({ request: confirmed });
     const handlers = props(request);
     render(<SpareRequestDetail {...handlers} />);
 
     await user.type(screen.getByLabelText("Spare SR"), "SR4956964");
     expect(screen.getByRole("button", { name: "Confirm SR and RMA" })).toBeDisabled();
     await user.type(screen.getByLabelText(/RMA · C \+ 10 digits/), "C3209937826");
-    await user.click(screen.getByRole("button", { name: "Save manual facts" }));
+    const confirm = screen.getByRole("button", { name: "Confirm SR and RMA" });
+    expect(confirm).toBeEnabled();
+    await user.click(confirm);
 
-    await waitFor(() => expect(apiMocks.saveSpareRequest).toHaveBeenCalledWith(
-      request.requestId,
-      request.revision,
-      { note: "", spareSr: "SR4956964" },
-      [{ itemId: request.items[0].item_id, rma: "C3209937826" }],
-    ));
-    expect(apiMocks.advanceSpareRequestStage).not.toHaveBeenCalled();
-    expect(handlers.onChanged).toHaveBeenCalledWith(confirmed);
-    expect(handlers.onNotice).toHaveBeenCalledWith(expect.stringContaining("Spare Request saved"));
+    expect(apiMocks.saveSpareRequest).not.toHaveBeenCalled();
+    expect(handlers.onLifecycle).toHaveBeenCalledWith(
+      request.items[0].item_id,
+      "advance",
+      { spareSr: "SR4956964", rma: "C3209937826", note: "" },
+    );
   });
 
   it("offers Fault Tag export only at Spare replaced and keeps rollback contextual", async () => {
@@ -215,7 +212,7 @@ describe("SpareRequestDetail", () => {
     const handlers = props(request);
     render(<SpareRequestDetail {...handlers} />);
     expect(screen.queryByRole("button", { name: /Confirm spare/ })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Export Fault Tag" }));
+    await user.click(screen.getByRole("button", { name: "Fault Tag" }));
     expect(handlers.onFaultTag).toHaveBeenCalledWith(request.items[0].item_id);
     await user.click(screen.getByRole("button", { name: "Roll back last stage" }));
     expect(handlers.onLifecycle).toHaveBeenCalledWith(request.items[0].item_id, "rollback");

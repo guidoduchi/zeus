@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { FaultTagExportDialog, SpareLifecycleBulkDialog, type FaultTagTarget, type SpareLifecycleTarget } from "../components/SpareBulkDialogs";
+import { FaultTagDialog, SpareLifecycleBulkDialog, type FaultTagTarget, type SpareLifecycleTarget } from "../components/SpareBulkDialogs";
 
 function lifecycleTarget(index: number, overrides: Partial<SpareLifecycleTarget> = {}): SpareLifecycleTarget {
   const requestId = `26081012000${index}`;
@@ -62,13 +62,24 @@ describe("Spare bulk dialogs", () => {
     expect(screen.getByText(/later matching email attaches as evidence/i)).toBeVisible();
   });
 
+  it("records dispatch at the click time without asking the user for a timestamp", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    render(<SpareLifecycleBulkDialog rows={[lifecycleTarget(1, { lifecycleStage: 2, lifecycleStageLabel: "SR and RMA confirmed", nextStageLabel: "Spare parts dispatched" })]} action="advance" busy={false} onCancel={vi.fn()} onConfirm={onConfirm} />);
+
+    expect(screen.queryByLabelText("Confirmation time")).not.toBeInTheDocument();
+    expect(screen.getByText(/current Ecuador time automatically/i)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Confirm spare dispatched" }));
+    expect(onConfirm).toHaveBeenCalledWith(false, "", undefined);
+  });
+
   it("collects per-item conditions and the actual destination for mixed sites", async () => {
     const user = userEvent.setup();
     const onConfirm = vi.fn();
     const first = faultTarget(1);
     const second = faultTarget(2, { site: "GYE1", cloud: "Coastal Cloud" });
     render(
-      <FaultTagExportDialog
+      <FaultTagDialog
         rows={[first, second]}
         busy={false}
         onCancel={vi.fn()}
@@ -76,8 +87,9 @@ describe("Spare bulk dialogs", () => {
       />,
     );
 
-    const exportButton = screen.getByRole("button", { name: "Export Fault Tag" });
+    const exportButton = screen.getByRole("button", { name: "Generate and export" });
     expect(exportButton).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Generate and export Fault Tag option" }));
     const conditions = screen.getAllByRole("combobox", { name: "Return condition" });
     await user.selectOptions(conditions[1], "New");
     await user.type(screen.getByRole("textbox", { name: "Site code" }), "CUE1");
@@ -87,11 +99,29 @@ describe("Spare bulk dialogs", () => {
     await user.click(exportButton);
 
     expect(onConfirm).toHaveBeenCalledWith(
+      "export",
       [
         { itemId: first.itemId, condition: "Faulty" },
         { itemId: second.itemId, condition: "New" },
       ],
       { code: "CUE1", cloud: "Andes Cloud", address: "Av. Return 123" },
     );
+  });
+
+  it("records an externally sent Fault Tag with an internal identity and no export step", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const target = faultTarget(1);
+    render(<FaultTagDialog rows={[target]} busy={false} onCancel={vi.fn()} onConfirm={onConfirm} />);
+
+    await user.click(screen.getByRole("button", { name: "Already sent manually option" }));
+    await user.click(screen.getByRole("button", { name: "Record as manually sent" }));
+
+    expect(onConfirm).toHaveBeenCalledWith(
+      "manual-sent",
+      [{ itemId: target.itemId, condition: "Faulty" }],
+      undefined,
+    );
+    expect(screen.getByText(/wait for the warehouse reply/i)).toBeVisible();
   });
 });

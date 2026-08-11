@@ -1,4 +1,4 @@
-# Zeus 3.1.9
+# Zeus 3.1.10
 
 Zeus is a strictly local ticket workstation. Its Python backend runs in the
 background, serves a bundled React interface on `127.0.0.1`, and opens that
@@ -93,8 +93,9 @@ The blue title rail switches seamlessly between two management workspaces:
   views.
 
 Last Email uses green received and cyan sent legends in the header with fixed
-rounded count slots in every row. A no-email row shows one red zero across both
-slots; a missing direction on an active thread stays visible as a gray zero.
+rounded count slots in every row. A no-email row centers one square red zero in
+the shared two-slot area; a missing direction on an active thread stays visible
+as a gray zero.
 Beside it, Service Request rows show individual-unit Spare Parts badges: gray
 eligible/not dispatched, yellow dispatched below threshold, red at the
 configured displayed age (day 20 by default), and green warehouse-returned.
@@ -109,6 +110,12 @@ the editable sent time or let detected outbound email advance **Request email
 sent**; later matching mail attaches without advancing twice. The exact source part leaves eligibility
 while active and remains reserved after archival so a new replacement requires
 a new part record.
+
+At **Request email sent**, valid Spare SR and RMA values typed in detail are
+saved automatically by **Confirm SR and RMA**; a separate manual-facts save is
+not required. Dispatch confirmation records the current Ecuador time. Bulk
+selection locks to the lifecycle stage of its first selected unit so
+incompatible rows cannot enter one transaction.
 
 The gear beside **Fields** can show/hide and reorder every available field.
 Each workspace remembers its own search, filters, sort field,
@@ -249,12 +256,15 @@ stage or roll back one stage. Rolling back an email-backed stage keeps the email
 as evidence but suppresses that exact message's lifecycle effect after a second
 confirmation and required audit note.
 
-Fault Tag export is an independent batch operation available at **Spare
+Fault Tag handling is an independent batch operation available at **Spare
 replaced**. One `FT-YYMMDDHHmmss` batch can contain several items with separate
 Faulty/New conditions and an explicit actual return site when source sites are
-mixed. Export and re-export keep lifecycle unchanged. Detection of the first
-sent Fault Tag email locks membership; later additions require a new batch.
-Deleting a mistaken batch releases its items without changing their stages.
+mixed. Zeus can generate/export the workbook, or create an internal ID for a
+Fault Tag the user already sent outside Zeus. The manual path records the send
+and locks membership; the export path locks membership when its sent email is
+detected. Neither path advances request lifecycle. Re-export keeps the ID, later
+additions require a new batch, and deleting a mistaken batch releases its items
+without changing their stages.
 
 Warehouse evidence requires an exact RMA plus Spare SR match. Evidence advances
 only that item to **Warehouse evidence received**; one explicit user

@@ -102,17 +102,24 @@ Consequences:
     height-bounded, and scrolls independently. Interface typography uses one
     persisted Compact, Standard, or Large semantic scale.
 27. Active Request lifecycle uses seven full labels. Dashboard bulk actions move
-    every selected unit exactly one stage. The shared request-email stage may
-    change only when every active unit in that request is selected.
+    every selected unit exactly one stage. The first selected unit immediately
+    locks selection to that lifecycle stage. The shared request-email stage may
+    change only when every active unit in that request is selected. Confirming
+    SR and RMA validates and saves the visible values before advancing; dispatch
+    records the current Ecuador time without a user-entered timestamp.
 28. Rolling back an email-backed stage requires a second confirmation and audit
     note. The message remains retained evidence, while that exact message key's
     lifecycle effect stays suppressed on every later sync.
 29. Fault Tags are independent multi-item batches with `FT-YYMMDDHHmmss` IDs,
     per-item Faulty/New conditions, and an explicit actual return destination
-    for mixed source sites. Export and re-export never change request lifecycle.
-30. The first detected sent Fault Tag email locks membership. Re-export keeps
-    the same ID and members; additions use a new batch. Deleting a mistaken
-    batch releases members without changing their stages.
+    for mixed source sites. Zeus may generate/export the workbook or create an
+    internal ID for a Fault Tag already sent outside Zeus. Neither path changes
+    request lifecycle.
+30. The first detected sent Fault Tag email locks exported membership; manual
+    sent confirmation locks it immediately. Re-export keeps the same ID and
+    members; additions use a new batch. Deleting a mistaken batch releases
+    members without changing their stages. Every path still requires matching
+    warehouse email evidence and explicit final user confirmation.
 31. Partial warehouse evidence remains visible per Fault Tag member. A batch
     stays active until every member receives evidence and explicit confirmation,
     then archives with the final member.
