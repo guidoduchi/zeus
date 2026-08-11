@@ -29,6 +29,11 @@ class BusyError(ApplicationError):
     code = "busy"
 
 
+class SetupRequiredError(ApplicationError):
+    status_code = 428
+    code = "setup_required"
+
+
 class ValidationError(ApplicationError):
     status_code = 422
     code = "validation_error"

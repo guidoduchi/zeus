@@ -13,10 +13,24 @@ from ..config import (
 )
 from ..excel_import import find_latest_advanced_search
 from ..store import ZeusStore
+from ..storage_migration import storage_status
 from .errors import ValidationError
 
 
 def _path_status(store: ZeusStore, key: str, value: Any) -> dict[str, Any]:
+    if key == "data_directory":
+        status = storage_status(store)
+        return {
+            "configured": True,
+            "exists": store.root.is_dir(),
+            "path": str(store.root),
+            "message": (
+                "Low space — move the data folder"
+                if status["lowSpace"]
+                else f"{status['freeBytes'] // (1024 * 1024)} MiB available"
+            ),
+            **status,
+        }
     if not value:
         return {"configured": False, "exists": False, "message": "Not configured"}
     path = store.configured_directory(key)
@@ -75,7 +89,7 @@ def settings_payload(store: ZeusStore) -> dict[str, Any]:
     config = store.config
     items: list[dict[str, Any]] = []
     for spec in SETTING_SPECS:
-        value = get_dotted(config, spec.key)
+        value = str(store.root) if spec.key == "paths.data_directory" else get_dotted(config, spec.key)
         item = {
             "key": spec.key,
             "label": spec.label,
@@ -85,7 +99,10 @@ def settings_payload(store: ZeusStore) -> dict[str, Any]:
             "minimum": spec.minimum,
             "choices": list(spec.choices),
             "nullable": spec.nullable,
-            "editable": spec.editable,
+            "editable": spec.editable and not (
+                spec.key == "email.sync_interval_minutes"
+                and config.get("email", {}).get("sync_mode") == "after_fetch"
+            ),
             "value": deepcopy(value),
         }
         if spec.key.startswith("paths."):
@@ -105,6 +122,14 @@ def update_settings(store: ZeusStore, updates: dict[str, Any]) -> dict[str, Any]
             raise ValidationError(f"Unknown configuration setting: {key}")
         if not spec.editable:
             raise ValidationError(f"{spec.label} is fixed")
+        if (
+            key == "email.sync_interval_minutes"
+            and config.get("email", {}).get("sync_mode") == "after_fetch"
+            and "email.sync_mode" not in updates
+        ):
+            raise ValidationError(
+                "Email synchronization interval is inherited from the fetch interval in linked mode"
+            )
         try:
             value = coerce_setting_value(key, raw_value, base=store.config_home)
             if spec.kind == "directory" and value is not None and not Path(value).is_dir():
@@ -116,6 +141,12 @@ def update_settings(store: ZeusStore, updates: dict[str, Any]) -> dict[str, Any]
                 changed.append(key)
         except (OSError, ValueError) as exc:
             raise ValidationError(str(exc), details={"setting": key}) from exc
+    if config.get("email", {}).get("sync_mode") == "after_fetch":
+        linked_interval = config["email"]["fetch_interval_minutes"]
+        if config["email"].get("sync_interval_minutes") != linked_interval:
+            config["email"]["sync_interval_minutes"] = linked_interval
+            if "email.sync_interval_minutes" not in changed:
+                changed.append("email.sync_interval_minutes")
     if changed:
         store.save_config(config)
         store.append_audit("configuration-update", {"changed_settings": changed})

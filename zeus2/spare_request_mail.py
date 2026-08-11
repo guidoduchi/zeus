@@ -8,7 +8,9 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
-from .spare_request_excel import read_archived_items
+from .config import retained_message_limit
+from .fault_tags import fault_tag_history
+from .spare_request_excel import archived_rma_values, read_archived_items
 from .spare_requests import (
     ECUADOR_TIMEZONE,
     REQUEST_ID_PATTERN,
@@ -16,6 +18,7 @@ from .spare_requests import (
     SPARE_SR_PATTERN,
     TT_PATTERN,
     copy_message_for_request,
+    lifecycle_effect_suppressed,
     normalize_rma,
     normalize_spare_sr,
     request_history,
@@ -25,15 +28,11 @@ from .utils import atomic_write_text, iso_now, json_dumps, parse_datetime
 
 TT_TOKEN = re.compile(r"\bTT\s*(?:[:#-]\s*)?(\d{8})(?!\d)", re.IGNORECASE)
 RT_TOKEN = re.compile(r"\b(RT\d{8})\b", re.IGNORECASE)
+FAULT_TAG_TOKEN = re.compile(r"\b(FT-\d{12})\b", re.IGNORECASE)
 SPARE_WORDS = re.compile(
     r"spare\s*(?:parts?)?\s*(?:request)?|fault\s*tag|other\s+edi|delivery\s+requirement",
     re.IGNORECASE,
 )
-WAREHOUSE_DOMAIN = "@itsanet.com"
-LASPARE_ADDRESS = "laspare@huawei.com"
-ICARE_ADDRESS = "icare@huawei.com"
-
-
 class _TableParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -129,12 +128,48 @@ def _tt_from_message(message: dict[str, Any]) -> str | None:
 
 
 def _request_id_from_message(message: dict[str, Any]) -> str | None:
-    match = REQUEST_ID_PATTERN.search(str(message.get("subject") or ""))
-    return match.group(1) if match else None
+    subject = str(message.get("subject") or "")
+    for match in REQUEST_ID_PATTERN.finditer(subject):
+        # Fault Tags intentionally use a separate namespace with the same
+        # twelve timestamp digits. Never let ``FT-YYMMDDHHmmss`` masquerade as
+        # an outbound request ID when both happen to be allocated that second.
+        if subject[max(0, match.start() - 3) : match.start()].casefold() == "ft-":
+            continue
+        return match.group(1)
+    return None
 
 
-def parse_laspare_confirmation(message: dict[str, Any]) -> dict[str, Any] | None:
-    if sender_address(message) != LASPARE_ADDRESS:
+def _trusted_sender(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _trusted_domain(value: Any) -> str:
+    domain = str(value or "").strip().casefold()
+    if not domain:
+        return ""
+    return domain if domain.startswith("@") else f"@{domain}"
+
+
+def spare_mail_trust(config: dict[str, Any]) -> dict[str, str]:
+    email = config.get("email", {}) if isinstance(config, dict) else {}
+    return {
+        "request_confirmation_sender": _trusted_sender(
+            email.get("request_confirmation_sender")
+        ),
+        "dispatch_notification_sender": _trusted_sender(
+            email.get("dispatch_notification_sender")
+        ),
+        "warehouse_sender_domain": _trusted_domain(
+            email.get("warehouse_sender_domain")
+        ),
+    }
+
+
+def parse_request_confirmation(
+    message: dict[str, Any], trusted_sender: str
+) -> dict[str, Any] | None:
+    expected_sender = _trusted_sender(trusted_sender)
+    if not expected_sender or sender_address(message) != expected_sender:
         return None
     aliases = {
         "spare_sr": {"sr", "spare sr", "spare parts sr"},
@@ -194,8 +229,11 @@ def parse_laspare_confirmation(message: dict[str, Any]) -> dict[str, Any] | None
     }
 
 
-def parse_icare_dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
-    if sender_address(message) != ICARE_ADDRESS:
+def parse_dispatch_notification(
+    message: dict[str, Any], trusted_sender: str
+) -> dict[str, Any] | None:
+    expected_sender = _trusted_sender(trusted_sender)
+    if not expected_sender or sender_address(message) != expected_sender:
         return None
     aliases = {
         "order_number": {"order no", "order number", "order no order no"},
@@ -216,10 +254,10 @@ def parse_icare_dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
                 line_number = _value(row, mapping.get("line_number"))
                 spare_sr = None
                 try:
-                    # Huawei iCare uses Order No. for the C-prefixed RMA and
-                    # Line No. for the order line.  Accept the older inverse
-                    # layout as a compatibility fallback, but never infer an
-                    # RMA from an arbitrary numeric line.
+                    # The supported dispatch format uses Order No. for the
+                    # C-prefixed RMA and Line No. for the order line. Accept
+                    # the older inverse layout as a compatibility fallback,
+                    # but never infer an RMA from an arbitrary numeric line.
                     rma = normalize_rma(order_number, required=True)
                 except ValueError:
                     try:
@@ -294,9 +332,12 @@ def sender_address(message: dict[str, Any]) -> str:
     return match.group(0).casefold() if match else ""
 
 
-def warehouse_candidates(message: dict[str, Any]) -> list[dict[str, str | None]]:
+def warehouse_candidates(
+    message: dict[str, Any], trusted_domain: str
+) -> list[dict[str, str | None]]:
     address = sender_address(message)
-    if not address.endswith(WAREHOUSE_DOMAIN):
+    expected_domain = _trusted_domain(trusted_domain)
+    if not expected_domain or not address.endswith(expected_domain):
         return []
     text = _message_text(message)
     spare_srs = {normalize_spare_sr(match.group(0)) for match in SPARE_SR_PATTERN.finditer(text)}
@@ -317,6 +358,9 @@ def is_spare_candidate(
     request_ids: Iterable[str] = (),
     spare_srs: Iterable[str] = (),
     rmas: Iterable[str] = (),
+    request_confirmation_sender: str = "",
+    dispatch_notification_sender: str = "",
+    warehouse_sender_domain: str = "",
 ) -> bool:
     text = f"{subject}\n{sender}\n{sender_address_value}"
     lowered = text.casefold()
@@ -329,7 +373,18 @@ def is_spare_candidate(
     if any(value and value.casefold() in lowered for value in rmas):
         return True
     address = sender_address_value.casefold()
-    return address in {LASPARE_ADDRESS, ICARE_ADDRESS} or address.endswith(WAREHOUSE_DOMAIN)
+    trusted_addresses = {
+        value
+        for value in (
+            _trusted_sender(request_confirmation_sender),
+            _trusted_sender(dispatch_notification_sender),
+        )
+        if value
+    }
+    trusted_domain = _trusted_domain(warehouse_sender_domain)
+    return address in trusted_addresses or bool(
+        trusted_domain and address.endswith(trusted_domain)
+    )
 
 
 def _read_ndjson(path: Path) -> list[dict[str, Any]]:
@@ -401,7 +456,7 @@ def _conflict(
 
 
 def _associate_message(
-    request: dict[str, Any], message: dict[str, Any], item_ids: Iterable[str], retained: int
+    request: dict[str, Any], message: dict[str, Any], item_ids: Iterable[str], retained: int | None
 ) -> None:
     email = request.setdefault("email", {})
     key = str(message.get("message_key") or "")
@@ -422,11 +477,11 @@ def _associate_message(
     current = email.get("last_activity_at")
     if timestamp and (not current or _message_time(message) >= _message_time({"timestamp": current})):
         email["last_activity_at"] = timestamp
-    if retained:
+    if retained is None or retained > 0:
         messages = list(email.get("messages") or [])
         messages.append(copy_message_for_request(message, item_ids))
         messages.sort(key=_message_time, reverse=True)
-        email["messages"] = messages[:retained]
+        email["messages"] = messages if retained is None else messages[:retained]
     else:
         email["messages"] = []
 
@@ -439,9 +494,10 @@ def _global_indices(requests: list[dict[str, Any]]) -> tuple[dict[str, dict[str,
         if spare_sr:
             spare_sr_index[str(spare_sr)] = request
         for item in request.get("items", []):
-            rma = item.get("rma")
-            if rma:
-                rma_index[str(rma)] = (request, item)
+            identities = [item.get("rma"), *list(item.get("rma_aliases") or [])]
+            for identity in identities:
+                if identity:
+                    rma_index[str(identity)] = (request, item)
     return spare_sr_index, rma_index
 
 
@@ -477,7 +533,7 @@ def _apply_confirmation(
     fact: dict[str, Any],
     requests: list[dict[str, Any]],
     request_id_index: dict[str, dict[str, Any]],
-    retained: int,
+    retained: int | None,
     archived_rmas: set[str],
 ) -> tuple[set[str], bool]:
     affected: dict[str, tuple[dict[str, Any], set[str]]] = {}
@@ -579,18 +635,27 @@ def _apply_confirmation(
             item["rma"] = rma
             rma_index[rma] = (request, item)
         timestamp = message.get("timestamp") or iso_now()
-        item["attendance_confirmed_at"] = item.get("attendance_confirmed_at") or timestamp
-        item["attendance_source"] = item.get("attendance_source") or "email"
+        message_key = message.get("message_key")
+        if not lifecycle_effect_suppressed(request, 1, message_key):
+            request["request_sent_at"] = timestamp
+            request["request_sent_source"] = "email-inferred"
+            request["request_sent_message_key"] = message_key
+        if not lifecycle_effect_suppressed(item, 2, message_key):
+            item["attendance_confirmed_at"] = timestamp
+            item["attendance_source"] = "email"
+            item["attendance_message_key"] = message_key
         for pending in request.get("items", []):
             if not pending.get("rma"):
-                pending["attendance_confirmed_at"] = pending.get("attendance_confirmed_at") or timestamp
-                pending["attendance_source"] = pending.get("attendance_source") or "email"
+                if not lifecycle_effect_suppressed(pending, 2, message_key):
+                    pending["attendance_confirmed_at"] = timestamp
+                    pending["attendance_source"] = "email"
+                    pending["attendance_message_key"] = message_key
         affected.setdefault(request["request_id"], (request, set()))[1].add(item["item_id"])
     for request, item_ids in affected.values():
         _associate_message(request, message, item_ids, retained)
         request_history(
             request,
-            "laspare-confirmation",
+            "request-confirmation",
             {"messageKey": message.get("message_key"), "items": sorted(item_ids)},
         )
     return set(affected), matched_all
@@ -600,7 +665,7 @@ def _apply_dispatch(
     message: dict[str, Any],
     fact: dict[str, Any],
     requests: list[dict[str, Any]],
-    retained: int,
+    retained: int | None,
 ) -> tuple[set[str], bool]:
     _, rma_index = _global_indices(requests)
     affected: dict[str, tuple[dict[str, Any], set[str]]] = {}
@@ -659,14 +724,17 @@ def _apply_dispatch(
             )
         elif incoming_sn:
             item["new_sn"] = incoming_sn
-        item["dispatch_at"] = item.get("dispatch_at") or message.get("timestamp") or iso_now()
-        item["dispatch_source"] = item.get("dispatch_source") or "email"
+        message_key = message.get("message_key")
+        if not lifecycle_effect_suppressed(item, 3, message_key):
+            item["dispatch_at"] = message.get("timestamp") or iso_now()
+            item["dispatch_source"] = "email"
+            item["dispatch_message_key"] = message_key
         affected.setdefault(request["request_id"], (request, set()))[1].add(item["item_id"])
     for request, item_ids in affected.values():
         _associate_message(request, message, item_ids, retained)
         request_history(
             request,
-            "icare-dispatch",
+            "dispatch-notification",
             {"messageKey": message.get("message_key"), "items": sorted(item_ids)},
         )
     return set(affected), matched_all
@@ -676,7 +744,7 @@ def _apply_warehouse(
     message: dict[str, Any],
     facts: list[dict[str, Any]],
     requests: list[dict[str, Any]],
-    retained: int,
+    retained: int | None,
 ) -> tuple[set[str], bool]:
     _, rma_index = _global_indices(requests)
     affected: dict[str, tuple[dict[str, Any], set[str]]] = {}
@@ -690,10 +758,21 @@ def _apply_warehouse(
         if request.get("spare_sr") != fact.get("spare_sr"):
             matched_all = False
             continue
-        item["warehouse_candidate_at"] = (
-            item.get("warehouse_candidate_at") or message.get("timestamp") or iso_now()
-        )
-        item["warehouse_message_key"] = message.get("message_key")
+        message_key = message.get("message_key")
+        evidence_at = message.get("timestamp") or iso_now()
+        evidence = item.setdefault("warehouse_evidence", [])
+        if not any(
+            str(entry.get("message_key") or "") == str(message_key or "")
+            for entry in evidence
+            if isinstance(entry, dict)
+        ):
+            evidence.append(
+                {"message_key": message_key, "timestamp": evidence_at, "rt": fact.get("rt")}
+            )
+        if not lifecycle_effect_suppressed(item, 5, message_key):
+            item["warehouse_candidate_at"] = evidence_at
+            item["warehouse_message_key"] = message_key
+            item["warehouse_confirmation_source"] = "email"
         if fact.get("rt"):
             item["rt"] = fact["rt"]
         affected.setdefault(request["request_id"], (request, set()))[1].add(item["item_id"])
@@ -701,7 +780,7 @@ def _apply_warehouse(
         _associate_message(request, message, item_ids, retained)
         request_history(
             request,
-            "possible-warehouse-confirmation",
+            "warehouse-evidence-received",
             {"messageKey": message.get("message_key"), "items": sorted(item_ids)},
         )
     return set(affected), matched_all
@@ -710,7 +789,7 @@ def _apply_warehouse(
 def _associate_outbound(
     message: dict[str, Any],
     request_id_index: dict[str, dict[str, Any]],
-    retained: int,
+    retained: int | None,
 ) -> set[str]:
     if str(message.get("direction") or "").casefold() != "sent":
         return set()
@@ -718,6 +797,12 @@ def _associate_outbound(
     if not request_id or request_id not in request_id_index:
         return set()
     request = request_id_index[request_id]
+    message_key = message.get("message_key")
+    if not lifecycle_effect_suppressed(request, 1, message_key):
+        if not request.get("request_sent_at"):
+            request["request_sent_at"] = message.get("timestamp") or iso_now()
+            request["request_sent_source"] = "email"
+        request["request_sent_message_key"] = message_key
     item_ids = [item.get("item_id") for item in request.get("items", []) if item.get("item_id")]
     _associate_message(request, message, item_ids, retained)
     request_history(
@@ -728,6 +813,144 @@ def _associate_outbound(
     return {request_id}
 
 
+def _associate_fault_tag_outbound(
+    message: dict[str, Any],
+    requests: list[dict[str, Any]],
+    fault_tags: list[dict[str, Any]],
+    retained: int | None,
+) -> tuple[set[str], set[str]]:
+    if str(message.get("direction") or "").casefold() != "sent":
+        return set(), set()
+    text = _message_text(message)
+    if not re.search(r"\bfault\s*tag\b", text, re.IGNORECASE):
+        return set(), set()
+    explicit_ids = {match.group(1).upper() for match in FAULT_TAG_TOKEN.finditer(text)}
+    mentioned_rmas = {
+        str(normalize_rma(match.group(1)) or "") for match in RMA_PATTERN.finditer(text)
+    }
+    candidates = [
+        record
+        for record in fault_tags
+        if record.get("fault_tag_id") in explicit_ids
+        or (
+            not explicit_ids
+            and mentioned_rmas
+            and mentioned_rmas
+            & {str(member.get("rma") or "") for member in record.get("members", [])}
+        )
+    ]
+    if not candidates:
+        # A schema-1 request can still be waiting for database maintenance.
+        # Preserve the outbound email association without reviving the old
+        # Fault-Tag-as-lifecycle behavior.
+        _, legacy_rmas = _global_indices(requests)
+        legacy_affected: dict[str, tuple[dict[str, Any], set[str]]] = {}
+        for rma in mentioned_rmas:
+            pair = legacy_rmas.get(rma)
+            if pair is None:
+                continue
+            request, item = pair
+            if not (item.get("return_exported_at") or item.get("fault_tag_generated_at")):
+                continue
+            legacy_affected.setdefault(
+                request["request_id"], (request, set())
+            )[1].add(str(item.get("item_id")))
+        for request, item_ids in legacy_affected.values():
+            _associate_message(request, message, item_ids, retained)
+            request_history(
+                request,
+                "legacy-fault-tag-outbound-email",
+                {"messageKey": message.get("message_key"), "items": sorted(item_ids)},
+            )
+        return set(legacy_affected), set()
+    requests_by_id = {request.get("request_id"): request for request in requests}
+    affected: dict[str, tuple[dict[str, Any], set[str]]] = {}
+    updated_tags: set[str] = set()
+    for record in candidates:
+        timestamp = message.get("timestamp") or iso_now()
+        message_key = message.get("message_key")
+        already_recorded = any(
+            event.get("action") == "outbound-email-detected"
+            and str(event.get("summary", {}).get("messageKey") or "")
+            == str(message_key or "")
+            for event in record.get("history", [])
+            if isinstance(event, dict)
+        )
+        record.setdefault("email", {}).update(
+            {
+                "sent_at": record.get("email", {}).get("sent_at") or timestamp,
+                "message_key": message_key,
+                "subject": message.get("subject"),
+            }
+        )
+        record["locked_at"] = record.get("locked_at") or timestamp
+        record["locked_source"] = record.get("locked_source") or "email"
+        if not already_recorded:
+            fault_tag_history(
+                record,
+                "outbound-email-detected",
+                {"messageKey": message_key},
+            )
+        updated_tags.add(str(record.get("fault_tag_id")))
+        for member in record.get("members", []):
+            request = requests_by_id.get(member.get("request_id"))
+            if request is not None:
+                affected.setdefault(request["request_id"], (request, set()))[1].add(
+                    str(member.get("item_id"))
+                )
+    for request, item_ids in affected.values():
+        _associate_message(request, message, item_ids, retained)
+        request_history(
+            request,
+            "fault-tag-outbound-email",
+            {"messageKey": message.get("message_key"), "items": sorted(item_ids)},
+        )
+    return set(affected), updated_tags
+
+
+def _apply_fault_tag_warehouse(
+    message: dict[str, Any],
+    facts: list[dict[str, Any]],
+    fault_tags: list[dict[str, Any]],
+) -> set[str]:
+    fact_keys = {
+        (str(fact.get("spare_sr") or ""), str(fact.get("rma") or "")): fact
+        for fact in facts
+    }
+    updated: set[str] = set()
+    for record in fault_tags:
+        covered: list[str] = []
+        changed: list[str] = []
+        for member in record.get("members", []):
+            fact = fact_keys.get(
+                (str(member.get("spare_sr") or ""), str(member.get("rma") or ""))
+            )
+            if fact is None:
+                continue
+            if str(member.get("warehouse_message_key") or "") == str(
+                message.get("message_key") or ""
+            ):
+                covered.append(str(member.get("item_id")))
+                continue
+            member["warehouse_evidence_at"] = (
+                message.get("timestamp") or iso_now()
+            )
+            member["warehouse_message_key"] = message.get("message_key")
+            if fact.get("rt"):
+                member["rt"] = fact.get("rt")
+            covered.append(str(member.get("item_id")))
+            changed.append(str(member.get("item_id")))
+        if changed:
+            fault_tag_history(
+                record,
+                "warehouse-evidence-received",
+                {"messageKey": message.get("message_key"), "items": sorted(changed)},
+            )
+        if covered:
+            updated.add(str(record.get("fault_tag_id")))
+    return updated
+
+
 def apply_spare_request_messages(
     store: Any,
     staging_current: Path,
@@ -736,6 +959,7 @@ def apply_spare_request_messages(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     requests = list(store.iter_spare_requests(staging_current))
+    fault_tags = list(store.iter_fault_tags(staging_current))
     unmatched_path = store.unmatched_spare_messages_file(staging_current)
     current = now or datetime.now(ECUADOR_TIMEZONE)
     cutoff = (current - timedelta(days=180)).replace(tzinfo=None)
@@ -761,23 +985,28 @@ def apply_spare_request_messages(
     request_id_index = {request["request_id"]: request for request in requests}
     workbook_directory = store.configured_directory("workbook_directory")
     closed_path = workbook_directory / "Closed.xlsx" if workbook_directory is not None else None
-    archived_rmas = {
-        str(row.get("RMA"))
-        for row in read_archived_items(closed_path)
-        if row.get("RMA")
-    } if closed_path is not None else set()
-    retained = int(store.config.get("email", {}).get("retained_message_count", 7))
+    archived_rmas = set().union(
+        *(
+            archived_rma_values(row)
+            for row in read_archived_items(closed_path)
+        )
+    ) if closed_path is not None else set()
+    retained = retained_message_limit(store.config)
+    trust = spare_mail_trust(store.config)
     message_state: dict[str, dict[str, Any]] = {
         str(message["message_key"]): {"message": message, "matched": False, "complete": True}
         for message in messages
     }
+    updated_fault_tags: set[str] = set()
 
     # First assign Spare SR/RMA facts, then dispatch facts. This deliberately
     # ignores arrival order so an earlier dispatch can resolve after a later
     # confirmation appears in the same rebuild.
     for state in message_state.values():
         message = state["message"]
-        fact = parse_laspare_confirmation(message)
+        fact = parse_request_confirmation(
+            message, trust["request_confirmation_sender"]
+        )
         if fact:
             affected, complete = _apply_confirmation(
                 message, fact, requests, request_id_index, retained, archived_rmas
@@ -786,20 +1015,30 @@ def apply_spare_request_messages(
             state["complete"] = complete
     for state in message_state.values():
         message = state["message"]
-        fact = parse_icare_dispatch(message)
+        fact = parse_dispatch_notification(
+            message, trust["dispatch_notification_sender"]
+        )
         if fact:
             affected, complete = _apply_dispatch(message, fact, requests, retained)
             state["matched"] = state["matched"] or bool(affected)
             state["complete"] = state["complete"] and complete
     for state in message_state.values():
         message = state["message"]
-        facts = warehouse_candidates(message)
+        facts = warehouse_candidates(message, trust["warehouse_sender_domain"])
         if facts:
             affected, complete = _apply_warehouse(message, facts, requests, retained)
             state["matched"] = state["matched"] or bool(affected)
             state["complete"] = state["complete"] and complete
+            tag_updates = _apply_fault_tag_warehouse(message, facts, fault_tags)
+            updated_fault_tags.update(tag_updates)
+            state["matched"] = state["matched"] or bool(tag_updates)
         outbound = _associate_outbound(message, request_id_index, retained)
         state["matched"] = state["matched"] or bool(outbound)
+        outbound_requests, outbound_tags = _associate_fault_tag_outbound(
+            message, requests, fault_tags, retained
+        )
+        updated_fault_tags.update(outbound_tags)
+        state["matched"] = state["matched"] or bool(outbound_requests or outbound_tags)
 
     updated: list[str] = []
     for request in requests:
@@ -807,6 +1046,9 @@ def apply_spare_request_messages(
         if request != before:
             store.write_spare_request(staging_current, request)
             updated.append(request["request_id"])
+    for record in fault_tags:
+        if record.get("fault_tag_id") in updated_fault_tags:
+            store.write_fault_tag(staging_current, record)
     unmatched = [
         state["message"]
         for state in message_state.values()
@@ -820,6 +1062,7 @@ def apply_spare_request_messages(
     )
     return {
         "updated_requests": sorted(updated, reverse=True),
+        "updated_fault_tags": sorted(updated_fault_tags, reverse=True),
         "matched_messages": sum(bool(state["matched"]) for state in message_state.values()),
         "unmatched_messages": len(unmatched),
         "conflicts": conflicts,
@@ -833,17 +1076,31 @@ def purge_old_active_email_bodies(
     *,
     before: datetime,
 ) -> int:
+    cutoff = (
+        before.astimezone(ECUADOR_TIMEZONE).replace(tzinfo=None)
+        if before.tzinfo is not None
+        else before
+    )
+
+    def comparable_timestamp(value: Any) -> datetime | None:
+        timestamp = parse_datetime(value)
+        if timestamp is None:
+            return None
+        return (
+            timestamp.astimezone(ECUADOR_TIMEZONE).replace(tzinfo=None)
+            if timestamp.tzinfo is not None
+            else timestamp
+        )
+
     removed = 0
     for request in list(store.iter_spare_requests(staging_current)):
         messages = list(request.get("email", {}).get("messages", []))
         retained_messages: list[dict[str, Any]] = []
         for message in messages:
-            timestamp = parse_datetime(message.get("timestamp"))
-            if timestamp is None:
+            comparable = comparable_timestamp(message.get("timestamp"))
+            if comparable is None:
                 retained_messages.append(message)
                 continue
-            comparable = timestamp.replace(tzinfo=None) if timestamp.tzinfo is not None else timestamp
-            cutoff = before.replace(tzinfo=None) if before.tzinfo is not None else before
             if comparable >= cutoff:
                 retained_messages.append(message)
                 continue
@@ -856,11 +1113,7 @@ def purge_old_active_email_bodies(
     unmatched = _read_ndjson(unmatched_path)
     retained_unmatched = []
     for message in unmatched:
-        timestamp = parse_datetime(message.get("timestamp"))
-        comparable = (
-            timestamp.replace(tzinfo=None) if timestamp and timestamp.tzinfo is not None else timestamp
-        )
-        cutoff = before.replace(tzinfo=None) if before.tzinfo is not None else before
+        comparable = comparable_timestamp(message.get("timestamp"))
         if comparable is None or comparable >= cutoff:
             retained_unmatched.append(message)
         else:

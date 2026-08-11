@@ -24,6 +24,7 @@ from .config import (
     application_home,
     coerce_setting_value,
     default_data_dir,
+    ensure_config,
     get_dotted,
     prepare_outlook_store_path,
     scan_outlook_store_files,
@@ -48,6 +49,7 @@ from .mop import build_placeholder_values, generate_mop
 from .reconcile import sync_newest_advanced_search
 from .startup import StartupResult, reconcile_advanced_and_new_mail, run_startup
 from .store import StoreError, ZeusStore
+from .storage_migration import configured_data_root, migration_marker_path
 from .utils import json_dumps, local_today
 from .version import __version__
 
@@ -64,7 +66,17 @@ class Console:
 
 def create_store() -> ZeusStore:
     home = application_home()
-    store = ZeusStore(default_data_dir(home), config_home=home)
+    config = ensure_config(home)
+    if os.environ.get("ZEUS_DATA_DIR"):
+        root = default_data_dir(home)
+    else:
+        if migration_marker_path(home).exists():
+            raise RuntimeError(
+                "A Zeus data-folder move is awaiting its soft restart; open Zeus "
+                "once before running non-interactive commands"
+            )
+        root = configured_data_root(home, config)
+    store = ZeusStore(root, config_home=home)
     store.ensure_layout()
     return store
 

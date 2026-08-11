@@ -1,12 +1,16 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SpareRequestsGrid } from "../components/SpareRequestsGrid";
 import type { ColumnDefinition, SpareRequestItemSummary } from "../types";
+import styles from "../styles.css?raw";
 
 const columns: ColumnDefinition[] = [
   { key: "ticketId", label: "TT", width: 94, default: true },
   { key: "rma", label: "RMA", width: 132, default: true },
+  { key: "emailLabel", label: "Last Email", width: 154, default: true },
+  { key: "trackingId", label: "Tracking ID", width: 128, default: true },
+  { key: "lifecycleStage", label: "Lifecycle", width: 220, default: true },
   { key: "statusLabel", label: "Status", width: 170, default: true },
   { key: "dispatchAgeDays", label: "Days", width: 62, default: true },
 ];
@@ -15,10 +19,16 @@ function row(overrides: Partial<SpareRequestItemSummary> = {}): SpareRequestItem
   return {
     rowId: "260808123456-0001",
     requestId: "260808123456",
+    revision: "request-revision",
     itemId: "260808123456-0001",
     ticketId: "39416095",
     rma: "C3209937826",
     spareSr: "SR4956964",
+    trackingId: "SR4956964",
+    trackingIdProvisional: false,
+    lifecycleStage: 2,
+    lifecycleStageLabel: "SR and RMA confirmed",
+    lifecycleStageSource: "email",
     status: "awaiting_dispatch",
     statusLabel: "Awaiting dispatch",
     lifecycleColor: "grey",
@@ -28,6 +38,8 @@ function row(overrides: Partial<SpareRequestItemSummary> = {}): SpareRequestItem
     emailLabel: "2d inactive",
     emailColor: null,
     emailCount: 3,
+    received: 2,
+    sent: 1,
     requestedBom: "02312RCC",
     deliveredBom: "02540255",
     part: "Controller board",
@@ -36,6 +48,9 @@ function row(overrides: Partial<SpareRequestItemSummary> = {}): SpareRequestItem
     slot: "1/0/1",
     faultySn: "FAULTY-1",
     newSn: "NEW-1",
+    returnCondition: null,
+    faultTagIds: [],
+    faultTagId: null,
     site: "UIO1",
     cloud: "Ecuador Cloud",
     conflictCount: 0,
@@ -49,14 +64,16 @@ function row(overrides: Partial<SpareRequestItemSummary> = {}): SpareRequestItem
 describe("SpareRequestsGrid", () => {
   it("keeps lifecycle status color separate from dispatch aging and selects a unit item", async () => {
     const user = userEvent.setup();
-    const onSelect = vi.fn();
+    const onOpen = vi.fn();
     const requestItem = row();
     render(
       <SpareRequestsGrid
         rows={[requestItem]}
         columns={columns}
         selectedRowId={null}
-        onSelect={onSelect}
+        detailOpen={false}
+        onHighlight={vi.fn()}
+        onOpen={onOpen}
         onCloseDetail={vi.fn()}
       />,
     );
@@ -64,21 +81,103 @@ describe("SpareRequestsGrid", () => {
     expect(screen.getAllByRole("columnheader")[0]).toHaveTextContent("TT");
     expect(screen.getByText("Awaiting dispatch")).toHaveClass("tone-grey");
     expect(screen.getByText("16")).toHaveClass("tone-yellow");
-    await user.click(screen.getByRole("row", { name: /C3209937826/ }));
-    expect(onSelect).toHaveBeenCalledWith(requestItem);
+    await user.dblClick(screen.getByRole("row", { name: /C3209937826/ }));
+    expect(onOpen).toHaveBeenCalledWith(requestItem);
   });
 
   it("marks completed archive rows as read-only", () => {
+    const onHighlight = vi.fn();
+    const onOpen = vi.fn();
+    const completed = row({ readOnly: true, source: "closed", status: "returned", statusLabel: "Returned" });
     render(
       <SpareRequestsGrid
-        rows={[row({ readOnly: true, source: "closed", status: "returned", statusLabel: "Returned" })]}
+        rows={[completed]}
         columns={columns}
         selectedRowId={null}
-        onSelect={vi.fn()}
+        detailOpen={false}
+        onHighlight={onHighlight}
+        onOpen={onOpen}
         onCloseDetail={vi.fn()}
       />,
     );
 
     expect(screen.getByRole("row", { name: /Returned/ })).toHaveAttribute("data-read-only", "true");
+    const grid = screen.getByRole("grid");
+    grid.focus();
+    fireEvent.keyDown(grid, { key: "ArrowDown" });
+    expect(onHighlight).toHaveBeenCalledWith(completed);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("uses fixed received and sent count slots in Active Requests", () => {
+    render(
+      <SpareRequestsGrid
+        rows={[row(), row({ rowId: "260808123456-0002", itemId: "260808123456-0002", emailCount: 0, received: 0, sent: 0 })]}
+        columns={columns}
+        selectedRowId={null}
+        detailOpen={false}
+        onHighlight={vi.fn()}
+        onOpen={vi.fn()}
+        onCloseDetail={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("2 received email(s)")).toHaveClass("received");
+    expect(screen.getByLabelText("1 sent email(s)")).toHaveClass("sent");
+    expect(screen.getByLabelText("0 total emails")).toHaveClass("zero");
+    expect(screen.queryByLabelText("3 total emails")).not.toBeInTheDocument();
+  });
+
+  it("shows the provisional Zeus tracking ID in red and a seven-step lifecycle meter", () => {
+    render(
+      <SpareRequestsGrid
+        rows={[row({ spareSr: "—", trackingId: "260808123456", trackingIdProvisional: true, lifecycleStage: 1, lifecycleStageLabel: "Request email sent" })]}
+        columns={columns}
+        selectedRowId={null}
+        detailOpen={false}
+        onHighlight={vi.fn()}
+        onOpen={vi.fn()}
+        onCloseDetail={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("260808123456")).toHaveClass("provisional");
+    expect(screen.getByLabelText("Stage 1 of 6: Request email sent").querySelectorAll("i.reached")).toHaveLength(2);
+    expect(styles).not.toMatch(/\.ticket-row\.selected \.tracking-identity\s*\{[^}]*color:\s*inherit/s);
+  });
+
+  it("keeps the header in the horizontal scroller and centers an empty Completed view in the visible pane", () => {
+    render(
+      <SpareRequestsGrid
+        rows={[]}
+        columns={columns}
+        selectedRowId={null}
+        detailOpen={false}
+        onHighlight={vi.fn()}
+        onOpen={vi.fn()}
+        onCloseDetail={vi.fn()}
+      />,
+    );
+
+    const scroll = screen.getByTestId("dashboard-scroll");
+    expect(screen.getByRole("row", { name: /TT RMA Last Email.*Tracking ID Lifecycle/ }).parentElement?.parentElement).toBe(scroll);
+    expect(scroll).toContainElement(screen.getByText("No matching Spare Request items."));
+    expect(styles).toMatch(/\.ticket-grid\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidden/s);
+    expect(styles).toMatch(/\.ticket-scroll\s*\{[^}]*overflow:\s*auto/s);
+    expect(styles).toMatch(/\.empty-grid\s*\{[^}]*position:\s*sticky[^}]*left:\s*0[^}]*width:\s*100%/s);
+  });
+
+  it("resets horizontal scroll when detail opens and reserves checkbox geometry", () => {
+    const props = {
+      rows: [row()], columns, selectedRowId: null, onHighlight: vi.fn(), onOpen: vi.fn(), onCloseDetail: vi.fn(),
+      onToggleBulk: vi.fn(), bulkSelectedRowIds: new Set<string>(),
+    };
+    const { rerender } = render(<SpareRequestsGrid {...props} detailOpen={false} />);
+    const scroll = screen.getByTestId("dashboard-scroll");
+    scroll.scrollLeft = 180;
+    rerender(<SpareRequestsGrid {...props} detailOpen />);
+    expect(scroll.scrollLeft).toBe(0);
+    expect(screen.getByRole("checkbox")).toBeInTheDocument();
+    expect(styles).toMatch(/\.ticket-identity\.selectable\s*\{[^}]*grid-template-columns:\s*15px minmax\(0, 1fr\) auto/s);
   });
 });

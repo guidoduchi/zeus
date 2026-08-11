@@ -56,6 +56,29 @@ describe("dashboard field preferences", () => {
     expect(result.current.visibleKeys).not.toContain("severity");
   });
 
+  it("merges saved MW and Planned preferences into the unified MW column", () => {
+    const spareKey = "zeus3.spare-parts.columns";
+    localStorage.setItem(spareKey, JSON.stringify({
+      order: ["ticketId", "risk", "plannedDate", "site", "done"],
+      visible: ["ticketId", "plannedDate", "site"],
+    }));
+    const mergedDefinitions: ColumnDefinition[] = [
+      { key: "ticketId", label: "SR", width: 94, default: true },
+      { key: "risk", label: "", width: 18, default: true },
+      { key: "done", label: "MW", width: 128, default: true },
+      { key: "site", label: "Site", width: 110, default: true },
+    ];
+    const { result } = renderHook(
+      () => useColumnPreferences(mergedDefinitions, spareKey),
+    );
+
+    expect(result.current.orderedColumns.map((column) => column.key)).toEqual([
+      "ticketId", "risk", "done", "site",
+    ]);
+    expect(result.current.visibleKeys).toContain("done");
+    expect(result.current.visibleKeys).not.toContain("plannedDate");
+  });
+
   it("keeps Spare Parts field choices separate from Service Requests", () => {
     const spareKey = "zeus3.spare-parts.columns";
     const { result } = renderHook(() => useColumnPreferences(definitions, spareKey));
@@ -78,5 +101,24 @@ describe("dashboard field preferences", () => {
     act(() => result.current.move("severity", -1));
     act(() => result.current.move("ticketId", 1));
     expect(result.current.orderedColumns[0].key).toBe("ticketId");
+  });
+
+  it("moves Spare Parts immediately after Last Email once without resetting choices", () => {
+    const key = "zeus3.dashboard.columns.migration";
+    localStorage.setItem(key, JSON.stringify({
+      order: ["ticketId", "severity", "spareBadges", "summary", "emailLabel", "handler"],
+      visible: ["ticketId", "spareBadges", "emailLabel", "handler"],
+    }));
+    const migratedDefinitions: ColumnDefinition[] = [
+      ...definitions.slice(0, 2),
+      { key: "emailLabel", label: "Last Email", width: 154, default: true },
+      { key: "spareBadges", label: "Spare Parts", width: 132, default: true },
+      ...definitions.slice(2),
+    ];
+    const { result } = renderHook(() => useColumnPreferences(migratedDefinitions, key));
+    const order = result.current.orderedColumns.map((column) => column.key);
+    expect(order.indexOf("spareBadges")).toBe(order.indexOf("emailLabel") + 1);
+    expect(result.current.visibleKeys).toEqual(expect.arrayContaining(["ticketId", "spareBadges", "emailLabel", "handler"]));
+    expect(JSON.parse(localStorage.getItem(key) || "{}").layoutVersion).toBe(2);
   });
 });

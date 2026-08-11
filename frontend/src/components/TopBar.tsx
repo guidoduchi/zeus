@@ -6,6 +6,7 @@ interface Props {
   workspace: WorkspaceKey;
   stagedMessages: number;
   onWorkspaceChange: (workspace: WorkspaceKey) => void;
+  onData: () => void;
   onOperations: () => void;
   onSettings: () => void;
   onTheme: () => void;
@@ -17,6 +18,7 @@ export function TopBar({
   workspace,
   stagedMessages,
   onWorkspaceChange,
+  onData,
   onOperations,
   onSettings,
   onTheme,
@@ -25,7 +27,7 @@ export function TopBar({
     <header className="top-bar">
       <div className="top-title">
         <span className="bolt" aria-hidden="true">ϟ</span>
-        <strong>ZEUS {version || "3.1.1"}</strong>
+        <strong>ZEUS {version || "3.1.15"}</strong>
         <span className="top-separator">|</span>
         <nav className="workspace-switcher" aria-label="Zeus workspace">
           <button
@@ -44,11 +46,20 @@ export function TopBar({
           >
             Spare Requests
           </button>
+          <button
+            type="button"
+            className={workspace === "upcoming" ? "active" : ""}
+            aria-pressed={workspace === "upcoming"}
+            onClick={() => onWorkspaceChange("upcoming")}
+          >
+            Upcoming
+          </button>
         </nav>
         {detailOpen && <span className="detail-crumb">/ Detail</span>}
         {stagedMessages > 0 && <span className="staged-pill">Email staged {stagedMessages}</span>}
       </div>
       <div className="top-actions">
+        <button type="button" className="command-button" onClick={onData}>Global data</button>
         <button type="button" className="icon-button" onClick={onTheme} title="Toggle theme" aria-label="Toggle theme">◐</button>
         <button type="button" className="icon-button" onClick={onSettings} title="Configuration" aria-label="Configuration">⚙</button>
         <button type="button" className="command-button" onClick={onOperations}>Operations</button>

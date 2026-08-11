@@ -64,9 +64,11 @@ from zeus2.excel_import import (
 )
 from zeus2.mail import (
     MailSyncError,
+    _body_fetch_keys,
     _select_outlook_store,
     commit_fetched_messages,
     extract_ticket_ids,
+    fetch_and_commit_outlook,
     fetch_outlook_messages,
     interval_due,
     strip_quoted_history,
@@ -90,7 +92,7 @@ from zeus2.tickets import (
     empty_local,
     new_ticket,
 )
-from zeus2.utils import normalize_ticket_id, sha256_file
+from zeus2.utils import atomic_write_json, atomic_write_text, normalize_ticket_id, sha256_file
 
 
 def upstream_row(
@@ -219,15 +221,21 @@ class UtilityAndConfigTests(ZeusCase):
     def test_locked_defaults_and_config_validation(self) -> None:
         config = load_config(self.home)
         self.assertEqual(config["advanced_search"]["poll_interval_minutes"], 15)
-        self.assertEqual(config["email"]["fetch_interval_days"], 7)
-        self.assertEqual(config["email"]["sync_mode"], "scheduled")
-        self.assertEqual(config["email"]["sync_interval_days"], 7)
-        self.assertEqual(config["email"]["retained_message_count"], 7)
+        self.assertEqual(config["email"]["fetch_interval_minutes"], 60)
+        self.assertEqual(config["email"]["sync_mode"], "after_fetch")
+        self.assertEqual(config["email"]["sync_interval_minutes"], 60)
+        self.assertIsNone(config["email"]["retained_message_count"])
         self.assertTrue(config["email"]["fetch_new_ticket_history_automatically"])
+        self.assertEqual(config["web"]["font_scale"], "standard")
+        self.assertFalse(config["web"]["show_detail_history"])
         bad = deepcopy(config)
-        bad["email"]["fetch_interval_days"] = -2
+        bad["email"]["fetch_interval_minutes"] = -2
         with self.assertRaises(ValueError):
             save_config(self.home, bad)
+        bad_scale = deepcopy(config)
+        bad_scale["web"]["font_scale"] = "enormous"
+        with self.assertRaisesRegex(ValueError, "web.font_scale"):
+            save_config(self.home, bad_scale)
 
     def test_calendar_interval_convention(self) -> None:
         today = date(2026, 8, 6)
@@ -235,6 +243,19 @@ class UtilityAndConfigTests(ZeusCase):
         self.assertFalse(interval_due(0, None, today=today))
         self.assertTrue(interval_due(7, "2026-07-30 23:59:59", today=today))
         self.assertFalse(interval_due(7, "2026-07-31 00:00:00", today=today))
+
+    def test_schema_eight_configuration_backfills_standard_typography(self) -> None:
+        legacy = deepcopy(self.store.config)
+        legacy["schema_version"] = 8
+        legacy["web"].pop("font_scale", None)
+        legacy["web"].pop("show_detail_history", None)
+        self.store.config_file.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = load_config(self.home)
+
+        self.assertEqual(migrated["schema_version"], 10)
+        self.assertEqual(migrated["web"]["font_scale"], "standard")
+        self.assertFalse(migrated["web"]["show_detail_history"])
 
     def test_outlook_configuration_requires_an_exact_store_file(self) -> None:
         folder = self.root / "email"
@@ -386,6 +407,46 @@ class UtilityAndConfigTests(ZeusCase):
 
 
 class StoreTests(ZeusCase):
+    def test_atomic_markdown_write_retries_a_transient_windows_access_denial(self) -> None:
+        path = self.root / "ticket.md"
+        path.write_text("before", encoding="utf-8")
+        real_replace = os.replace
+        attempts = 0
+
+        def transient_denial(source: object, destination: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError(13, "Access is denied", str(destination))
+            real_replace(source, destination)
+
+        with (
+            patch("zeus2.utils.os.replace", side_effect=transient_denial),
+            patch("zeus2.utils.time.sleep"),
+        ):
+            atomic_write_text(path, "after")
+
+        self.assertEqual(attempts, 3)
+        self.assertEqual(path.read_text(encoding="utf-8"), "after")
+
+    def test_atomic_markdown_write_fails_bounded_and_preserves_destination(self) -> None:
+        path = self.root / "ticket.md"
+        path.write_text("before", encoding="utf-8")
+
+        with (
+            patch(
+                "zeus2.utils.os.replace",
+                side_effect=PermissionError(13, "Access is denied", str(path)),
+            ) as replace,
+            patch("zeus2.utils.time.sleep") as sleep,
+        ):
+            with self.assertRaises(PermissionError):
+                atomic_write_text(path, "after")
+
+        self.assertEqual(replace.call_count, 8)
+        self.assertEqual(sleep.call_count, 7)
+        self.assertEqual(path.read_text(encoding="utf-8"), "before")
+
     def test_markdown_is_the_self_contained_ticket_record(self) -> None:
         ticket = new_ticket(
             "12345678",
@@ -686,6 +747,108 @@ class EmailTests(ZeusCase):
         self.assertEqual(email["total_received"] + email["total_sent"], 2)
         self.assertEqual(email["messages"], [])
 
+    def test_default_retention_keeps_every_matched_email_body(self) -> None:
+        messages = [
+            {
+                "message_id": f"message-{index}",
+                "ticket_ids": ["12345678"],
+                "timestamp": f"2026-08-{index:02d} 10:00:00",
+                "direction": "received",
+                "subject": f"SR 12345678 update {index}",
+                "body": f"body {index}",
+            }
+            for index in range(1, 13)
+        ]
+
+        commit_fetched_messages(
+            self.store,
+            messages,
+            fetched_ticket_ids=["12345678"],
+            full_scan=True,
+            synchronize=True,
+        )
+
+        retained = self.store.read_ticket("12345678")["email"]["messages"]
+        self.assertEqual(len(retained), 12)
+        self.assertEqual({message["body"] for message in retained}, {f"body {index}" for index in range(1, 13)})
+
+    def test_explicit_retention_cap_keeps_only_the_newest_bodies(self) -> None:
+        config = self.store.config
+        config["email"]["retained_message_count"] = 3
+        self.store.save_config(config)
+        messages = [
+            {
+                "message_id": f"limited-{index}",
+                "ticket_ids": ["12345678"],
+                "timestamp": f"2026-08-{index:02d} 10:00:00",
+                "direction": "received",
+                "subject": f"SR 12345678 update {index}",
+                "body": f"body {index}",
+            }
+            for index in range(1, 9)
+        ]
+
+        commit_fetched_messages(
+            self.store,
+            messages,
+            fetched_ticket_ids=["12345678"],
+            full_scan=True,
+            synchronize=True,
+        )
+
+        retained = self.store.read_ticket("12345678")["email"]["messages"]
+        self.assertEqual([message["body"] for message in retained], ["body 8", "body 7", "body 6"])
+
+    def test_incremental_body_plan_skips_already_seen_service_email(self) -> None:
+        metadata = [
+            {
+                "message_key": "seen",
+                "ticket_ids": ["12345678"],
+                "timestamp": "2026-08-01 10:00:00",
+                "spare_candidate": False,
+            },
+            {
+                "message_key": "new",
+                "ticket_ids": ["12345678"],
+                "timestamp": "2026-08-02 10:00:00",
+                "spare_candidate": False,
+            },
+            {
+                "message_key": "spare",
+                "ticket_ids": [],
+                "timestamp": "2026-08-03 10:00:00",
+                "spare_candidate": True,
+            },
+        ]
+
+        keys = _body_fetch_keys(
+            metadata,
+            known_ids={"12345678"},
+            retained_count=None,
+            seen_by_ticket={"12345678": {"seen"}},
+            refetch_seen=False,
+        )
+
+        self.assertEqual(keys, {"new", "spare"})
+
+    def test_full_rebuild_body_plan_can_refetch_seen_email(self) -> None:
+        metadata = [{
+            "message_key": "seen",
+            "ticket_ids": ["12345678"],
+            "timestamp": "2026-08-01 10:00:00",
+            "spare_candidate": False,
+        }]
+
+        keys = _body_fetch_keys(
+            metadata,
+            known_ids={"12345678"},
+            retained_count=None,
+            seen_by_ticket={"12345678": {"seen"}},
+            refetch_seen=True,
+        )
+
+        self.assertEqual(keys, {"seen"})
+
     def test_worker_failure_is_normalized_and_logged(self) -> None:
         failed: Future[object] = Future()
         failed.set_exception(RuntimeError("transient MAPI initialization failure"))
@@ -701,6 +864,25 @@ class EmailTests(ZeusCase):
             "transient MAPI initialization failure",
             diagnostic_log.read_text(encoding="utf-8"),
         )
+
+    def test_commit_access_denial_is_normalized_after_the_scan(self) -> None:
+        with (
+            patch(
+                "zeus2.mail.fetch_outlook_messages",
+                return_value=([], {"full_scan": False, "scanned": 1}),
+            ),
+            patch(
+                "zeus2.mail.commit_fetched_messages",
+                side_effect=PermissionError(13, "Access is denied", "39206939.md"),
+            ),
+        ):
+            with self.assertRaises(MailSyncError) as caught:
+                fetch_and_commit_outlook(self.store)
+
+        self.assertIn("scan completed", str(caught.exception))
+        self.assertIn("previous database remains intact", str(caught.exception))
+        diagnostic_log = self.home / "logs" / "zeus.log"
+        self.assertIn("39206939.md", diagnostic_log.read_text(encoding="utf-8"))
 
     def test_reply_history_gets_a_compact_view_without_losing_the_raw_body(self) -> None:
         message = {
@@ -1014,6 +1196,37 @@ class AgingTests(ZeusCase):
 
 
 class PublicationTests(ZeusCase):
+    def test_explicit_export_replaces_corrupt_pendings_from_database(self) -> None:
+        self.seed([pending_row("12345678", **{"Notes": "database value"})])
+        workbook = load_workbook(self.books / "Pendings.xlsx")
+        workbook.active["N2"] = "=1+1"
+        workbook.save(self.books / "Pendings.xlsx")
+        workbook.close()
+
+        publish_operational_workbooks(self.store, self.books)
+
+        exported = read_pendings(self.books / "Pendings.xlsx")
+        self.assertEqual(
+            exported.records["12345678"]["local"]["fields"]["Notes"],
+            "database value",
+        )
+
+    def test_missing_closed_with_finalized_ids_cannot_be_recreated_lossily(self) -> None:
+        self.seed(
+            [pending_row("12345678"), pending_row("12345679")],
+            advanced_rows=[upstream_row("12345679")],
+            closed_rows=[pending_row("11111111")],
+        )
+        publish_operational_workbooks(self.store, self.books)
+        (self.books / "Closed.xlsx").unlink()
+
+        with self.assertRaisesRegex(
+            WorkbookPublicationError,
+            "cannot be reconstructed",
+        ):
+            publish_operational_workbooks(self.store, self.books, create_missing=True)
+        self.assertFalse((self.books / "Closed.xlsx").exists())
+
     def test_publication_appends_closure_generates_report_and_deletes_after_verify(self) -> None:
         self.seed(
             [
@@ -1110,7 +1323,7 @@ class PublicationTests(ZeusCase):
         self.assertEqual((self.books / "Closed.xlsx").read_bytes(), closed_before)
         self.assertFalse((self.store.current / "publication_journal.json").exists())
 
-    def test_restore_imports_only_local_fields_and_rewrites_current_pendings(self) -> None:
+    def test_legacy_restore_imports_local_fields_without_rewriting_pendings(self) -> None:
         self.seed([pending_row("12345678", **{"Notes": "current"})])
         publish_operational_workbooks(self.store, self.books)
         backup = self.root / "old.xlsx"
@@ -1118,6 +1331,7 @@ class PublicationTests(ZeusCase):
             backup,
             [pending_row("12345678", summary="old protected", **{"Notes": "restored", "Done?": "P"})],
         )
+        pending_hash = sha256_file(self.books / "Pendings.xlsx")
         result = restore_pendings_backup(self.store, backup, self.books)
         ticket = self.store.read_ticket("12345678")
         self.assertEqual(ticket["local"]["fields"]["Notes"], "restored")
@@ -1128,28 +1342,44 @@ class PublicationTests(ZeusCase):
         workbook = load_workbook(self.books / "Pendings.xlsx", read_only=True)
         headers = [cell.value for cell in workbook.worksheets[0][1]]
         notes_column = headers.index("Notes") + 1
-        self.assertEqual(workbook.worksheets[0].cell(2, notes_column).value, "restored")
+        self.assertEqual(workbook.worksheets[0].cell(2, notes_column).value, "current")
         workbook.close()
-        self.assertIn("rewritten_path", result)
+        self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), pending_hash)
+        self.assertEqual(result["database_restored"], 1)
+        self.assertTrue(result["workbooks_unchanged"])
 
-    def test_restore_recovery_finalizes_rewritten_pendings(self) -> None:
+    def test_startup_can_finalize_a_legacy_interrupted_restore_journal(self) -> None:
         self.seed([pending_row("12345678", **{"Notes": "current"})])
         publish_operational_workbooks(self.store, self.books)
         backup = self.root / "old.xlsx"
         write_managed(backup, [pending_row("12345678", **{"Notes": "restored"})])
-        real_finalize = __import__("zeus2.excel_export", fromlist=["_finalize_pendings_restore"])._finalize_pendings_restore
-        with patch(
-            "zeus2.excel_export._finalize_pendings_restore",
-            side_effect=RuntimeError("simulated crash after Pendings replacement"),
-        ):
-            with self.assertRaises(RuntimeError):
-                restore_pendings_backup(self.store, backup, self.books)
+        write_managed(
+            self.books / "Pendings.xlsx",
+            [pending_row("12345678", **{"Notes": "restored"})],
+        )
+        restored_local = read_pendings(backup).records["12345678"]["local"]
+        journal = {
+            "schema_version": 1,
+            "backup": str(backup),
+            "old_hash": None,
+            "new_hash": sha256_file(self.books / "Pendings.xlsx"),
+            "local_by_id": {"12345678": restored_local},
+            "pendings_snapshot": {
+                "filename": "Pendings.xlsx",
+                "sha256": sha256_file(self.books / "Pendings.xlsx"),
+                "captured_at": "2026-08-08T12:00:00-05:00",
+                "header_order": list(PENDING_COLUMNS),
+                "ticket_ids": ["12345678"],
+                "protected_values": {},
+            },
+        }
+        with self.store.transaction("legacy-restore-journal", {}) as staging:
+            atomic_write_json(staging / "pendings_restore_journal.json", journal)
         self.assertEqual(
             self.store.read_ticket("12345678")["local"]["fields"]["Notes"],
             "current",
         )
-        with patch("zeus2.excel_export._finalize_pendings_restore", real_finalize):
-            result = recover_pendings_restore(self.store, self.books)
+        result = recover_pendings_restore(self.store, self.books)
         self.assertEqual(result["recovered"], "finalized")
         self.assertEqual(
             self.store.read_ticket("12345678")["local"]["fields"]["Notes"],
@@ -1172,7 +1402,7 @@ class PublicationTests(ZeusCase):
 
 
 class StartupAndReadOnlyTests(ZeusCase):
-    def test_startup_imports_pendings_then_advanced_without_publishing(self) -> None:
+    def test_startup_ignores_pendings_and_discovers_advanced_without_publishing(self) -> None:
         write_managed(
             self.books / "Pendings.xlsx",
             [pending_row("12345678", **{"Notes": "from Excel"})],
@@ -1184,13 +1414,13 @@ class StartupAndReadOnlyTests(ZeusCase):
         closed_hash = sha256_file(self.books / "Closed.xlsx")
         result = run_startup(self.store)
         ticket = self.store.read_ticket("12345678")
-        self.assertEqual(ticket["local"]["fields"]["Notes"], "from Excel")
+        self.assertIsNone(ticket["local"]["fields"]["Notes"])
         self.assertEqual(ticket["upstream"]["fields"]["Problem Summary"], "Online")
         self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), pending_hash)
         self.assertEqual(sha256_file(self.books / "Closed.xlsx"), closed_hash)
         self.assertTrue(result.advanced_search_valid)
 
-    def test_invalid_pendings_warns_but_valid_advanced_still_updates(self) -> None:
+    def test_invalid_pendings_is_ignored_while_valid_advanced_updates(self) -> None:
         self.seed([pending_row("12345678")])
         workbook = load_workbook(self.books / "Pendings.xlsx")
         workbook.active["N2"] = "=1+1"
@@ -1199,7 +1429,7 @@ class StartupAndReadOnlyTests(ZeusCase):
         newer = self.downloads / "Advanced Search(Service Request)20260802010101.xlsx"
         write_advanced(newer, [upstream_row("12345678", summary="Updated online")])
         result = run_startup(self.store)
-        self.assertTrue(any("PENDINGS WARNING" in warning for warning in result.warnings))
+        self.assertFalse(any("PENDINGS WARNING" in warning for warning in result.warnings))
         self.assertTrue(result.advanced_search_valid)
         self.assertEqual(
             self.store.read_ticket("12345678")["upstream"]["fields"]["Problem Summary"],
@@ -1214,7 +1444,7 @@ class StartupAndReadOnlyTests(ZeusCase):
         mailbox.touch()
         config = self.store.config
         config["paths"]["outlook_store_path"] = str(mailbox)
-        config["email"]["fetch_interval_days"] = -1
+        config["email"]["fetch_interval_minutes"] = -1
         self.store.save_config(config)
 
         with patch(

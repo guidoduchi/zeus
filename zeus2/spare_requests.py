@@ -9,24 +9,31 @@ from pathlib import Path
 from typing import Any, Iterable, TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from .utils import atomic_write_json, iso_now, json_dumps, load_json, parse_datetime
+from .reference_data import ReferenceDataError, derive_client_initials
+from .tickets import newline_values
+from .utils import iso_now, json_dumps, parse_datetime
 
 if TYPE_CHECKING:
     from .store import ZeusStore
 
 
 SPARE_REQUEST_MARKER = "<!-- ZEUS_SPARE_REQUEST_V1:"
-SPARE_REQUEST_SCHEMA_VERSION = 1
+SPARE_REQUEST_SCHEMA_VERSION = 3
 ECUADOR_TIMEZONE = ZoneInfo("America/Guayaquil")
 TT_PATTERN = re.compile(r"(?<!\d)(\d{8})(?!\d)")
 SPARE_SR_PATTERN = re.compile(r"\bSR\s*[:#-]?\s*(\d{7})(?!\d)", re.IGNORECASE)
 RMA_PATTERN = re.compile(r"\b(C\d{10})\b", re.IGNORECASE)
 REQUEST_ID_PATTERN = re.compile(r"(?<!\d)(\d{12})(?!\d)")
 INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-
-REQUEST_PROFILE_FILENAME = "spare_request_profiles.json"
-BOM_CATALOG_FILENAME = "spare_request_boms.json"
-
+LIFECYCLE_STAGE_LABELS = (
+    "Added to Zeus",
+    "Request email sent",
+    "SR and RMA confirmed",
+    "Spare parts dispatched",
+    "Spare replaced",
+    "Warehouse evidence received",
+    "Complete",
+)
 
 class SpareRequestError(ValueError):
     pass
@@ -37,6 +44,17 @@ def normalize_tt(value: Any) -> str:
     if not re.fullmatch(r"\d{8}", text):
         raise SpareRequestError("TT must contain exactly eight digits")
     return text
+
+
+def normalize_report_date(value: Any, *, required: bool = False) -> str | None:
+    if value is None or not str(value).strip():
+        if required:
+            raise SpareRequestError("Original TT report date is required")
+        return None
+    parsed = parse_datetime(value)
+    if parsed is None:
+        raise SpareRequestError("Original TT report date must be a valid date")
+    return parsed.date().isoformat()
 
 
 def normalize_request_id(value: Any) -> str:
@@ -69,6 +87,65 @@ def normalize_rma(value: Any, *, required: bool = False) -> str | None:
     return text
 
 
+def normalize_rma_aliases(value: Any, *, current: Any = None) -> list[str]:
+    """Return canonical, unique historical RMA identities for one item."""
+
+    if value in (None, ""):
+        candidates: Iterable[Any] = ()
+    elif isinstance(value, str):
+        candidates = re.split(r"[\r\n,;]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        candidates = value
+    else:
+        raise SpareRequestError("RMA aliases must be a list of valid RMAs")
+    current_rma = normalize_rma(current)
+    aliases: list[str] = []
+    for candidate in candidates:
+        alias = normalize_rma(candidate, required=True)
+        if alias == current_rma or alias in aliases:
+            continue
+        aliases.append(alias)
+    return aliases
+
+
+def source_part_key(
+    tt: Any,
+    value: dict[str, Any],
+) -> tuple[str, int, int] | None:
+    """Return the stable SR-owned identity for one requested source part.
+
+    Older and fully manual requests may not contain source positions.  Those
+    records remain valid, but only app-created records with both positions can
+    reserve an Eligible SR Parts row without guessing from mutable labels.
+    """
+
+    try:
+        ticket_id = normalize_tt(tt)
+        device_number = int(value.get("source_device_number"))
+        part_number = int(value.get("source_part_number"))
+    except (SpareRequestError, TypeError, ValueError):
+        return None
+    if device_number < 1 or part_number < 1:
+        return None
+    return ticket_id, device_number, part_number
+
+
+def active_source_part_keys(
+    requests: Iterable[dict[str, Any]],
+) -> set[tuple[str, int, int]]:
+    """Collect exact source parts still owned by an Active Request."""
+
+    keys: set[tuple[str, int, int]] = set()
+    for request in requests:
+        for item in request.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            key = source_part_key(request.get("tt"), item)
+            if key is not None:
+                keys.add(key)
+    return keys
+
+
 def _optional_text(value: Any, *, maximum: int = 500) -> str | None:
     if value is None:
         return None
@@ -93,30 +170,96 @@ def _safe_filename_component(value: Any, *, fallback: str = "NA") -> str:
     return text or fallback
 
 
-def _profile_contact(value: Any, label: str) -> dict[str, str | None]:
+def _profile_contact(
+    value: Any,
+    label: str,
+    *,
+    require_email_phone: bool = False,
+) -> dict[str, str | None]:
     candidate = value if isinstance(value, dict) else {}
     return {
         "name": _required_text(candidate.get("name"), f"{label} name"),
-        "email": _optional_text(candidate.get("email"), maximum=320),
-        "phone": _optional_text(candidate.get("phone"), maximum=80),
+        "email": (
+            _required_text(candidate.get("email"), f"{label} email", maximum=320)
+            if require_email_phone
+            else _optional_text(candidate.get("email"), maximum=320)
+        ),
+        "phone": (
+            _required_text(candidate.get("phone"), f"{label} phone", maximum=80)
+            if require_email_phone
+            else _optional_text(candidate.get("phone"), maximum=80)
+        ),
     }
 
 
 def normalize_profile(value: Any) -> dict[str, Any]:
     candidate = value if isinstance(value, dict) else {}
-    initials = re.sub(r"[^A-Za-z0-9]", "", str(candidate.get("clientInitials") or "")).upper()
+    contact = _profile_contact(
+        candidate.get("contact"),
+        "Customer contact",
+        require_email_phone=True,
+    )
+    supplied_initials = candidate.get("clientInitials", candidate.get("client_initials"))
+    try:
+        guessed_initials = derive_client_initials(contact["name"])
+    except ReferenceDataError as exc:
+        raise SpareRequestError(str(exc)) from exc
+    initials = re.sub(r"[^A-Za-z0-9]", "", str(supplied_initials or guessed_initials)).upper()
     if not 1 <= len(initials) <= 8:
         raise SpareRequestError("Client initials must contain 1 to 8 letters or digits")
+    organization = _required_text(
+        candidate.get("customerOrganization")
+        or candidate.get("customer_organization")
+        or candidate.get("customerOrg")
+        or candidate.get("customerName")
+        or candidate.get("customer_name"),
+        "Customer organization",
+        maximum=300,
+    )
     return {
         "client_initials": initials,
-        "customer_name": _required_text(candidate.get("customerName"), "Customer name"),
+        # ``customer_name`` remains as a compatibility alias for existing
+        # Markdown/Closed.xlsx readers; it now consistently means the org.
+        "customer_name": organization,
+        "customer_organization": organization,
         "site_code": _required_text(candidate.get("siteCode"), "Site code", maximum=40).upper(),
         "site_name": _optional_text(candidate.get("siteName"), maximum=160),
         "site_address": _required_text(candidate.get("siteAddress"), "Site address", maximum=1000),
         "cloud": _required_text(candidate.get("cloud"), "Cloud", maximum=120),
         "requester": _profile_contact(candidate.get("requester"), "Requester"),
-        "contact": _profile_contact(candidate.get("contact"), "Customer contact"),
+        "contact": contact,
     }
+
+
+def _faulty_serials(raw: dict[str, Any], index: int) -> list[str]:
+    supplied = raw.get("faultySns", raw.get("faulty_sns"))
+    if supplied is None:
+        supplied = raw.get("faultySn", raw.get("faulty_sn"))
+    if supplied is None:
+        return []
+    if isinstance(supplied, list):
+        candidates = supplied
+    else:
+        # Faulty serials are deliberately newline-delimited. Commas and
+        # semicolons can be legitimate characters and are never separators.
+        candidates = re.split(r"\r?\n", str(supplied))
+    serials: list[str] = []
+    seen: set[str] = set()
+    for raw_serial in candidates:
+        serial = str(raw_serial).strip()
+        if not serial:
+            continue
+        if len(serial) > 120:
+            raise SpareRequestError(
+                f"Request line {index} faulty serials cannot exceed 120 characters each"
+            )
+        key = serial.casefold()
+        if key not in seen:
+            seen.add(key)
+            serials.append(serial)
+    if len(serials) > 1000:
+        raise SpareRequestError(f"Request line {index} cannot contain more than 1000 faulty serials")
+    return serials
 
 
 def normalize_request_lines(value: Any) -> list[dict[str, Any]]:
@@ -127,7 +270,17 @@ def normalize_request_lines(value: Any) -> list[dict[str, Any]]:
         if not isinstance(raw, dict):
             raise SpareRequestError(f"Request line {index} must be an object")
         bom = _required_text(raw.get("bom"), f"Request line {index} BOM", maximum=120)
-        raw_amount = raw.get("amount", 1)
+        slots = newline_values(raw.get("slots", raw.get("slot")))
+        if len(slots) > 1000:
+            raise SpareRequestError(f"Request line {index} cannot contain more than 1000 slots")
+        if any(len(slot) > 120 for slot in slots):
+            raise SpareRequestError(
+                f"Request line {index} slots cannot exceed 120 characters each"
+            )
+        # Explicit slots describe physical placements and therefore own the
+        # unit quantity. A multiplier remains available for slotless/manual
+        # replacement groups.
+        raw_amount = len(slots) if slots else raw.get("amount", 1)
         try:
             if isinstance(raw_amount, bool):
                 raise ValueError
@@ -149,6 +302,7 @@ def normalize_request_lines(value: Any) -> list[dict[str, Any]]:
             f"Request line {index} description",
             maximum=1000,
         )
+        faulty_sns = _faulty_serials(raw, index)
         lines.append(
             {
                 "bom": bom,
@@ -157,9 +311,14 @@ def normalize_request_lines(value: Any) -> list[dict[str, Any]]:
                 "part": _optional_text(raw.get("part"), maximum=300) or description,
                 "model": _optional_text(raw.get("model"), maximum=300),
                 "device": _optional_text(raw.get("device"), maximum=300),
-                "slot": _optional_text(raw.get("slot"), maximum=300),
-                "faulty_sn": _optional_text(raw.get("faultySn") or raw.get("faulty_sn"), maximum=300),
-                "report_date": _optional_text(raw.get("reportDate") or raw.get("report_date"), maximum=100),
+                "slots": slots,
+                "slot": "\n".join(slots) or None,
+                "faulty_sns": faulty_sns,
+                "faulty_sn": "\n".join(faulty_sns) or None,
+                "notes": _optional_text(raw.get("notes"), maximum=2000),
+                "report_date": normalize_report_date(
+                    raw.get("reportDate") or raw.get("report_date")
+                ),
                 "source_device_number": raw.get("deviceNumber"),
                 "source_part_number": raw.get("partNumber"),
             }
@@ -229,7 +388,15 @@ def next_request_id(existing: Iterable[str] = (), *, now: datetime | None = None
     raise SpareRequestError("Zeus could not allocate a unique request timestamp")
 
 
-def _new_item(request_id: str, ordinal: int, line: dict[str, Any]) -> dict[str, Any]:
+def _new_item(
+    request_id: str,
+    ordinal: int,
+    line: dict[str, Any],
+    *,
+    unit_index: int,
+) -> dict[str, Any]:
+    slots = list(line.get("slots") or [])
+    unit_slot = slots[unit_index] if unit_index < len(slots) else line.get("slot")
     return {
         "item_id": f"{request_id}-{ordinal:04d}",
         "ordinal": ordinal,
@@ -238,27 +405,47 @@ def _new_item(request_id: str, ordinal: int, line: dict[str, Any]) -> dict[str, 
         "part": line.get("part"),
         "model": line.get("model"),
         "device": line.get("device"),
-        "slot": line.get("slot"),
+        "slot": unit_slot,
+        # Fault evidence is independent of requested quantity. Keeping the
+        # complete group on each unit prevents loss when units archive at
+        # different times, without pretending a serial maps to one RMA.
+        "faulty_sns": deepcopy(line.get("faulty_sns") or []),
         "faulty_sn": line.get("faulty_sn"),
         "report_date": line.get("report_date"),
         "source_device_number": line.get("source_device_number"),
         "source_part_number": line.get("source_part_number"),
         "rma": None,
+        "rma_aliases": [],
         "delivered_bom": None,
         "new_sn": None,
         "attendance_confirmed_at": None,
         "attendance_source": None,
+        "attendance_message_key": None,
         "dispatch_at": None,
         "dispatch_source": None,
+        "dispatch_message_key": None,
         "return_condition": None,
         "return_exported_at": None,
         "return_export_filename": None,
         "return_batch_id": None,
+        "fault_tag_generated_at": None,
+        "fault_tag_generated_source": None,
+        "fault_tag_sent_at": None,
+        "fault_tag_sent_source": None,
         "rt": None,
         "warehouse_candidate_at": None,
         "warehouse_message_key": None,
+        "warehouse_evidence": [],
+        "warehouse_confirmed_at": None,
+        "warehouse_confirmation_source": None,
+        "replacement_confirmed_at": None,
+        "replacement_confirmation_source": None,
+        "completion_confirmed_at": None,
+        "completion_confirmation_source": None,
+        "fault_tag_ids": [],
+        "lifecycle_suppressions": [],
         "conflicts": [],
-        "notes": None,
+        "notes": line.get("notes"),
     }
 
 
@@ -279,17 +466,29 @@ def create_request_record(
     if normalized_source not in {"ticket", "manual", "recovered"}:
         raise SpareRequestError("Request source must be ticket, manual, or recovered")
     timestamp = created_at or iso_now()
+    report_dates = {
+        line.get("report_date") for line in lines if line.get("report_date")
+    }
+    if len(report_dates) > 1:
+        raise SpareRequestError("Every BOM in one TT must use the same original report date")
+    report_date = next(iter(report_dates), None)
     items: list[dict[str, Any]] = []
     ordinal = 1
     for line in lines:
-        for _ in range(int(line["amount"])):
-            items.append(_new_item(identifier, ordinal, line))
+        for unit_index in range(int(line["amount"])):
+            items.append(_new_item(identifier, ordinal, line, unit_index=unit_index))
             ordinal += 1
     return {
         "schema_version": SPARE_REQUEST_SCHEMA_VERSION,
         "request_id": identifier,
         "tt": ticket_id,
+        "report_date": report_date,
         "source": normalized_source,
+        "creation_method": None,
+        "request_sent_at": None,
+        "request_sent_source": None,
+        "request_sent_message_key": None,
+        "lifecycle_suppressions": [],
         "tt_editable": normalized_source == "manual",
         "spare_sr": None,
         "profile": deepcopy(profile),
@@ -327,23 +526,214 @@ def create_request_record(
     }
 
 
+def upgrade_request_record(request: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade one legacy active request without discarding ambiguous evidence."""
+
+    prepared = deepcopy(request)
+    raw_version = prepared.get("schema_version", 1)
+    try:
+        version = int(raw_version)
+    except (TypeError, ValueError) as exc:
+        raise SpareRequestError("Spare Request schema_version must be a whole number") from exc
+    if version > SPARE_REQUEST_SCHEMA_VERSION or version < 1:
+        raise SpareRequestError(f"Unsupported Spare Request schema {version}")
+    creation_method = prepared.get("creation_method")
+    if creation_method == "manual_confirmation":
+        # 3.1.6 used this name for a request that was immediately advanced to
+        # email-sent. Keep the evidence, but use the clearer legacy label.
+        prepared["creation_method"] = "legacy_manual_sent"
+    for item in prepared.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        item.setdefault("fault_tag_ids", [])
+        item.setdefault("lifecycle_suppressions", [])
+        item.setdefault("attendance_message_key", None)
+        item.setdefault("dispatch_message_key", None)
+        item.setdefault("replacement_confirmed_at", None)
+        item.setdefault("replacement_confirmation_source", None)
+        item.setdefault("completion_confirmed_at", None)
+        item.setdefault("completion_confirmation_source", None)
+        item.setdefault("warehouse_evidence", [])
+        item["rma_aliases"] = normalize_rma_aliases(
+            item.get("rma_aliases"), current=item.get("rma")
+        )
+        legacy_replacement = item.get("fault_tag_generated_at") or item.get(
+            "return_exported_at"
+        )
+        if legacy_replacement and not item.get("replacement_confirmed_at"):
+            item["replacement_confirmed_at"] = legacy_replacement
+            item["replacement_confirmation_source"] = "legacy-conflated"
+            item["lifecycle_review_required"] = True
+        source = str(item.get("warehouse_confirmation_source") or "").casefold()
+        if (
+            item.get("warehouse_confirmed_at")
+            and source == "manual"
+            and not item.get("completion_confirmed_at")
+        ):
+            item["completion_confirmed_at"] = item.get("warehouse_confirmed_at")
+            item["completion_confirmation_source"] = "legacy-manual"
+        item.setdefault("lifecycle_review_required", False)
+    prepared.setdefault("lifecycle_suppressions", [])
+    prepared.setdefault("request_sent_message_key", None)
+    prepared["schema_version"] = SPARE_REQUEST_SCHEMA_VERSION
+    return prepared
+
+
+def lifecycle_effect_suppressed(
+    target: dict[str, Any], stage: int, message_key: Any
+) -> bool:
+    key = str(message_key or "")
+    return any(
+        int(entry.get("stage") or -1) == int(stage)
+        and str(entry.get("message_key") or "") == key
+        for entry in target.get("lifecycle_suppressions", [])
+        if isinstance(entry, dict)
+    )
+
+
 def item_status(item: dict[str, Any], request: dict[str, Any]) -> str:
-    if item.get("warehouse_candidate_at"):
+    if item.get("completion_confirmed_at"):
+        return "complete"
+    if _stage_reached(item, request, 5):
         return "awaiting_user_confirmation"
-    if item.get("return_exported_at"):
-        return "awaiting_warehouse"
-    if item.get("dispatch_at"):
+    if _stage_reached(item, request, 4):
+        return "awaiting_return"
+    if _stage_reached(item, request, 3):
         return "dispatched"
-    if item.get("rma"):
+    if _stage_reached(item, request, 2):
         return "awaiting_dispatch"
     attended = bool(item.get("attendance_confirmed_at") or request.get("spare_sr"))
     return "awaiting_stock" if attended else "awaiting_confirmation"
 
 
+def _effective_email_evidence(
+    target: dict[str, Any],
+    *,
+    stage: int,
+    source: Any,
+    message_key: Any,
+) -> bool:
+    return not (
+        str(source or "").casefold().startswith("email")
+        and lifecycle_effect_suppressed(target, stage, message_key)
+    )
+
+
+def _stage_reached(item: dict[str, Any], request: dict[str, Any], stage: int) -> bool:
+    if stage == 6:
+        return bool(item.get("completion_confirmed_at"))
+    if stage == 5:
+        return bool(item.get("warehouse_candidate_at")) and _effective_email_evidence(
+            item,
+            stage=5,
+            source=item.get("warehouse_confirmation_source") or "email",
+            message_key=item.get("warehouse_message_key"),
+        )
+    if stage == 4:
+        return bool(item.get("replacement_confirmed_at"))
+    if stage == 3:
+        return bool(item.get("dispatch_at")) and _effective_email_evidence(
+            item,
+            stage=3,
+            source=item.get("dispatch_source"),
+            message_key=item.get("dispatch_message_key"),
+        )
+    if stage == 2:
+        return bool(
+            request.get("spare_sr")
+            and item.get("rma")
+            and item.get("attendance_confirmed_at")
+        ) and _effective_email_evidence(
+            item,
+            stage=2,
+            source=item.get("attendance_source"),
+            message_key=item.get("attendance_message_key"),
+        )
+    if stage == 1:
+        legacy = request.get("creation_method") == "manual_confirmation"
+        return bool(request.get("request_sent_at") or legacy) and _effective_email_evidence(
+            request,
+            stage=1,
+            source=request.get("request_sent_source") or ("manual" if legacy else None),
+            message_key=request.get("request_sent_message_key"),
+        )
+    return True
+
+
+def lifecycle_stage(item: dict[str, Any], request: dict[str, Any]) -> int:
+    """Return the furthest auditable stage reached by one physical unit."""
+
+    for stage in range(6, 0, -1):
+        if _stage_reached(item, request, stage):
+            # A later stage is only valid if all earlier lifecycle effects are
+            # still active. Rollback therefore exposes exactly one prior stage.
+            return min(
+                stage,
+                next(
+                    (
+                        earlier - 1
+                        for earlier in range(1, stage)
+                        if not _stage_reached(item, request, earlier)
+                    ),
+                    stage,
+                ),
+            )
+    return 0
+
+
+def lifecycle_stage_details(
+    item: dict[str, Any],
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    stage = lifecycle_stage(item, request)
+    timestamps = {
+        0: request.get("created_at"),
+        1: request.get("request_sent_at") or (
+            request.get("created_at")
+            if request.get("creation_method") == "manual_confirmation"
+            else None
+        ),
+        2: item.get("attendance_confirmed_at"),
+        3: item.get("dispatch_at"),
+        4: item.get("replacement_confirmed_at"),
+        5: item.get("warehouse_candidate_at"),
+        6: item.get("completion_confirmed_at"),
+    }
+    sources = {
+        0: "zeus",
+        1: request.get("request_sent_source") or (
+            "manual" if request.get("creation_method") == "manual_confirmation" else None
+        ),
+        2: item.get("attendance_source"),
+        3: item.get("dispatch_source"),
+        4: item.get("replacement_confirmation_source"),
+        5: item.get("warehouse_confirmation_source") or (
+            "email" if item.get("warehouse_candidate_at") else None
+        ),
+        6: item.get("completion_confirmation_source"),
+    }
+    return {
+        "stage": stage,
+        "label": LIFECYCLE_STAGE_LABELS[stage],
+        "timestamp": timestamps.get(stage),
+        "source": sources.get(stage),
+        "stages": [
+            {
+                "stage": index,
+                "label": label,
+                "reached": index <= stage,
+                "timestamp": timestamps.get(index),
+                "source": sources.get(index),
+            }
+            for index, label in enumerate(LIFECYCLE_STAGE_LABELS)
+        ],
+    }
+
+
 def lifecycle_color(item: dict[str, Any], request: dict[str, Any]) -> str:
-    if item.get("dispatch_at"):
+    if _stage_reached(item, request, 3):
         return "green"
-    if item.get("attendance_confirmed_at") or request.get("spare_sr"):
+    if _stage_reached(item, request, 2):
         return "grey"
     return "black"
 
@@ -364,12 +754,15 @@ def dispatch_age_days(item: dict[str, Any], *, now: datetime | None = None) -> i
     return max(0, (current.date() - dispatched.date()).days)
 
 
-def aging_color(age_days: int | None) -> str | None:
+def aging_color(
+    age_days: int | None, *, red_days: int = 20, yellow_days: int | None = 15
+) -> str | None:
     if age_days is None:
         return None
-    if age_days >= 20:
+    # The configured value is the first displayed age considered overdue.
+    if age_days >= red_days:
         return "red"
-    if age_days >= 15:
+    if yellow_days is not None and age_days >= yellow_days:
         return "yellow"
     return None
 
@@ -380,7 +773,16 @@ def request_overall_status(request: dict[str, Any]) -> str:
         return "empty"
     if len(set(statuses)) == 1:
         return statuses[0]
-    dispatched = sum(status in {"dispatched", "awaiting_warehouse", "awaiting_user_confirmation"} for status in statuses)
+    dispatched = sum(
+        status
+        in {
+            "dispatched",
+            "awaiting_return",
+            "awaiting_user_confirmation",
+            "complete",
+        }
+        for status in statuses
+    )
     confirmed = sum(status not in {"awaiting_confirmation", "awaiting_stock"} for status in statuses)
     if dispatched:
         return f"partial_dispatch_{dispatched}_of_{len(statuses)}"
@@ -442,8 +844,8 @@ def render_request_markdown(request: dict[str, Any]) -> str:
             "",
             "## Items",
             "",
-            "| Item | Requested BOM | Delivered BOM | RMA | New SN | State | Dispatch age |",
-            "|---|---|---|---|---|---|---|",
+            "| Item | Requested BOM | Delivered BOM | RMA | Previous RMAs | New SN | State | Dispatch age |",
+            "|---|---|---|---|---|---|---|---|",
         ]
     )
     for item in request.get("items", []):
@@ -456,6 +858,7 @@ def render_request_markdown(request: dict[str, Any]) -> str:
                     _display(item.get("requested_bom")),
                     _display(item.get("delivered_bom")),
                     _display(item.get("rma")),
+                    _display(", ".join(item.get("rma_aliases") or [])),
                     _display(item.get("new_sn")),
                     _display(item_status(item, request)),
                     _display(f"{age} days" if age is not None else None),
@@ -496,7 +899,14 @@ def render_request_markdown(request: dict[str, Any]) -> str:
 
 
 def validate_request_record(request: dict[str, Any], directory_name: str | None = None) -> None:
-    if request.get("schema_version") != SPARE_REQUEST_SCHEMA_VERSION:
+    raw_schema = request.get("schema_version", 1)
+    if isinstance(raw_schema, bool):
+        raise SpareRequestError("Unsupported spare-request schema")
+    try:
+        schema_version = int(raw_schema)
+    except (TypeError, ValueError) as exc:
+        raise SpareRequestError("Unsupported spare-request schema") from exc
+    if not 1 <= schema_version <= SPARE_REQUEST_SCHEMA_VERSION:
         raise SpareRequestError("Unsupported spare-request schema")
     request_id = normalize_request_id(request.get("request_id"))
     if directory_name is not None and request_id != directory_name:
@@ -507,11 +917,20 @@ def validate_request_record(request: dict[str, Any], directory_name: str | None 
     normalize_spare_sr(request.get("spare_sr"))
     if request.get("source") not in {"ticket", "manual", "recovered"}:
         raise SpareRequestError(f"Spare Request {request_id} has an invalid source")
+    if request.get("creation_method") not in {
+        None,
+        "zeus_export",
+        "zeus_create",
+        "legacy_manual_sent",
+        # Accepted only while a 3.1.6 record is waiting for maintenance.
+        "manual_confirmation",
+    }:
+        raise SpareRequestError(f"Spare Request {request_id} has an invalid creation method")
     items = request.get("items")
     if not isinstance(items, list) or not items:
         raise SpareRequestError(f"Spare Request {request_id} must contain active items")
     item_ids: set[str] = set()
-    rmas: set[str] = set()
+    rma_identities: set[str] = set()
     for item in items:
         if not isinstance(item, dict):
             raise SpareRequestError(f"Spare Request {request_id} contains an invalid item")
@@ -521,82 +940,40 @@ def validate_request_record(request: dict[str, Any], directory_name: str | None 
         item_ids.add(item_id)
         _required_text(item.get("requested_bom"), "Requested BOM", maximum=120)
         rma = normalize_rma(item.get("rma"))
-        if rma and rma in rmas:
-            raise SpareRequestError(f"Spare Request {request_id} contains duplicate RMA {rma}")
-        if rma:
-            rmas.add(rma)
+        if not isinstance(item.get("rma_aliases", []), list):
+            raise SpareRequestError(
+                f"Spare Request {request_id} has invalid RMA aliases"
+            )
+        aliases = normalize_rma_aliases(item.get("rma_aliases"), current=rma)
+        if aliases != item.get("rma_aliases", []):
+            raise SpareRequestError(
+                f"Spare Request {request_id} has non-canonical RMA aliases"
+            )
+        for identity in ([rma] if rma else []) + aliases:
+            if identity in rma_identities:
+                raise SpareRequestError(
+                    f"Spare Request {request_id} contains duplicate RMA identity {identity}"
+                )
+            rma_identities.add(identity)
         if not isinstance(item.get("conflicts", []), list):
             raise SpareRequestError(f"Spare Request {request_id} has invalid conflicts")
+        if not isinstance(item.get("fault_tag_ids", []), list):
+            raise SpareRequestError(f"Spare Request {request_id} has invalid Fault Tag links")
+        if not isinstance(item.get("lifecycle_suppressions", []), list):
+            raise SpareRequestError(
+                f"Spare Request {request_id} has invalid lifecycle suppressions"
+            )
+        if not isinstance(item.get("warehouse_evidence", []), list):
+            raise SpareRequestError(
+                f"Spare Request {request_id} has invalid warehouse evidence"
+            )
     email = request.get("email", {})
     if not isinstance(email.get("messages", []), list):
         raise SpareRequestError(f"Spare Request {request_id} has invalid email messages")
-
-
-def profiles_path(config_home: Path) -> Path:
-    return config_home / REQUEST_PROFILE_FILENAME
-
-
-def bom_catalog_path(config_home: Path) -> Path:
-    return config_home / BOM_CATALOG_FILENAME
-
-
-def load_reference_data(config_home: Path) -> dict[str, Any]:
-    profiles = load_json(
-        profiles_path(config_home),
-        {"schema_version": 1, "customers": [], "sites": [], "requesters": []},
-    )
-    boms = load_json(
-        bom_catalog_path(config_home),
-        {"schema_version": 1, "boms": []},
-    )
-    if not isinstance(profiles, dict) or not isinstance(boms, dict):
-        raise SpareRequestError("Spare-request reference data is invalid")
-    return {
-        "schemaVersion": 1,
-        "customers": deepcopy(profiles.get("customers") or []),
-        "sites": deepcopy(profiles.get("sites") or []),
-        "requesters": deepcopy(profiles.get("requesters") or []),
-        "boms": deepcopy(boms.get("boms") or []),
-    }
-
-
-def _validate_reference_list(values: Any, label: str) -> list[dict[str, Any]]:
-    if not isinstance(values, list):
-        raise SpareRequestError(f"{label} must be a list")
-    result: list[dict[str, Any]] = []
-    identifiers: set[str] = set()
-    for index, value in enumerate(values, start=1):
-        if not isinstance(value, dict):
-            raise SpareRequestError(f"{label} row {index} must be an object")
-        identifier = _required_text(value.get("id"), f"{label} row {index} ID", maximum=100)
-        if identifier in identifiers:
-            raise SpareRequestError(f"{label} contains duplicate ID {identifier}")
-        identifiers.add(identifier)
-        result.append(deepcopy(value))
-    return result
-
-
-def save_reference_data(config_home: Path, value: Any) -> dict[str, Any]:
-    candidate = value if isinstance(value, dict) else {}
-    customers = _validate_reference_list(candidate.get("customers", []), "Customers")
-    sites = _validate_reference_list(candidate.get("sites", []), "Sites")
-    requesters = _validate_reference_list(candidate.get("requesters", []), "Requesters")
-    boms = _validate_reference_list(candidate.get("boms", []), "BOM catalog")
-    config_home.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(
-        profiles_path(config_home),
-        {
-            "schema_version": 1,
-            "customers": customers,
-            "sites": sites,
-            "requesters": requesters,
-        },
-    )
-    atomic_write_json(
-        bom_catalog_path(config_home),
-        {"schema_version": 1, "boms": boms},
-    )
-    return load_reference_data(config_home)
+    if not isinstance(request.get("lifecycle_suppressions", []), list):
+        raise SpareRequestError(
+            f"Spare Request {request_id} has invalid lifecycle suppressions"
+        )
 
 
 def request_history(request: dict[str, Any], action: str, summary: dict[str, Any]) -> None:

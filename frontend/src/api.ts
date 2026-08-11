@@ -2,6 +2,11 @@ import type {
   ApiErrorShape,
   BootstrapPayload,
   DashboardPayload,
+  DatabaseMaintenanceStatus,
+  DashboardWorkspaceKey,
+  BomCatalogPayload,
+  GlobalReferenceData,
+  FaultTagDetail,
   Job,
   SpareReferenceData,
   SpareRequestDetail,
@@ -9,7 +14,9 @@ import type {
   SpareRequestView,
   SettingsPayload,
   TicketDetail,
-  WorkspaceKey,
+  UserProfile,
+  UserProfilePayload,
+  UpcomingMaintenanceWindowsPayload,
 } from "./types";
 
 let csrfToken = "";
@@ -51,8 +58,54 @@ export async function getBootstrap(): Promise<BootstrapPayload> {
   return payload;
 }
 
+export function getUserProfile(): Promise<UserProfilePayload> {
+  return request<UserProfilePayload>("/api/profile");
+}
+
+export function saveUserProfile(profile: UserProfile): Promise<UserProfilePayload> {
+  return request<UserProfilePayload>("/api/profile", {
+    method: "PATCH",
+    body: JSON.stringify({ profile }),
+  });
+}
+
+export function getGlobalReferenceData(): Promise<GlobalReferenceData> {
+  return request<GlobalReferenceData>("/api/global-data");
+}
+
+export function saveGlobalReferenceData(value: GlobalReferenceData): Promise<GlobalReferenceData> {
+  return request<GlobalReferenceData>("/api/global-data", {
+    method: "PATCH",
+    body: JSON.stringify({ value }),
+  });
+}
+
+export function importCustomerFromTicket(ticketId: string, profile?: Record<string, unknown>): Promise<{
+  data: GlobalReferenceData;
+  organizationId: string;
+  customerId: string;
+  createdOrganization: boolean;
+  createdCustomer: boolean;
+}> {
+  return request("/api/global-data/import-customer", {
+    method: "POST",
+    body: JSON.stringify({ ticketId, ...(profile ? { profile } : {}) }),
+  });
+}
+
+export function getBomCatalog(): Promise<BomCatalogPayload> {
+  return request<BomCatalogPayload>("/api/spare-requests/bom-catalog");
+}
+
+export function saveBomCatalog(value: BomCatalogPayload): Promise<BomCatalogPayload> {
+  return request<BomCatalogPayload>("/api/spare-requests/bom-catalog", {
+    method: "PATCH",
+    body: JSON.stringify({ value }),
+  });
+}
+
 export function getDashboard(
-  workspace: WorkspaceKey,
+  workspace: DashboardWorkspaceKey,
   sort: string,
   direction: "asc" | "desc",
   search: string,
@@ -94,6 +147,17 @@ export function exportSpareRequest(payload: Record<string, unknown>): Promise<{
   });
 }
 
+export function registerSpareRequest(payload: Record<string, unknown>): Promise<{
+  request: SpareRequestDetail;
+  subject: string;
+  warnings: string[];
+}> {
+  return request("/api/spare-requests/register-manual", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function reexportSpareRequest(requestId: string): Promise<{
   request: SpareRequestDetail;
   filename: string;
@@ -103,6 +167,30 @@ export function reexportSpareRequest(requestId: string): Promise<{
   return request(`/api/spare-requests/${requestId}/re-export`, {
     method: "POST",
     body: "{}",
+  });
+}
+
+export function advanceSpareRequestStage(
+  requestId: string,
+  revision: string,
+  itemId: string,
+  targetStage: number,
+): Promise<{ request: SpareRequestDetail }> {
+  return request(`/api/spare-requests/${requestId}/lifecycle/advance`, {
+    method: "POST",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision, itemId, targetStage }),
+  });
+}
+
+export function deleteSpareRequest(
+  requestId: string,
+  revision: string,
+): Promise<{ deleted: string; exportPreserved: string | null }> {
+  return request(`/api/spare-requests/${requestId}/delete`, {
+    method: "POST",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision }),
   });
 }
 
@@ -119,15 +207,65 @@ export function saveSpareRequest(
   });
 }
 
-export function exportSpareReturn(selections: Array<{ itemId: string; condition: "Faulty" | "New" }>): Promise<{
+export function exportSpareReturn(
+  selections: Array<{ itemId: string; condition: "Faulty" | "New" }>,
+  returnSite?: { code: string; name?: string; address: string; cloud: string },
+): Promise<{
   filename: string;
   path: string;
   subject: string;
   warnings: string[];
+  faultTagId: string;
+  faultTag: FaultTagDetail;
 }> {
   return request("/api/spare-requests/returns/export", {
     method: "POST",
-    body: JSON.stringify({ selections }),
+    body: JSON.stringify({ selections, ...(returnSite ? { returnSite } : {}) }),
+  });
+}
+
+export function registerSentFaultTag(
+  selections: Array<{ itemId: string; condition: "Faulty" | "New" }>,
+  returnSite?: { code: string; name?: string; address: string; cloud: string },
+): Promise<{
+  faultTagId: string;
+  faultTag: FaultTagDetail;
+}> {
+  return request("/api/spare-requests/fault-tags/register-sent", {
+    method: "POST",
+    body: JSON.stringify({ selections, ...(returnSite ? { returnSite } : {}) }),
+  });
+}
+
+export function getFaultTag(faultTagId: string): Promise<FaultTagDetail> {
+  return request<FaultTagDetail>(`/api/spare-requests/fault-tags/${faultTagId}`);
+}
+
+export function reexportFaultTag(faultTagId: string): Promise<{ faultTag: FaultTagDetail; filename: string; path: string; subject: string }> {
+  return request(`/api/spare-requests/fault-tags/${faultTagId}/re-export`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function deleteFaultTag(faultTagId: string): Promise<{ deleted: string; itemsReleased: string[]; lifecycleChanged: false }> {
+  return request(`/api/spare-requests/fault-tags/${faultTagId}/delete`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function bulkSpareLifecycle(payload: {
+  itemIds: string[];
+  action: "advance" | "rollback";
+  revisions?: Record<string, string>;
+  emailOverrideConfirmed?: boolean;
+  note?: string;
+  confirmedAt?: string;
+}): Promise<{ action: string; items: string[]; completed: string[]; closedPath: string | null }> {
+  return request("/api/spare-requests/lifecycle/bulk", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 
@@ -172,18 +310,96 @@ export function saveTicket(
   changed: boolean;
   changedFields: string[];
   ticket: TicketDetail;
-  pendingsRecreated?: {
-    created: boolean;
-    rows: number;
-    source: string;
-    restoredBackup: boolean;
-    notice: string;
-  };
 }> {
   return request(`/api/tickets/${ticketId}/local`, {
     method: "PATCH",
     headers: { "If-Match": revision },
     body: JSON.stringify({ revision, changes }),
+  });
+}
+
+export function confirmMaintenanceWindow(
+  ticketId: string,
+  revision: string,
+  plannedDate: string,
+  successful: boolean,
+  finishTime?: string | null,
+): Promise<{
+  changed: boolean;
+  changedFields: string[];
+  ticket: TicketDetail;
+}> {
+  return request(`/api/tickets/${ticketId}/maintenance-window/confirm`, {
+    method: "POST",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision, plannedDate, successful, finishTime: finishTime || null }),
+  });
+}
+
+export function getUpcomingMaintenanceWindows(): Promise<UpcomingMaintenanceWindowsPayload> {
+  return request<UpcomingMaintenanceWindowsPayload>("/api/maintenance-windows");
+}
+
+export function scheduleUpcomingMaintenanceWindow(payload: {
+  date: string;
+  startTime?: string | null;
+  ticketIds: string[];
+}): Promise<{ windowId: string; upcoming: UpcomingMaintenanceWindowsPayload }> {
+  return request("/api/maintenance-windows", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateUpcomingMaintenanceWindow(
+  windowId: string,
+  revision: string,
+  payload: { date: string; startTime?: string | null; ticketIds: string[] },
+): Promise<{ windowId: string; ticketIds: string[]; upcoming: UpcomingMaintenanceWindowsPayload }> {
+  return request(`/api/maintenance-windows/${windowId}`, {
+    method: "PATCH",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision, ...payload }),
+  });
+}
+
+export function deleteUpcomingMaintenanceWindow(
+  windowId: string,
+  revision: string,
+): Promise<{ windowId: string; ticketIds: string[]; upcoming: UpcomingMaintenanceWindowsPayload }> {
+  return request(`/api/maintenance-windows/${windowId}/delete`, {
+    method: "POST",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision }),
+  });
+}
+
+export function completeUpcomingMaintenanceWindow(
+  windowId: string,
+  revision: string,
+  outcomes: Record<string, boolean>,
+  finishTime?: string | null,
+): Promise<{ windowId: string; ticketIds: string[]; upcoming: UpcomingMaintenanceWindowsPayload }> {
+  return request(`/api/maintenance-windows/${windowId}/complete`, {
+    method: "POST",
+    headers: { "If-Match": revision },
+    body: JSON.stringify({ revision, outcomes, finishTime: finishTime || null }),
+  });
+}
+
+export function saveTicketDraftBatch(edits: Array<{
+  ticketId: string;
+  revision: string;
+  changes: Record<string, unknown>;
+}>): Promise<{
+  changed: boolean;
+  ticketIds: string[];
+  results: Array<{ ticketId: string; changed: boolean; changedFields: string[]; revision: string }>;
+  tickets: Record<string, TicketDetail>;
+}> {
+  return request("/api/tickets/bulk-local", {
+    method: "PATCH",
+    body: JSON.stringify({ edits }),
   });
 }
 
@@ -196,6 +412,34 @@ export function saveSettings(updates: Record<string, unknown>): Promise<Settings
     method: "PATCH",
     body: JSON.stringify({ updates }),
   });
+}
+
+export function getDatabaseMaintenance(): Promise<DatabaseMaintenanceStatus> {
+  return request<DatabaseMaintenanceStatus>("/api/database/maintenance");
+}
+
+export function runDatabaseMaintenance(): Promise<DatabaseMaintenanceStatus> {
+  return request<DatabaseMaintenanceStatus>("/api/database/maintenance", {
+    method: "POST",
+    body: JSON.stringify({ confirmed: true }),
+  });
+}
+
+export function migrateDataDirectory(destination: string): Promise<{
+  restartRequired: boolean;
+  oldPath: string;
+  newPath: string;
+  bytesCopied: number;
+  freeBytesAfterCopy: number;
+}> {
+  return request("/api/storage/migrate", {
+    method: "POST",
+    body: JSON.stringify({ destination }),
+  });
+}
+
+export function restartZeus(): Promise<{ restarting: boolean }> {
+  return request("/api/system/restart", { method: "POST", body: "{}" });
 }
 
 export function startJob(kind: string, payload: Record<string, unknown> = {}): Promise<{ job: Job }> {

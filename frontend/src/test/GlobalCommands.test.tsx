@@ -2,20 +2,20 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useGlobalCommands } from "../hooks/useGlobalCommands";
 
-function Harness({ queryDisabled = false }: { queryDisabled?: boolean }) {
+function Harness({ queryDisabled = false, modalOpen = false }: { queryDisabled?: boolean; modalOpen?: boolean }) {
   useGlobalCommands({
     queryDisabled,
     onSearch: handlers.search,
-    onSort: handlers.sort,
+    onSync: handlers.sync,
     onOperations: handlers.operations,
     onQuery: handlers.query,
   });
-  return <><input aria-label="Editable field" /><button type="button">Outside editing area</button></>;
+  return <><input aria-label="Editable field" /><button type="button">Outside editing area</button>{modalOpen && <div className="modal-backdrop" />}</>;
 }
 
 const handlers = {
   search: vi.fn(),
-  sort: vi.fn(),
+  sync: vi.fn(),
   operations: vi.fn(),
   query: vi.fn(),
 };
@@ -30,7 +30,7 @@ describe("global Zeus commands", () => {
     fireEvent.keyDown(window, { key: "r" });
     fireEvent.keyDown(window, { key: "f", ctrlKey: true });
 
-    expect(handlers.sort).toHaveBeenCalledOnce();
+    expect(handlers.sync).toHaveBeenCalledOnce();
     expect(handlers.operations).toHaveBeenCalledOnce();
     expect(handlers.query).toHaveBeenCalledOnce();
     expect(handlers.search).toHaveBeenCalledOnce();
@@ -43,11 +43,24 @@ describe("global Zeus commands", () => {
     fireEvent.keyDown(input, { key: "s" });
     fireEvent.keyDown(input, { key: "m" });
     fireEvent.keyDown(input, { key: "r" });
-    expect(handlers.sort).not.toHaveBeenCalled();
+    expect(handlers.sync).not.toHaveBeenCalled();
     expect(handlers.operations).not.toHaveBeenCalled();
     expect(handlers.query).not.toHaveBeenCalled();
 
     fireEvent.keyDown(window, { key: "r" });
     expect(handlers.query).not.toHaveBeenCalled();
+  });
+
+  it("does not run page commands behind a themed modal", () => {
+    render(<Harness modalOpen />);
+    fireEvent.keyDown(window, { key: "s" });
+    fireEvent.keyDown(window, { key: "m" });
+    fireEvent.keyDown(window, { key: "r" });
+    fireEvent.keyDown(window, { key: "f", ctrlKey: true });
+
+    expect(handlers.sync).not.toHaveBeenCalled();
+    expect(handlers.operations).not.toHaveBeenCalled();
+    expect(handlers.query).not.toHaveBeenCalled();
+    expect(handlers.search).not.toHaveBeenCalled();
   });
 });

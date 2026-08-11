@@ -24,12 +24,30 @@ from .dialogs import choose_directory, choose_file, open_folder
 MAX_JSON_BODY = 1_000_000
 TICKET_ROUTE = re.compile(r"^/api/tickets/(\d{8})$")
 TICKET_LOCAL_ROUTE = re.compile(r"^/api/tickets/(\d{8})/local$")
+TICKET_MW_CONFIRM_ROUTE = re.compile(r"^/api/tickets/(\d{8})/maintenance-window/confirm$")
+UPCOMING_MW_IDENTIFIER = r"MW-(?:\d{12}-[A-F0-9]{4}|SR-\d{8})"
+UPCOMING_MW_ROUTE = re.compile(rf"^/api/maintenance-windows/({UPCOMING_MW_IDENTIFIER})$")
+UPCOMING_MW_COMPLETE_ROUTE = re.compile(
+    rf"^/api/maintenance-windows/({UPCOMING_MW_IDENTIFIER})/complete$"
+)
+UPCOMING_MW_DELETE_ROUTE = re.compile(
+    rf"^/api/maintenance-windows/({UPCOMING_MW_IDENTIFIER})/delete$"
+)
 JOB_CANCEL_ROUTE = re.compile(r"^/api/jobs/([a-f0-9]{32})/cancel$")
 MOP_DOWNLOAD_ROUTE = re.compile(r"^/api/tickets/(\d{8})/mops/([^/]+)$")
 SPARE_REQUEST_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})$")
 SPARE_REQUEST_PREFILL_ROUTE = re.compile(r"^/api/spare-requests/prefill/(\d{8})$")
 SPARE_REQUEST_REEXPORT_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/re-export$")
 SPARE_REQUEST_RESOLVE_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/conflicts/resolve$")
+SPARE_REQUEST_ADVANCE_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/lifecycle/advance$")
+SPARE_REQUEST_DELETE_ROUTE = re.compile(r"^/api/spare-requests/(\d{12})/delete$")
+FAULT_TAG_ROUTE = re.compile(r"^/api/spare-requests/fault-tags/(FT-\d{12})$")
+FAULT_TAG_REEXPORT_ROUTE = re.compile(
+    r"^/api/spare-requests/fault-tags/(FT-\d{12})/re-export$"
+)
+FAULT_TAG_DELETE_ROUTE = re.compile(
+    r"^/api/spare-requests/fault-tags/(FT-\d{12})/delete$"
+)
 
 
 class ZeusWebServer(ThreadingHTTPServer):
@@ -47,6 +65,7 @@ class ZeusWebServer(ThreadingHTTPServer):
         instance_id: str,
         control_token: str | None = None,
         shutdown_callback: Callable[[], None] | None = None,
+        restart_callback: Callable[[], None] | None = None,
     ):
         host, _ = address
         if host != "127.0.0.1":
@@ -57,6 +76,7 @@ class ZeusWebServer(ThreadingHTTPServer):
         self.csrf_token = secrets.token_urlsafe(32)
         self.control_token = control_token or secrets.token_urlsafe(48)
         self.shutdown_callback = shutdown_callback
+        self.restart_callback = restart_callback
         self._shutdown_requested = threading.Event()
         super().__init__(address, ZeusRequestHandler)
 
@@ -82,6 +102,12 @@ class ZeusWebServer(ThreadingHTTPServer):
             self.shutdown()
 
         threading.Thread(target=stop, name="zeus-http-shutdown", daemon=True).start()
+
+    def request_restart(self) -> None:
+        if self.restart_callback is not None:
+            self.restart_callback()
+        else:
+            self.request_shutdown()
 
 
 class ZeusRequestHandler(BaseHTTPRequestHandler):
@@ -169,6 +195,19 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             )
             self._send_json(HTTPStatus.OK, payload)
             return
+        if path == "/api/profile":
+            self._send_json(HTTPStatus.OK, self.server.service.user_profile())
+            return
+        if not path.startswith("/api/"):
+            self._send_static(path)
+            return
+        self.server.service.require_setup()
+        if path == "/api/global-data":
+            self._send_json(HTTPStatus.OK, self.server.service.global_reference_data())
+            return
+        if path == "/api/spare-requests/bom-catalog":
+            self._send_json(HTTPStatus.OK, self.server.service.bom_catalog())
+            return
         if path == "/api/dashboard":
             workspace = query.get("workspace", ["service-requests"])[0]
             default_sort = "tt" if workspace == "spare-requests" else "sr" if workspace == "spare-parts" else "report"
@@ -185,6 +224,12 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                     search=search,
                     view=view,
                 ),
+            )
+            return
+        if path == "/api/maintenance-windows":
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.upcoming_maintenance_windows(),
             )
             return
         if path == "/api/spare-requests/reference-data":
@@ -204,12 +249,25 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 self.server.service.spare_request(spare_request_match.group(1)),
             )
             return
+        fault_tag_match = FAULT_TAG_ROUTE.fullmatch(path)
+        if fault_tag_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.fault_tag(fault_tag_match.group(1)),
+            )
+            return
         ticket_match = TICKET_ROUTE.fullmatch(path)
         if ticket_match:
             self._send_json(HTTPStatus.OK, self.server.service.ticket(ticket_match.group(1)))
             return
         if path == "/api/settings":
             self._send_json(HTTPStatus.OK, self.server.service.get_settings())
+            return
+        if path == "/api/database/maintenance":
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.database_maintenance_status(),
+            )
             return
         if path == "/api/jobs":
             self._send_json(HTTPStatus.OK, {"jobs": self.server.service.jobs.snapshots()})
@@ -246,6 +304,90 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
             return
         self._require_browser_mutation()
         payload = self._read_json()
+        if path == "/api/system/shutdown":
+            self._send_json(HTTPStatus.ACCEPTED, {"stopping": True})
+            self.server.request_shutdown()
+            return
+        if path == "/api/system/restart":
+            self._send_json(HTTPStatus.ACCEPTED, {"restarting": True})
+            threading.Timer(0.15, self.server.request_restart).start()
+            return
+        self.server.service.require_setup()
+        if path == "/api/database/maintenance":
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.run_database_maintenance(
+                    confirmed=payload.get("confirmed") is True
+                ),
+            )
+            return
+        if path == "/api/maintenance-windows":
+            ticket_ids = payload.get("ticketIds")
+            if not isinstance(ticket_ids, list):
+                raise ValidationError("Service Request selection must be a list")
+            self._send_json(
+                HTTPStatus.CREATED,
+                self.server.service.schedule_upcoming_maintenance_window(
+                    planned_date=payload.get("date"),
+                    start_time=payload.get("startTime"),
+                    ticket_ids=ticket_ids,
+                ),
+            )
+            return
+        upcoming_delete_match = UPCOMING_MW_DELETE_ROUTE.fullmatch(path)
+        if upcoming_delete_match:
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.delete_upcoming_maintenance_window(
+                    upcoming_delete_match.group(1),
+                    expected_revision=expected_revision,
+                ),
+            )
+            return
+        upcoming_complete_match = UPCOMING_MW_COMPLETE_ROUTE.fullmatch(path)
+        if upcoming_complete_match:
+            outcomes = payload.get("outcomes")
+            if not isinstance(outcomes, dict):
+                raise ValidationError("Review every linked Service Request")
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.complete_upcoming_maintenance_window(
+                    upcoming_complete_match.group(1),
+                    expected_revision=expected_revision,
+                    outcomes=outcomes,
+                    finish_time=payload.get("finishTime"),
+                ),
+            )
+            return
+        maintenance_window_match = TICKET_MW_CONFIRM_ROUTE.fullmatch(path)
+        if maintenance_window_match:
+            successful = payload.get("successful")
+            if not isinstance(successful, bool):
+                raise ValidationError("MW outcome must be successful or incomplete")
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.confirm_maintenance_window(
+                    maintenance_window_match.group(1),
+                    planned_date=str(payload.get("plannedDate") or ""),
+                    successful=successful,
+                    expected_revision=expected_revision,
+                    finish_time=(
+                        str(payload.get("finishTime"))
+                        if payload.get("finishTime") not in (None, "")
+                        else None
+                    ),
+                ),
+            )
+            return
         if path.startswith("/api/jobs/"):
             cancel_match = JOB_CANCEL_ROUTE.fullmatch(path)
             if cancel_match:
@@ -262,9 +404,24 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 {"job": self.server.service.submit_job(kind, payload)},
             )
             return
-        if path == "/api/system/shutdown":
-            self._send_json(HTTPStatus.ACCEPTED, {"stopping": True})
-            self.server.request_shutdown()
+        if path == "/api/storage/migrate":
+            result = self.server.service.migrate_data_directory(
+                str(payload.get("destination") or "")
+            )
+            self._send_json(HTTPStatus.CREATED, result)
+            threading.Timer(0.2, self.server.request_restart).start()
+            return
+        if path == "/api/global-data/import-customer":
+            profile = payload.get("profile")
+            if profile is not None and not isinstance(profile, dict):
+                raise ValidationError("Customer profile must be an object")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.import_customer_from_ticket(
+                    str(payload.get("ticketId") or ""),
+                    profile_override=profile,
+                ),
+            )
             return
         if path == "/api/dialogs/path":
             self._path_dialog(payload)
@@ -287,6 +444,12 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 self.server.service.export_spare_request(payload),
             )
             return
+        if path == "/api/spare-requests/register-manual":
+            self._send_json(
+                HTTPStatus.CREATED,
+                self.server.service.register_spare_request(payload),
+            )
+            return
         reexport_match = SPARE_REQUEST_REEXPORT_ROUTE.fullmatch(path)
         if reexport_match:
             self._send_json(
@@ -307,13 +470,109 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        advance_match = SPARE_REQUEST_ADVANCE_ROUTE.fullmatch(path)
+        if advance_match:
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.advance_spare_request_stage(
+                    advance_match.group(1),
+                    item_id=str(payload.get("itemId") or ""),
+                    target_stage=int(payload.get("targetStage", -1)),
+                    expected_revision=expected_revision,
+                ),
+            )
+            return
+        delete_match = SPARE_REQUEST_DELETE_ROUTE.fullmatch(path)
+        if delete_match:
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.delete_unconfirmed_spare_request(
+                    delete_match.group(1),
+                    expected_revision=expected_revision,
+                ),
+            )
+            return
         if path == "/api/spare-requests/returns/export":
             selections = payload.get("selections")
             if not isinstance(selections, list):
                 raise ValidationError("Return selections must be a list")
             self._send_json(
                 HTTPStatus.CREATED,
-                self.server.service.export_spare_return(selections),
+                self.server.service.export_spare_return(
+                    selections,
+                    return_site=(
+                        payload.get("returnSite")
+                        if isinstance(payload.get("returnSite"), dict)
+                        else None
+                    ),
+                ),
+            )
+            return
+        if path == "/api/spare-requests/fault-tags/register-sent":
+            selections = payload.get("selections")
+            if not isinstance(selections, list):
+                raise ValidationError("Fault Tag selections must be a list")
+            self._send_json(
+                HTTPStatus.CREATED,
+                self.server.service.register_sent_fault_tag(
+                    selections,
+                    return_site=(
+                        payload.get("returnSite")
+                        if isinstance(payload.get("returnSite"), dict)
+                        else None
+                    ),
+                ),
+            )
+            return
+        if path == "/api/spare-requests/lifecycle/bulk":
+            item_ids = payload.get("itemIds")
+            if not isinstance(item_ids, list):
+                raise ValidationError("Lifecycle item IDs must be a list")
+            revisions = payload.get("revisions") or {}
+            if not isinstance(revisions, dict):
+                raise ValidationError("Lifecycle revisions must be an object")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.bulk_spare_lifecycle(
+                    item_ids=item_ids,
+                    action=str(payload.get("action") or ""),
+                    expected_revisions={
+                        str(key): str(value) for key, value in revisions.items()
+                    },
+                    email_override_confirmed=bool(
+                        payload.get("emailOverrideConfirmed")
+                    ),
+                    note=str(payload.get("note") or ""),
+                    confirmed_at=(
+                        str(payload.get("confirmedAt"))
+                        if payload.get("confirmedAt")
+                        else None
+                    ),
+                ),
+            )
+            return
+        fault_tag_reexport_match = FAULT_TAG_REEXPORT_ROUTE.fullmatch(path)
+        if fault_tag_reexport_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.reexport_fault_tag(
+                    fault_tag_reexport_match.group(1)
+                ),
+            )
+            return
+        fault_tag_delete_match = FAULT_TAG_DELETE_ROUTE.fullmatch(path)
+        if fault_tag_delete_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.delete_fault_tag(
+                    fault_tag_delete_match.group(1)
+                ),
             )
             return
         if path == "/api/spare-requests/archive":
@@ -345,6 +604,62 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
         self._require_browser_mutation()
         path = urlsplit(self.path).path
         payload = self._read_json()
+        if path == "/api/profile":
+            value = payload.get("profile")
+            if not isinstance(value, dict):
+                raise ValidationError("Profile data must be an object")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.save_user_profile(value),
+            )
+            return
+        self.server.service.require_setup()
+        if path == "/api/global-data":
+            value = payload.get("value")
+            if not isinstance(value, dict):
+                raise ValidationError("Global manager data must be an object")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.save_global_reference_data(value),
+            )
+            return
+        if path == "/api/spare-requests/bom-catalog":
+            value = payload.get("value")
+            if not isinstance(value, dict):
+                raise ValidationError("BOM catalog data must be an object")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.save_bom_catalog(value),
+            )
+            return
+        if path == "/api/tickets/bulk-local":
+            edits = payload.get("edits")
+            if not isinstance(edits, list):
+                raise ValidationError("Protected draft updates must be a list")
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.edit_tickets(edits),
+            )
+            return
+        upcoming_match = UPCOMING_MW_ROUTE.fullmatch(path)
+        if upcoming_match:
+            ticket_ids = payload.get("ticketIds")
+            if not isinstance(ticket_ids, list):
+                raise ValidationError("Service Request selection must be a list")
+            expected_revision = str(
+                self.headers.get("If-Match") or payload.get("revision") or ""
+            ).strip('"')
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.service.update_upcoming_maintenance_window(
+                    upcoming_match.group(1),
+                    expected_revision=expected_revision,
+                    planned_date=payload.get("date"),
+                    start_time=payload.get("startTime"),
+                    ticket_ids=ticket_ids,
+                ),
+            )
+            return
         ticket_match = TICKET_LOCAL_ROUTE.fullmatch(path)
         if ticket_match:
             changes = payload.get("changes")
@@ -461,14 +776,14 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
     def _path_dialog(self, payload: dict[str, Any]) -> None:
         key = str(payload.get("setting") or "")
         spec = SETTING_SPEC_BY_KEY.get(key)
-        if spec is None or spec.kind not in {"directory", "outlook_store", "xlsx_template"}:
+        if spec is None or spec.kind not in {"directory", "data_directory", "outlook_store", "xlsx_template"}:
             raise ValidationError("Choose a path setting that supports Browse")
         current = self.server.service.store.config
         parts = key.split(".")
         value: Any = current
         for part in parts:
             value = value.get(part) if isinstance(value, dict) else None
-        initial = Path(str(value)).expanduser() if value else None
+        initial = self.server.service.store.root if spec.kind == "data_directory" else Path(str(value)).expanduser() if value else None
         if initial and initial.is_file():
             initial = initial.parent
         if spec.kind == "outlook_store":
@@ -496,7 +811,11 @@ class ZeusRequestHandler(BaseHTTPRequestHandler):
         if spec is None or not key.startswith("paths."):
             raise ValidationError("Unknown path setting")
         short_key = key.split(".", 1)[1]
-        path = self.server.service.store.configured_directory(short_key)
+        path = (
+            self.server.service.store.root
+            if short_key == "data_directory"
+            else self.server.service.store.configured_directory(short_key)
+        )
         if path is None:
             raise ValidationError(f"{spec.label} is not configured")
         if path.is_file():

@@ -27,9 +27,9 @@ from .tickets import PENDING_COLUMNS
 from .utils import iso_now, parse_date, parse_datetime, sha256_file
 
 
-REQUEST_SHEET = "Huawei Spare Parts Service A. F"
+REQUEST_SHEET = "Spare Parts Request"
 FAULTY_TAG_SHEET = "Faulty Tag Template"
-RETURN_SHEET = "FaultTag 2023"
+RETURN_SHEET = "Fault Tag Return"
 SPARE_ARCHIVE_SHEET = "Spare Requests"
 SPARE_ARCHIVE_EMAIL_SHEET = "Spare Request Emails"
 
@@ -38,6 +38,7 @@ LIGHT_GREEN = "D9EAD3"
 ARCHIVE_HEADERS = [
     "TT",
     "RMA",
+    "RMA Aliases",
     "Email inactivity days",
     "Emails received",
     "Emails sent",
@@ -68,6 +69,9 @@ ARCHIVE_HEADERS = [
     "Source",
     "Item ID",
 ]
+LEGACY_ARCHIVE_HEADERS = [
+    header for header in ARCHIVE_HEADERS if header != "RMA Aliases"
+]
 ARCHIVE_EMAIL_HEADERS = [
     "TT",
     "Spare SR",
@@ -87,19 +91,34 @@ class SpareRequestWorkbookError(RuntimeError):
     pass
 
 
-def _require_template(path: Path, expected_sheets: list[str]) -> Path:
+def archived_rma_values(row: dict[str, Any]) -> set[str]:
+    """Return every current or historical RMA reserved by an archive row."""
+
+    candidates = [row.get("RMA")]
+    candidates.extend(re.split(r"[\r\n,;]+", str(row.get("RMA Aliases") or "")))
+    return {
+        normalized
+        for candidate in candidates
+        if str(candidate or "").strip()
+        for normalized in [normalize_rma(candidate, required=True)]
+        if normalized
+    }
+
+
+def _require_template(path: Path, expected_sheet_count: int) -> tuple[Path, tuple[str, ...]]:
     resolved = path.expanduser().resolve()
     if not resolved.is_file() or resolved.suffix.lower() != ".xlsx":
         raise SpareRequestWorkbookError(f"Spare Request template was not found: {resolved}")
     workbook = load_workbook(resolved, read_only=True, data_only=False)
     try:
-        if workbook.sheetnames != expected_sheets:
+        sheet_names = tuple(workbook.sheetnames)
+        if len(sheet_names) != expected_sheet_count:
             raise SpareRequestWorkbookError(
-                "Template worksheet order changed. Expected: " + ", ".join(expected_sheets)
+                f"Template must contain exactly {expected_sheet_count} worksheet(s)"
             )
     finally:
         workbook.close()
-    return resolved
+    return resolved, sheet_names
 
 
 def _shifted_range(value: str, row_offset: int) -> str:
@@ -213,7 +232,11 @@ def _populate_request_sheet(worksheet: Any, request: dict[str, Any]) -> None:
     profile = request.get("profile", {})
     requester = profile.get("requester", {})
     contact = profile.get("contact", {})
-    _set_merged_value(worksheet, "G2", profile.get("customer_name"))
+    _set_merged_value(
+        worksheet,
+        "G2",
+        profile.get("customer_organization") or profile.get("customer_name"),
+    )
     _set_merged_value(worksheet, "J2", requester.get("name"))
     _set_merged_value(worksheet, "G4", _request_applied_date(request))
     worksheet["G4"].number_format = "yyyy-mm-dd"
@@ -244,19 +267,73 @@ def _populate_request_sheet(worksheet: Any, request: dict[str, Any]) -> None:
         worksheet.cell(row, 2).value = line.get("bom")
         worksheet.cell(row, 3).value = int(line.get("amount") or 1)
         worksheet.cell(row, 4).value = request_description(line)
-        worksheet.cell(row, 6).value = line.get("faulty_sn")
+        serials = list(line.get("faulty_sns") or [])
+        if not serials and line.get("faulty_sn"):
+            serials = [
+                value.strip()
+                for value in re.split(r"\r?\n", str(line.get("faulty_sn")))
+                if value.strip()
+            ]
+        serial_cell = worksheet.cell(row, 6)
+        serial_cell.value = "\n".join(serials) or None
+        alignment = copy(serial_cell.alignment)
+        alignment.wrap_text = True
+        serial_cell.alignment = alignment
+
+
+def _faulty_tag_rows(request: dict[str, Any]) -> list[dict[str, Any]]:
+    """Create exactly one Fault Tag row for each requested physical unit.
+
+    Diagnostic component serials describe why that unit is being replaced;
+    they do not create additional replacement units or future RMAs.
+    """
+
+    items = list(request.get("items") or [])
+    if items:
+        return [
+            {
+                "bom": item.get("requested_bom"),
+                "description": item.get("requested_description"),
+                "part": item.get("part"),
+                "model": item.get("model"),
+                "device": item.get("device"),
+                "slot": item.get("slot"),
+                "faulty_sn": item.get("faulty_sn"),
+                "report_date": item.get("report_date"),
+                "notes": item.get("notes"),
+            }
+            for item in items
+        ]
+
+    rows: list[dict[str, Any]] = []
+    for line in request.get("request_lines") or []:
+        serials = list(line.get("faulty_sns") or [])
+        if not serials and line.get("faulty_sn"):
+            serials = [
+                value.strip()
+                for value in re.split(r"\r?\n", str(line.get("faulty_sn")))
+                if value.strip()
+            ]
+        combined_serials = "\n".join(serials) or None
+        for _ in range(max(1, int(line.get("amount") or 1))):
+            rows.append({**line, "faulty_sn": combined_serials})
+    return rows
 
 
 def _populate_faulty_tag_sheet(worksheet: Any, request: dict[str, Any]) -> None:
     profile = request.get("profile", {})
     requester = profile.get("requester", {})
-    _set_merged_value(worksheet, "G2", profile.get("customer_name"))
+    _set_merged_value(
+        worksheet,
+        "G2",
+        profile.get("customer_organization") or profile.get("customer_name"),
+    )
     _set_merged_value(worksheet, "K2", request.get("spare_sr"))
     _set_merged_value(worksheet, "G4", requester.get("name"))
     _set_merged_value(worksheet, "K4", requester.get("phone"))
     _set_merged_value(worksheet, "G6", requester.get("email"))
     _set_merged_value(worksheet, "K6", request.get("tt"))
-    items = list(request.get("items") or [])
+    rows = _faulty_tag_rows(request)
     # The supplied first item row contains broken #REF! formulas. Match the
     # valid row-14 formatting, then write every item as a direct value.
     _copy_two_row_block(worksheet, 14, 12)
@@ -264,27 +341,27 @@ def _populate_faulty_tag_sheet(worksheet: Any, request: dict[str, Any]) -> None:
         worksheet,
         first_row=12,
         existing_blocks=5,
-        required_blocks=len(items),
+        required_blocks=len(rows),
         insert_at=22,
         style_source_row=20,
     )
-    for index in range(max(5, len(items))):
+    for index in range(max(5, len(rows))):
         row = 12 + index * 2
         for column in (2, 4, 6, 7, 8, 9, 10, 12, 13):
             worksheet.cell(row, column).value = None
-    for index, item in enumerate(items):
+    for index, item in enumerate(rows):
         row = 12 + index * 2
-        worksheet.cell(row, 2).value = item.get("requested_bom")
-        worksheet.cell(row, 4).value = request_description(
-            {
-                "description": item.get("requested_description"),
-                "part": item.get("part"),
-                "model": item.get("model"),
-                "device": item.get("device"),
-                "slot": item.get("slot"),
-            }
-        )
-        worksheet.cell(row, 6).value = item.get("faulty_sn")
+        worksheet.cell(row, 2).value = item.get("bom")
+        description_cell = worksheet.cell(row, 4)
+        description_cell.value = request_description(item)
+        description_alignment = copy(description_cell.alignment)
+        description_alignment.wrap_text = True
+        description_cell.alignment = description_alignment
+        serial_cell = worksheet.cell(row, 6)
+        serial_cell.value = item.get("faulty_sn")
+        serial_alignment = copy(serial_cell.alignment)
+        serial_alignment.wrap_text = True
+        serial_cell.alignment = serial_alignment
         worksheet.cell(row, 7).value = profile.get("site_code")
         fault_date = _excel_date(item.get("report_date"))
         worksheet.cell(row, 8).value = fault_date
@@ -316,12 +393,16 @@ def _atomic_save(workbook: Any, destination: Path) -> Path:
     return final
 
 
-def _validate_initial_export(path: Path, request: dict[str, Any]) -> None:
+def _validate_initial_export(
+    path: Path,
+    request: dict[str, Any],
+    expected_sheet_names: tuple[str, ...],
+) -> None:
     workbook = load_workbook(path, read_only=False, data_only=False, keep_links=True)
     try:
-        if workbook.sheetnames != [REQUEST_SHEET, FAULTY_TAG_SHEET]:
+        if workbook.sheetnames != list(expected_sheet_names):
             raise SpareRequestWorkbookError("Generated request workbook changed template sheets")
-        application = workbook[REQUEST_SHEET]
+        application = workbook.worksheets[0]
         exported_boms = [
             str(application.cell(15 + index * 2, 2).value or "")
             for index in range(len(request.get("request_lines") or []))
@@ -346,17 +427,17 @@ def export_initial_request(
     request: dict[str, Any],
     filename: str,
 ) -> Path:
-    template = _require_template(template_path, [REQUEST_SHEET, FAULTY_TAG_SHEET])
+    template, sheet_names = _require_template(template_path, 2)
     workbook = load_workbook(template, read_only=False, data_only=False, keep_links=True)
     try:
-        _populate_request_sheet(workbook[REQUEST_SHEET], request)
-        _populate_faulty_tag_sheet(workbook[FAULTY_TAG_SHEET], request)
+        _populate_request_sheet(workbook.worksheets[0], request)
+        _populate_faulty_tag_sheet(workbook.worksheets[1], request)
         destination = export_root.expanduser().resolve() / "Requests" / filename
         final = _atomic_save(workbook, destination)
     finally:
         workbook.close()
     try:
-        _validate_initial_export(final, request)
+        _validate_initial_export(final, request, sheet_names)
     except Exception:
         final.unlink(missing_ok=True)
         raise
@@ -384,33 +465,49 @@ def export_return_workbook(
     export_root: Path,
     selections: list[tuple[dict[str, Any], dict[str, Any], str]],
     *,
+    fault_tag_id: str | None = None,
+    return_site: dict[str, Any] | None = None,
     today: date | None = None,
 ) -> dict[str, Any]:
     if not selections:
         raise SpareRequestWorkbookError("Choose at least one RMA to return")
     first_request = selections[0][0]
     first_profile = first_request.get("profile", {})
-    site = str(first_profile.get("site_code") or "").strip()
-    cloud = str(first_profile.get("cloud") or "").strip()
+    supplied_site = return_site if isinstance(return_site, dict) else {}
+    site = str(supplied_site.get("code") or first_profile.get("site_code") or "").strip()
+    cloud = str(supplied_site.get("cloud") or first_profile.get("cloud") or "").strip()
+    address = str(
+        supplied_site.get("address") or first_profile.get("site_address") or ""
+    ).strip()
     if not site or not cloud:
         raise SpareRequestWorkbookError("Every return item requires a site and cloud")
+    if not address:
+        raise SpareRequestWorkbookError("Every return requires an actual return-site address")
+    source_sites = {
+        (
+            str(request.get("profile", {}).get("site_code") or "").strip(),
+            str(request.get("profile", {}).get("cloud") or "").strip(),
+        )
+        for request, _, _ in selections
+    }
+    if len(source_sites) > 1 and not return_site:
+        raise SpareRequestWorkbookError(
+            "Items come from different sites. Choose the actual return site before export."
+        )
     for request, item, condition in selections:
-        profile = request.get("profile", {})
-        if str(profile.get("site_code") or "").strip() != site or str(profile.get("cloud") or "").strip() != cloud:
-            raise SpareRequestWorkbookError("One return workbook can contain only one site and cloud")
         normalize_spare_sr(request.get("spare_sr"), required=True)
         normalize_rma(item.get("rma"), required=True)
         if condition not in {"Faulty", "New"}:
             raise SpareRequestWorkbookError("Return condition must be Faulty or New")
 
-    template = _require_template(template_path, [RETURN_SHEET])
+    template, sheet_names = _require_template(template_path, 1)
     workbook = load_workbook(template, read_only=False, data_only=False, keep_links=True)
     warnings: list[str] = []
     try:
-        worksheet = workbook[RETURN_SHEET]
+        worksheet = workbook.worksheets[0]
         contact = first_profile.get("contact", {})
         worksheet["A2"] = f"*Customer’s Name：{first_profile.get('customer_name') or ''}"
-        worksheet["B3"] = first_profile.get("site_address")
+        worksheet["B3"] = address
         worksheet["B4"] = contact.get("name")
         worksheet["B5"] = contact.get("phone")
         item_count = len(selections)
@@ -452,7 +549,8 @@ def export_return_workbook(
 
         day = today or datetime.now(ECUADOR_TIMEZONE).date()
         rmas = [str(item.get("rma")) for _, item, _ in selections]
-        filename = "–".join(["FT", cloud, day.strftime("%Y%m%d"), *rmas]) + ".xlsx"
+        tracking = str(fault_tag_id or f"FT-{day.strftime('%y%m%d')}000000")
+        filename = "–".join([tracking, cloud, day.strftime("%Y%m%d"), *rmas]) + ".xlsx"
         destination = export_root.expanduser().resolve() / "Returns" / filename
         final = _atomic_save(workbook, destination)
     finally:
@@ -460,9 +558,10 @@ def export_return_workbook(
 
     check = load_workbook(final, read_only=True, data_only=False)
     try:
-        if check.sheetnames != [RETURN_SHEET]:
+        if check.sheetnames != list(sheet_names):
             raise SpareRequestWorkbookError("Generated return workbook changed template sheets")
-        values = [check[RETURN_SHEET].cell(8 + index, 9).value for index in range(len(selections))]
+        worksheet = check.worksheets[0]
+        values = [worksheet.cell(8 + index, 9).value for index in range(len(selections))]
         if values != rmas:
             raise SpareRequestWorkbookError("Generated return workbook failed RMA verification")
     finally:
@@ -470,7 +569,7 @@ def export_return_workbook(
     return {
         "path": str(final),
         "filename": final.name,
-        "subject": f"[FAULT TAG] [{site}] RMA " + " ".join(rmas),
+        "subject": f"[FAULT TAG {tracking}] [{site}] RMA " + " ".join(rmas),
         "warnings": warnings,
     }
 
@@ -491,6 +590,23 @@ def _ensure_archive_sheet(workbook: Any, name: str, headers: list[str]) -> Any:
     if name in workbook.sheetnames:
         worksheet = workbook[name]
         current = [str(cell.value or "").strip() for cell in worksheet[1]]
+        if (
+            name == SPARE_ARCHIVE_SHEET
+            and headers == ARCHIVE_HEADERS
+            and current == LEGACY_ARCHIVE_HEADERS
+        ):
+            alias_column = ARCHIVE_HEADERS.index("RMA Aliases") + 1
+            worksheet.insert_cols(alias_column)
+            source = worksheet.cell(1, alias_column - 1)
+            target = worksheet.cell(1, alias_column)
+            target.value = "RMA Aliases"
+            target._style = copy(source._style)
+            target.alignment = copy(source.alignment)
+            target.protection = copy(source.protection)
+            worksheet.auto_filter.ref = (
+                f"A1:{get_column_letter(len(ARCHIVE_HEADERS))}1"
+            )
+            current = [str(cell.value or "").strip() for cell in worksheet[1]]
         if current != headers:
             raise SpareRequestWorkbookError(f"{name} in Closed.xlsx has an unsupported schema")
         return worksheet
@@ -550,6 +666,7 @@ def append_archived_item(
             row = {
                 "TT": request.get("tt"),
                 "RMA": item.get("rma"),
+                "RMA Aliases": "\n".join(item.get("rma_aliases") or []) or None,
                 "Email inactivity days": _archive_email_inactivity(request, timestamp),
                 "Emails received": int(email.get("total_received") or 0),
                 "Emails sent": int(email.get("total_sent") or 0),
@@ -636,7 +753,10 @@ def read_archived_items(closed_path: Path) -> list[dict[str, Any]]:
             return []
         worksheet = workbook[SPARE_ARCHIVE_SHEET]
         headers = [str(cell.value or "").strip() for cell in worksheet[1]]
-        if headers != ARCHIVE_HEADERS:
+        if tuple(headers) not in {
+            tuple(ARCHIVE_HEADERS),
+            tuple(LEGACY_ARCHIVE_HEADERS),
+        }:
             raise SpareRequestWorkbookError(
                 f"{SPARE_ARCHIVE_SHEET} in Closed.xlsx has an unsupported schema"
             )
@@ -644,7 +764,9 @@ def read_archived_items(closed_path: Path) -> list[dict[str, Any]]:
         for values in worksheet.iter_rows(min_row=2, values_only=True):
             if not any(value not in (None, "") for value in values):
                 continue
-            rows.append(dict(zip(headers, values)))
+            row = dict(zip(headers, values))
+            row.setdefault("RMA Aliases", None)
+            rows.append(row)
         return rows
     finally:
         workbook.close()
@@ -666,7 +788,10 @@ def purge_archived_items(
             return {"removed": 0, "remaining": 0}
         archive = workbook[SPARE_ARCHIVE_SHEET]
         headers = [str(cell.value or "").strip() for cell in archive[1]]
-        if headers != ARCHIVE_HEADERS:
+        if tuple(headers) not in {
+            tuple(ARCHIVE_HEADERS),
+            tuple(LEGACY_ARCHIVE_HEADERS),
+        }:
             raise SpareRequestWorkbookError(
                 f"{SPARE_ARCHIVE_SHEET} in Closed.xlsx has an unsupported schema"
             )

@@ -1,6 +1,7 @@
 export type Risk = "none" | "grey" | "yellow" | "red";
-export type WorkspaceKey = "service-requests" | "spare-requests";
-export type SpareRequestView = "active" | "eligible" | "completed";
+export type WorkspaceKey = "service-requests" | "spare-requests" | "upcoming";
+export type DashboardWorkspaceKey = Exclude<WorkspaceKey, "upcoming">;
+export type SpareRequestView = "active" | "eligible" | "fault-tags" | "completed";
 
 export interface ColumnDefinition {
   key: string;
@@ -10,12 +11,86 @@ export interface ColumnDefinition {
   flex?: boolean;
 }
 
+export type MaintenanceWindowStatus = "planned" | "unplanned" | "incomplete" | "completed" | "no_visibility";
+
+export interface MaintenanceWindowAttempt {
+  date: string;
+  outcome: "completed" | "incomplete";
+  confirmed_at: string | null;
+  source: string;
+  start_time?: string | null;
+  finish_time?: string | null;
+  finish_date?: string | null;
+  window_id?: string | null;
+}
+
+export interface MaintenanceWindowSummary {
+  schemaVersion: number;
+  status: MaintenanceWindowStatus;
+  date: string | null;
+  startTime?: string | null;
+  windowId?: string | null;
+  managedInUpcoming?: boolean;
+  display: string;
+  color: Risk | "green" | null;
+  confirmationRequired: boolean;
+  attempts: MaintenanceWindowAttempt[];
+  reviewRequired: boolean;
+}
+
+export interface UpcomingMaintenanceWindowMember {
+  ticketId: string;
+  summary: string;
+  site: string;
+  cloud: string;
+  severity: string;
+  handler: string;
+  outcome?: "completed" | "incomplete";
+}
+
+export interface UpcomingMaintenanceWindow {
+  windowId: string;
+  revision: string;
+  date: string;
+  startTime: string | null;
+  status: "planned" | "incomplete" | "conflict";
+  managed: boolean;
+  kind: "shared" | "standalone" | "unlinked";
+  canComplete: boolean;
+  members: UpcomingMaintenanceWindowMember[];
+}
+
+export interface ArchivedMaintenanceWindow {
+  windowId: string;
+  date: string;
+  startTime: string | null;
+  finishTime: string | null;
+  finishDate: string | null;
+  confirmedAt: string | null;
+  members: UpcomingMaintenanceWindowMember[];
+}
+
+export interface MaintenanceWindowCandidate extends UpcomingMaintenanceWindowMember {
+  available: boolean;
+  currentWindowId: string | null;
+  currentWindow: MaintenanceWindowSummary | null;
+}
+
+export interface UpcomingMaintenanceWindowsPayload {
+  datasetRevision: number;
+  windows: UpcomingMaintenanceWindow[];
+  archived: ArchivedMaintenanceWindow[];
+  candidates: MaintenanceWindowCandidate[];
+  stats: { windows: number; tickets: number; awaitingReview: number };
+}
+
 export interface TicketSummary {
   rowId?: string;
   ticketId: string;
   revision: string;
   lifecycle: string;
   done: string;
+  maintenanceWindow?: MaintenanceWindowSummary;
   plannedDate: string;
   plannedDays: number | null;
   plannedState: string;
@@ -29,7 +104,15 @@ export interface TicketSummary {
   lastEmailDirection: string | null;
   received: number;
   sent: number;
+  spareBadges: {
+    pendingDispatch: number;
+    dispatched: number;
+    overdue: number;
+    returned: number;
+  };
   summary: string;
+  customerOrganization: string;
+  customerContact: string;
   severity: string;
   product: string;
   handler: string;
@@ -49,6 +132,11 @@ export interface DashboardStats {
   doneN: number;
   doneP: number;
   doneUnknown: number;
+  mwPlanned?: number;
+  mwUnplanned?: number;
+  mwIncomplete?: number;
+  mwCompleted?: number;
+  mwNoVisibility?: number;
   overdue: number;
   unplanned: number;
   noEmail: number;
@@ -75,6 +163,7 @@ export interface SparePartSummary {
   revision: string;
   lifecycle: string;
   done: string;
+  maintenanceWindow?: MaintenanceWindowSummary;
   plannedDate: string;
   plannedDays: number | null;
   plannedState: string;
@@ -94,6 +183,8 @@ export interface SparePartSummary {
   summary: string;
   risk: Risk;
   hasPart: boolean;
+  submitted: boolean;
+  submittedRequestIds: string[];
   readOnly: boolean;
   source: "current" | "closed";
 }
@@ -118,10 +209,16 @@ export interface SparePartsDashboardPayload extends DashboardPayloadBase {
 export interface SpareRequestItemSummary {
   rowId: string;
   requestId: string;
+  revision: string | null;
   itemId: string;
   ticketId: string;
   rma: string;
   spareSr: string;
+  trackingId: string;
+  trackingIdProvisional: boolean;
+  lifecycleStage: number;
+  lifecycleStageLabel: string;
+  lifecycleStageSource: string | null;
   status: string;
   statusLabel: string;
   lifecycleColor: "black" | "grey" | "green";
@@ -131,6 +228,8 @@ export interface SpareRequestItemSummary {
   emailLabel: string;
   emailColor: Risk | null;
   emailCount: number;
+  received: number;
+  sent: number;
   requestedBom: string;
   deliveredBom: string;
   part: string;
@@ -139,7 +238,11 @@ export interface SpareRequestItemSummary {
   slot: string;
   faultySn: string;
   newSn: string;
+  returnCondition: "Faulty" | "New" | null;
+  faultTagIds: string[];
+  faultTagId: string | null;
   site: string;
+  siteAddress?: string;
   cloud: string;
   conflictCount: number;
   risk: Risk;
@@ -148,6 +251,51 @@ export interface SpareRequestItemSummary {
   archivedAt?: string | null;
   archiveReason?: string | null;
   notes?: string | null;
+  canAdvance?: boolean;
+  canRollback?: boolean;
+  nextStageLabel?: string | null;
+  rollbackRequiresDoubleConfirmation?: boolean;
+}
+
+export interface FaultTagSummary {
+  rowId: string;
+  faultTagId: string;
+  status: string;
+  statusLabel: string;
+  memberCount: number;
+  coveredCount: number;
+  confirmedCount: number;
+  returnSite: string;
+  rmas: string;
+  locked: boolean;
+  createdAt: string | null;
+}
+
+export interface FaultTagDetail {
+  faultTagId: string;
+  status: string;
+  returnSite: { code: string; name: string | null; address: string; cloud: string };
+  mixedSourceSites: boolean;
+  members: Array<{
+    itemId: string;
+    requestId: string;
+    ticketId: string;
+    spareSr: string;
+    rma: string;
+    condition: "Faulty" | "New";
+    sourceSite: string | null;
+    requestedBom: string | null;
+    newSn: string | null;
+    warehouseEvidenceAt: string | null;
+    userConfirmedAt: string | null;
+  }>;
+  export: { filename: string | null; path: string | null; subject: string; revisions: Array<Record<string, unknown>> };
+  email: { sent_at: string | null; message_key: string | null; subject: string | null };
+  lockedAt: string | null;
+  locked: boolean;
+  lockedSource: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SpareRequestStats {
@@ -168,6 +316,7 @@ export interface SpareRequestsDashboardPayload extends DashboardPayloadBase {
   stats: SpareRequestStats;
   spareRequests: SpareRequestItemSummary[];
   eligibleParts: SparePartSummary[];
+  faultTags: FaultTagSummary[];
 }
 
 export type DashboardPayload = ServiceRequestsDashboardPayload | SpareRequestsDashboardPayload;
@@ -181,6 +330,7 @@ export interface SpareRequestContact {
 export interface SpareRequestProfile {
   client_initials: string;
   customer_name: string;
+  customer_organization: string;
   site_code: string;
   site_name: string | null;
   site_address: string;
@@ -197,7 +347,10 @@ export interface SpareRequestLine {
   model: string | null;
   device: string | null;
   slot: string | null;
+  slots: string[];
   faulty_sn: string | null;
+  faulty_sns: string[];
+  notes?: string | null;
   report_date: string | null;
   source_device_number: number | null;
   source_part_number: number | null;
@@ -213,7 +366,9 @@ export interface SpareRequestItem {
   device: string | null;
   slot: string | null;
   faulty_sn: string | null;
+  faulty_sns: string[];
   rma: string | null;
+  rma_aliases: string[];
   delivered_bom: string | null;
   new_sn: string | null;
   dispatch_at: string | null;
@@ -221,6 +376,8 @@ export interface SpareRequestItem {
   return_condition: string | null;
   return_export_filename: string | null;
   warehouse_candidate_at: string | null;
+  warehouse_confirmed_at?: string | null;
+  warehouse_confirmation_source?: string | null;
   rt: string | null;
   conflicts: Array<Record<string, unknown>>;
   status: string;
@@ -229,15 +386,39 @@ export interface SpareRequestItem {
   dispatchAgeDays: number | null;
   dispatchAgeColor: Risk | null;
   notes: string | null;
+  lifecycle: SpareLifecycle;
+  rollbackRequiresDoubleConfirmation?: boolean;
+}
+
+export interface SpareLifecycleStage {
+  stage: number;
+  label: string;
+  reached: boolean;
+  timestamp: string | null;
+  source: string | null;
+}
+
+export interface SpareLifecycle {
+  stage: number;
+  label: string;
+  timestamp: string | null;
+  source: string | null;
+  stages: SpareLifecycleStage[];
 }
 
 export interface SpareRequestDetail {
   requestId: string;
   revision: string;
   ticketId: string;
+  reportDate: string | null;
   ttEditable: boolean;
   source: "ticket" | "manual" | "recovered";
+  creationMethod: "zeus_export" | "zeus_create" | "legacy_manual_sent" | "manual_confirmation" | "legacy";
   spareSr: string | null;
+  trackingId: string;
+  trackingIdProvisional: boolean;
+  requestSentAt: string | null;
+  canDelete: boolean;
   status: string;
   profile: SpareRequestProfile;
   requestLines: SpareRequestLine[];
@@ -265,17 +446,92 @@ export interface SpareRequestDetail {
   updatedAt: string;
 }
 
-export interface SpareReferenceData {
+export interface UserProfile {
+  name: string;
+  email: string;
+  phone: string;
+  username: string | null;
+  photoDataUrl: string | null;
+}
+
+export interface UserProfilePayload {
   schemaVersion: number;
-  customers: Array<Record<string, unknown>>;
-  sites: Array<Record<string, unknown>>;
-  requesters: Array<Record<string, unknown>>;
-  boms: Array<Record<string, unknown>>;
+  complete: boolean;
+  profile: UserProfile | null;
+  startup?: Record<string, unknown>;
+}
+
+export interface CustomerOrganization {
+  id: string;
+  name: string;
+}
+
+export interface CustomerContact {
+  id: string;
+  organizationId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+}
+
+export interface ManagedSite {
+  id: string;
+  code: string;
+  name: string | null;
+  address: string;
+  cloud: string | null;
+}
+
+export interface RequesterProfile {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  username: string | null;
+  pinned: boolean;
+  currentUser?: boolean;
+}
+
+export interface GlobalReferenceData {
+  schemaVersion: number;
+  profile?: UserProfile | null;
+  organizations: CustomerOrganization[];
+  customers: CustomerContact[];
+  sites: ManagedSite[];
+  requesters: RequesterProfile[];
+}
+
+export interface BomCatalogEntry {
+  id: string;
+  bom: string;
+  description: string;
+  part: string | null;
+  model: string | null;
+  device: string | null;
+}
+
+export interface BomCatalogPayload {
+  schemaVersion: number;
+  boms: BomCatalogEntry[];
+}
+
+export interface SpareExportSetup {
+  requestReady: boolean;
+  returnReady: boolean;
+  requestMissing: Array<{ key: string; label: string }>;
+  returnMissing: Array<{ key: string; label: string }>;
+}
+
+export interface SpareReferenceData extends GlobalReferenceData {
+  schemaVersion: number;
+  boms: BomCatalogEntry[];
+  exportSetup: SpareExportSetup;
 }
 
 export interface SpareRequestPrefill {
   ticketId: string;
   ticketExists: boolean;
+  reportDate: string | null;
   profile: Record<string, unknown>;
   lines: Array<Record<string, unknown>>;
   warning: string | null;
@@ -294,16 +550,28 @@ export interface EmailMessage {
 }
 
 export interface SparePart {
+  part_number?: number;
   slot: string | null;
   part: string | null;
   bom: string | null;
-  faulty_sn: string | null;
-  new_sn: string | null;
+  notes?: string | null;
+  /** Upgrade-only fields retained from 3.1.4 records and drafts. */
+  faulty_sn?: string | null;
+  new_sn?: string | null;
+  submitted_request_ids?: string[];
+  submitted?: boolean;
+  active_request_ids?: string[];
 }
 
 export interface SpareDevice {
+  device_number?: number;
   device: string | null;
   model: string | null;
+  notes?: string | null;
+  faulty_sns?: string[];
+  next_part_number?: number;
+  active_request_ids?: string[];
+  has_submitted_parts?: boolean;
   parts: SparePart[];
 }
 
@@ -353,6 +621,14 @@ export interface Job {
   message: string;
   current: number | null;
   total: number | null;
+  lastProgressAt?: string | null;
+  updates?: Array<{
+    timestamp: string;
+    stage: string;
+    message: string;
+    current: number | null;
+    total: number | null;
+  }>;
   result: unknown;
   error: { type: string; message: string } | null;
 }
@@ -366,12 +642,40 @@ export interface BootstrapPayload {
   eventSequence: number;
   startup: { warnings: string[]; notices: string[]; operations: Record<string, unknown> };
   jobs: Job[];
+  onboarding: {
+    required: boolean;
+    profile: UserProfile | null;
+    error: string | null;
+  };
+  storage: {
+    currentPath: string;
+    dataBytes: number;
+    freeBytes: number;
+    minimumFreeBytes: number;
+    lowSpace: boolean;
+    migrationPending: boolean;
+  };
+  databaseMaintenance?: DatabaseMaintenanceStatus;
+  maintenanceWindowsDue?: TicketSummary[];
+  spareRequestExport: SpareExportSetup;
   outlook: {
     enabled: boolean;
     configuredPathAvailable: boolean;
+    hasEligibleRecords?: boolean;
     stagedMessageCount: number;
   };
   polling: { intervalMinutes: number; enabled: boolean };
+  emailSchedule?: {
+    fetchIntervalMinutes: number;
+    syncMode: "scheduled" | "after_fetch";
+    syncIntervalMinutes: number;
+    fetchScheduled: boolean;
+    syncScheduled: boolean;
+  };
+  appearance: {
+    fontScale: "compact" | "standard" | "large";
+    showDetailHistory: boolean;
+  };
 }
 
 export interface Setting {
@@ -392,6 +696,35 @@ export interface SettingsPayload {
   schemaVersion: number;
   settings: Setting[];
   changed?: string[];
+}
+
+export interface DatabaseMaintenanceRecord {
+  path?: string;
+  ticketId?: string;
+  message: string;
+}
+
+export interface DatabaseMaintenanceStatus {
+  status: "current" | "upgrade_available" | "repair_available" | "blocked" | "busy";
+  currentSchemaVersion: number;
+  storedSchemaVersion: number;
+  ticketCount: number;
+  spareRequestCount: number;
+  outdatedTicketCount: number;
+  outdatedTicketIds: string[];
+  repairableMarkdownCount: number;
+  repairableMarkdown: string[];
+  reviewCount: number;
+  reviewRecords: DatabaseMaintenanceRecord[];
+  blockedCount: number;
+  blockedRecords: DatabaseMaintenanceRecord[];
+  canApply: boolean;
+  backupRequired: boolean;
+  changed?: boolean;
+  backup?: string | null;
+  upgradedTickets?: number;
+  message?: string;
+  repairedMarkdown?: number;
 }
 
 export interface ApiErrorShape {

@@ -6,18 +6,25 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from ..aging import aging_for_ticket, report_sort_key
+from ..fault_tags import fault_tag_status
 from ..mail import strip_quoted_history
+from ..maintenance_windows import maintenance_window_summary
 from ..spare_request_excel import read_archived_items
 from ..spare_requests import (
     ECUADOR_TIMEZONE,
+    LIFECYCLE_STAGE_LABELS,
+    active_source_part_keys,
     aging_color as spare_aging_color,
     dispatch_age_days,
     item_status,
     lifecycle_color,
+    lifecycle_stage,
+    lifecycle_stage_details,
     request_overall_status,
+    source_part_key,
 )
 from ..store import ZeusStore
-from ..tickets import normalize_local
+from ..tickets import newline_values, normalize_local
 from ..utils import json_dumps, normalize_ticket_id, parse_date, parse_datetime
 
 
@@ -25,13 +32,13 @@ COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "ticketId", "label": "SR", "width": 94, "default": True},
     {"key": "risk", "label": "", "width": 18, "default": True},
     {"key": "lifecycle", "label": "Life", "width": 108, "default": True},
-    {"key": "done", "label": "Done", "width": 58, "default": True},
-    {"key": "plannedDate", "label": "Planned", "width": 116, "default": True},
+    {"key": "done", "label": "MW", "width": 128, "default": True},
     {"key": "ticketAgeDays", "label": "Age", "width": 62, "default": True},
-    {"key": "emailLabel", "label": "Email", "width": 142, "default": True},
-    {"key": "emailCount", "label": "Emails", "width": 68, "default": True},
+    {"key": "emailLabel", "label": "Last Email", "width": 140, "default": True},
+    {"key": "spareBadges", "label": "Spare Parts", "width": 116, "default": True},
     {"key": "severity", "label": "Severity", "width": 92, "default": True},
     {"key": "summary", "label": "Summary", "width": 360, "default": True, "flex": True},
+    {"key": "customerOrganization", "label": "Customer Org.", "width": 180, "default": False},
     {"key": "product", "label": "Product", "width": 190, "default": False},
     {"key": "handler", "label": "Current Handler", "width": 190, "default": False},
     {"key": "status", "label": "Status", "width": 160, "default": False},
@@ -45,7 +52,7 @@ COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
 SPARE_PART_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "ticketId", "label": "SR", "width": 94, "default": True},
     {"key": "risk", "label": "", "width": 18, "default": True},
-    {"key": "plannedDate", "label": "Planned", "width": 116, "default": True},
+    {"key": "done", "label": "MW", "width": 128, "default": True},
     {"key": "site", "label": "Site", "width": 110, "default": True},
     {"key": "cloud", "label": "Cloud", "width": 130, "default": True},
     {"key": "device", "label": "Device", "width": 165, "default": True},
@@ -56,7 +63,6 @@ SPARE_PART_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "faultySn", "label": "Faulty SN", "width": 155, "default": True},
     {"key": "newSn", "label": "New SN", "width": 155, "default": True},
     {"key": "lifecycle", "label": "Life", "width": 108, "default": False},
-    {"key": "done", "label": "Done", "width": 58, "default": False},
     {"key": "summary", "label": "Summary", "width": 320, "default": False, "flex": True},
 )
 
@@ -83,11 +89,11 @@ SPARE_PART_DEFAULT_SORT_DIRECTIONS = {
 SPARE_REQUEST_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "ticketId", "label": "TT", "width": 94, "default": True},
     {"key": "rma", "label": "RMA", "width": 132, "default": True},
-    {"key": "emailLabel", "label": "Email", "width": 126, "default": True},
-    {"key": "emailCount", "label": "Emails", "width": 66, "default": True},
+    {"key": "emailLabel", "label": "Last Email", "width": 140, "default": True},
     {"key": "risk", "label": "", "width": 18, "default": True},
-    {"key": "spareSr", "label": "Spare SR", "width": 104, "default": True},
-    {"key": "statusLabel", "label": "Status", "width": 170, "default": True},
+    {"key": "trackingId", "label": "Tracking ID", "width": 128, "default": True},
+    {"key": "lifecycleStage", "label": "Lifecycle", "width": 220, "default": True},
+    {"key": "statusLabel", "label": "Status", "width": 170, "default": False},
     {"key": "dispatchAgeDays", "label": "Days", "width": 62, "default": True},
     {"key": "requestedBom", "label": "Requested BOM", "width": 145, "default": True},
     {"key": "deliveredBom", "label": "Delivered BOM", "width": 145, "default": True},
@@ -98,15 +104,27 @@ SPARE_REQUEST_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"key": "device", "label": "Device", "width": 155, "default": False},
     {"key": "model", "label": "Model", "width": 145, "default": False},
     {"key": "slot", "label": "Slot", "width": 110, "default": False},
-    {"key": "requestId", "label": "Export ID", "width": 128, "default": False},
+    {"key": "requestId", "label": "Zeus ID", "width": 128, "default": False},
     {"key": "conflictCount", "label": "Conflicts", "width": 78, "default": False},
     {"key": "archiveReason", "label": "Archive reason", "width": 125, "default": False},
     {"key": "archivedAt", "label": "Archived at", "width": 165, "default": False},
     {"key": "notes", "label": "Archive note", "width": 260, "default": False, "flex": True},
 )
 
+FAULT_TAG_COLUMN_DEFINITIONS: tuple[dict[str, Any], ...] = (
+    {"key": "faultTagId", "label": "Fault Tag", "width": 154, "default": True},
+    {"key": "statusLabel", "label": "Status", "width": 190, "default": True},
+    {"key": "memberCount", "label": "Items", "width": 72, "default": True},
+    {"key": "coveredCount", "label": "Evidence", "width": 86, "default": True},
+    {"key": "confirmedCount", "label": "Confirmed", "width": 92, "default": True},
+    {"key": "returnSite", "label": "Return site", "width": 130, "default": True},
+    {"key": "rmas", "label": "RMAs", "width": 250, "default": True, "flex": True},
+    {"key": "createdAt", "label": "Created", "width": 165, "default": False},
+)
+
 SPARE_REQUEST_DEFAULT_SORT_DIRECTIONS = {
     "tt": "desc",
+    "tracking": "desc",
     "rma": "asc",
     "email": "desc",
     "status": "asc",
@@ -140,13 +158,32 @@ def _risk(*colors: str | None) -> str:
     return "none"
 
 
+def _last_email_label(days: int | None, _count: int) -> str:
+    if days is None:
+        return "No email"
+    if days == 0:
+        return "Today"
+    if days == 1:
+        return "1 day"
+    return f"{days} days"
+
+
 def serialize_ticket_summary(
-    ticket: dict[str, Any], config: dict[str, Any]
+    ticket: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    spare_badges: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     facts = aging_for_ticket(ticket, config)
     upstream = ticket.get("upstream", {}).get("fields", {})
     prepared_local = normalize_local(ticket.get("local"))
     local = prepared_local.get("fields", {})
+    maintenance_window = maintenance_window_summary(
+        prepared_local,
+        today=facts.evaluated_on,
+    )
+    if maintenance_window.get("date") and maintenance_window.get("status") != "completed":
+        maintenance_window["color"] = facts.planned_color
     email = ticket.get("email", {})
     email_count = int(email.get("total_received") or 0) + int(email.get("total_sent") or 0)
     devices = [
@@ -165,6 +202,7 @@ def serialize_ticket_summary(
         "revision": ticket_revision(ticket),
         "lifecycle": ticket.get("lifecycle", {}).get("status") or "unknown",
         "done": str(local.get("Done?") or "N"),
+        "maintenanceWindow": maintenance_window,
         "plannedDate": facts.planned_label,
         "plannedDays": facts.planned_days,
         "plannedState": facts.planned_state,
@@ -172,13 +210,37 @@ def serialize_ticket_summary(
         "ticketAgeDays": facts.ticket_age_days,
         "ticketAgeColor": facts.ticket_age_color,
         "emailInactivityDays": facts.communication_inactivity_days,
-        "emailLabel": facts.communication_label,
+        "emailLabel": _last_email_label(
+            facts.communication_inactivity_days,
+            email_count,
+        ),
         "emailCount": email_count,
         "emailColor": facts.communication_color,
         "lastEmailDirection": email.get("last_direction"),
         "received": int(email.get("total_received") or 0),
         "sent": int(email.get("total_sent") or 0),
+        "spareBadges": deepcopy(
+            spare_badges
+            or {
+                "pendingDispatch": 0,
+                "dispatched": 0,
+                "overdue": 0,
+                "returned": 0,
+            }
+        ),
         "summary": upstream.get("Problem Summary") or "",
+        "customerOrganization": (
+            upstream.get("Customer Org.")
+            or upstream.get("Customer Org")
+            or upstream.get("Customer Organization")
+            or "—"
+        ),
+        "customerContact": (
+            upstream.get("Customer Contact")
+            or upstream.get("Contact Name")
+            or upstream.get("Contact Person")
+            or "—"
+        ),
         "severity": upstream.get("Customer Severity") or "—",
         "product": upstream.get("Product") or "—",
         "handler": upstream.get("Current Handler") or "—",
@@ -204,9 +266,13 @@ def serialize_archived_ticket_summary(
     """Serialize a finalized SR without applying live-ticket warning colors."""
 
     result = serialize_ticket_summary(ticket, config)
+    maintenance_window = deepcopy(result["maintenanceWindow"])
+    maintenance_window["color"] = None
+    maintenance_window["confirmationRequired"] = False
     result.update(
         {
             "lifecycle": "closed",
+            "maintenanceWindow": maintenance_window,
             "plannedColor": None,
             "ticketAgeColor": None,
             "emailInactivityDays": None,
@@ -258,6 +324,7 @@ def serialize_ticket_detail(
     *,
     read_only: bool = False,
     source: str = "current",
+    active_requests: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     result = (
         serialize_archived_ticket_summary(ticket, config)
@@ -272,13 +339,46 @@ def serialize_ticket_detail(
     # labels such as ``Unplanned`` are represented by an empty date control;
     # the summary still exposes the human-readable "Unplanned" label.
     local_fields["Planned Date"] = planned_date.isoformat() if planned_date else None
+    spare_parts = deepcopy(prepared_local.get("spare_parts", []))
+    active_by_source: dict[tuple[str, int, int], set[str]] = {}
+    active_by_device: dict[tuple[str, int], set[str]] = {}
+    for active_request in active_requests:
+        request_id = str(active_request.get("request_id") or "")
+        for item in active_request.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            key = source_part_key(active_request.get("tt"), item)
+            if key is not None:
+                active_by_source.setdefault(key, set()).add(request_id)
+                active_by_device.setdefault((key[0], key[1]), set()).add(request_id)
+    ticket_id = str(ticket.get("ticket_id") or "")
+    for device_index, device in enumerate(spare_parts, start=1):
+        device_number = int(device.get("device_number") or device_index)
+        device_active: set[str] = set(
+            active_by_device.get((ticket_id, device_number), set())
+        )
+        for part_index, part in enumerate(device.get("parts") or [], start=1):
+            part_number = int(part.get("part_number") or part_index)
+            active_ids = active_by_source.get(
+                (ticket_id, device_number, part_number), set()
+            )
+            submitted_ids = set(part.get("submitted_request_ids") or []) | active_ids
+            part["submitted_request_ids"] = sorted(submitted_ids)
+            part["submitted"] = bool(submitted_ids)
+            part["active_request_ids"] = sorted(active_ids)
+            device_active.update(active_ids)
+        device["active_request_ids"] = sorted(device_active)
+        device["has_submitted_parts"] = any(
+            bool(part.get("submitted_request_ids"))
+            for part in device.get("parts") or []
+        )
     result.update(
         {
             "upstreamFields": deepcopy(
                 ticket.get("upstream", {}).get("fields", {})
             ),
             "localFields": local_fields,
-            "spareParts": deepcopy(prepared_local.get("spare_parts", [])),
+            "spareParts": spare_parts,
             "email": {
                 "totalReceived": int(email.get("total_received") or 0),
                 "totalSent": int(email.get("total_sent") or 0),
@@ -342,6 +442,7 @@ def dashboard_payload(
     config = store.config
     direction = direction or DEFAULT_SORT_DIRECTIONS.get(sort, "asc")
     all_records = list(store.iter_tickets())
+    active_requests = list(store.iter_spare_requests())
     active = [
         ticket
         for ticket in all_records
@@ -357,14 +458,75 @@ def dashboard_payload(
         ordered = [ticket for ticket in ordered if query in _ticket_search_text(ticket)]
 
     codes = {code: 0 for code in ("Y", "N", "P", "?")}
+    mw_states = {
+        state: 0
+        for state in ("planned", "unplanned", "incomplete", "completed", "no_visibility")
+    }
     overdue = unplanned = no_email = 0
     for ticket in active:
-        code = str(ticket.get("local", {}).get("fields", {}).get("Done?") or "N")
+        prepared_local = normalize_local(ticket.get("local"))
+        code = str(prepared_local.get("fields", {}).get("Done?") or "N")
         codes[code if code in codes else "N"] += 1
         facts = aging_for_ticket(ticket, config)
-        overdue += int(facts.planned_state == "overdue")
-        unplanned += int(facts.planned_state == "unplanned")
+        mw = maintenance_window_summary(prepared_local, today=facts.evaluated_on)
+        mw_state = str(mw.get("status") or "unplanned")
+        mw_states[mw_state if mw_state in mw_states else "unplanned"] += 1
+        overdue += int(bool(mw.get("confirmationRequired")))
+        unplanned += int(mw_state == "unplanned")
         no_email += int(facts.communication_inactivity_days is None)
+
+    occupied = active_source_part_keys(active_requests)
+    badge_counts: dict[str, dict[str, Any]] = {
+        str(ticket.get("ticket_id")): {
+            "pendingDispatch": 0,
+            "dispatched": 0,
+            "overdue": 0,
+            "returned": 0,
+        }
+        for ticket in all_records
+    }
+    red_days = int(config.get("aging", {}).get("spare_dispatch_red_days", 20))
+    for ticket in all_records:
+        ticket_id = str(ticket.get("ticket_id") or "")
+        counts = badge_counts.setdefault(
+            ticket_id,
+            {"pendingDispatch": 0, "dispatched": 0, "overdue": 0, "returned": 0},
+        )
+        local = normalize_local(ticket.get("local"))
+        for device_index, device in enumerate(local.get("spare_parts", []), start=1):
+            device_number = int(device.get("device_number") or device_index)
+            for part_index, part in enumerate(device.get("parts") or [], start=1):
+                part_number = int(part.get("part_number") or part_index)
+                if not part.get("bom") or part.get("submitted_request_ids"):
+                    continue
+                if (ticket_id, device_number, part_number) in occupied:
+                    continue
+                counts["pendingDispatch"] += max(
+                    1, len(newline_values(part.get("slot")))
+                )
+    for request in active_requests:
+        ticket_id = str(request.get("tt") or "")
+        counts = badge_counts.setdefault(
+            ticket_id,
+            {"pendingDispatch": 0, "dispatched": 0, "overdue": 0, "returned": 0},
+        )
+        for item in request.get("items", []):
+            stage = lifecycle_stage(item, request)
+            if stage >= 5:
+                counts["returned"] += 1
+            elif stage >= 3:
+                age = dispatch_age_days(item)
+                counts["overdue" if age is not None and age >= red_days else "dispatched"] += 1
+            else:
+                counts["pendingDispatch"] += 1
+    workbook_directory = store.configured_directory("workbook_directory")
+    closed_path = workbook_directory / "Closed.xlsx" if workbook_directory else None
+    if closed_path is not None and closed_path.is_file():
+        for row in read_archived_items(closed_path):
+            ticket_id = str(row.get("TT") or row.get("SRNo") or "")
+            reason = str(row.get("Archive Reason") or row.get("Status") or "").casefold()
+            if ticket_id in badge_counts and reason == "returned":
+                badge_counts[ticket_id]["returned"] += 1
 
     return {
         "workspace": "service-requests",
@@ -378,12 +540,24 @@ def dashboard_payload(
             "doneN": codes["N"],
             "doneP": codes["P"],
             "doneUnknown": codes["?"],
+            "mwPlanned": mw_states["planned"],
+            "mwUnplanned": mw_states["unplanned"],
+            "mwIncomplete": mw_states["incomplete"],
+            "mwCompleted": mw_states["completed"],
+            "mwNoVisibility": mw_states["no_visibility"],
             "overdue": overdue,
             "unplanned": unplanned,
             "noEmail": no_email,
             "pendingClosure": len(closing),
         },
-        "tickets": [serialize_ticket_summary(ticket, config) for ticket in ordered],
+        "tickets": [
+            serialize_ticket_summary(
+                ticket,
+                config,
+                spare_badges=badge_counts.get(str(ticket.get("ticket_id"))),
+            )
+            for ticket in ordered
+        ],
         "columns": [deepcopy(column) for column in COLUMN_DEFINITIONS],
     }
 
@@ -398,7 +572,7 @@ def _spare_part_rows(
     """Flatten normalized ticket hardware without creating another authority.
 
     The row identifiers are presentation identities only.  Every mutation still
-    targets the parent SR and crosses the Pendings-first edit transaction.
+    targets the parent SR and crosses the database edit transaction.
     Device-only records remain visible as incomplete rows so the management
     view can never hide normalized data merely because its first part has not
     been filled yet.
@@ -417,31 +591,40 @@ def _spare_part_rows(
         for device_index, device in enumerate(
             prepared_local.get("spare_parts", []), start=1
         ):
+            device_number = int(device.get("device_number") or device_index)
             parts = list(device.get("parts") or []) or [None]
             for part_index, part in enumerate(parts, start=1):
                 part = part or {}
+                part_number = (
+                    int(part.get("part_number") or part_index)
+                    if part
+                    else None
+                )
                 bom = str(part.get("bom") or "").strip()
                 row = {
-                    "rowId": f"{ticket_id}:{device_index}:{part_index}",
+                    "rowId": f"{ticket_id}:{device_number}:{part_number or 0}",
                     "ticketId": ticket_id,
                     "revision": summary["revision"],
                     "lifecycle": summary["lifecycle"],
                     "done": summary["done"],
+                    "maintenanceWindow": deepcopy(summary["maintenanceWindow"]),
                     "plannedDate": summary["plannedDate"],
                     "plannedDays": summary["plannedDays"],
                     "plannedState": summary["plannedState"],
                     "plannedColor": summary["plannedColor"],
                     "site": local.get("Site") or "—",
                     "cloud": local.get("Cloud") or "—",
-                    "deviceNumber": device_index,
-                    "partNumber": part_index if part else None,
+                    "deviceNumber": device_number,
+                    "partNumber": part_number,
                     "device": device.get("device") or "—",
                     "model": device.get("model") or "—",
                     "slot": part.get("slot") or "—",
                     "part": part.get("part") or "—",
                     "bom": bom or "—",
                     "bomColor": None if bom else "yellow",
-                    "faultySn": part.get("faulty_sn") or "—",
+                    "submitted": bool(part.get("submitted_request_ids")),
+                    "submittedRequestIds": list(part.get("submitted_request_ids") or []),
+                    "faultySn": "\n".join(device.get("faulty_sns") or []) or "—",
                     "newSn": part.get("new_sn") or "—",
                     "summary": summary["summary"],
                     "risk": summary["risk"],
@@ -561,12 +744,13 @@ def spare_parts_dashboard_payload(
 
 
 SPARE_STATUS_LABELS = {
-    "awaiting_confirmation": "Awaiting LASpare",
+    "awaiting_confirmation": "Awaiting confirmation",
     "awaiting_stock": "Awaiting stock",
     "awaiting_dispatch": "Awaiting dispatch",
     "dispatched": "Dispatched",
     "awaiting_warehouse": "Awaiting warehouse",
     "awaiting_user_confirmation": "Confirm warehouse return",
+    "warehouse_confirmed": "Warehouse confirmed",
     "cancelled": "Cancelled",
     "returned": "Returned",
 }
@@ -587,7 +771,7 @@ def _spare_email_facts(
     total = int(email.get("total_received") or 0) + int(email.get("total_sent") or 0)
     last = parse_datetime(email.get("last_activity_at"))
     if last is None:
-        return None, "No email", "grey", total
+        return None, _last_email_label(None, total), "grey", total
     current = now or datetime.now(ECUADOR_TIMEZONE)
     if current.tzinfo is not None and last.tzinfo is None:
         last = last.replace(tzinfo=ECUADOR_TIMEZONE)
@@ -595,7 +779,7 @@ def _spare_email_facts(
         current = current.replace(tzinfo=ECUADOR_TIMEZONE)
     days = max(0, (current.date() - last.date()).days)
     color = "red" if days >= 7 else "yellow" if days >= 3 else None
-    return days, f"{days}d inactive", color, total
+    return days, _last_email_label(days, total), color, total
 
 
 def _request_conflict_count(request: dict[str, Any]) -> int:
@@ -608,23 +792,47 @@ def _request_conflict_count(request: dict[str, Any]) -> int:
     )
 
 
+def _rollback_requires_email_override(
+    request: dict[str, Any], item: dict[str, Any], stage: dict[str, Any]
+) -> bool:
+    stage_number = int(stage.get("stage") or 0)
+    message_key = {
+        1: request.get("request_sent_message_key"),
+        2: item.get("attendance_message_key"),
+        3: item.get("dispatch_message_key"),
+        5: item.get("warehouse_message_key"),
+    }.get(stage_number)
+    return bool(message_key) or str(stage.get("source") or "").casefold().startswith(
+        "email"
+    )
+
+
 def serialize_spare_request_item(
-    request: dict[str, Any], item: dict[str, Any]
+    request: dict[str, Any], item: dict[str, Any], config: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     email_days, email_label, email_color, email_count = _spare_email_facts(request)
     age = dispatch_age_days(item)
     status = item_status(item, request)
     lifecycle = lifecycle_color(item, request)
-    age_color = spare_aging_color(age)
+    red_days = int((config or {}).get("aging", {}).get("spare_dispatch_red_days", 20))
+    age_color = spare_aging_color(age, red_days=red_days)
     conflicts = _request_conflict_count(request)
     profile = request.get("profile", {})
+    stage = lifecycle_stage_details(item, request)
+    tracking_id = request.get("spare_sr") or request.get("request_id")
     return {
         "rowId": item.get("item_id"),
         "requestId": request.get("request_id"),
+        "revision": spare_request_revision(request),
         "itemId": item.get("item_id"),
         "ticketId": request.get("tt"),
         "rma": item.get("rma") or "—",
         "spareSr": request.get("spare_sr") or "—",
+        "trackingId": tracking_id or "—",
+        "trackingIdProvisional": not bool(request.get("spare_sr")),
+        "lifecycleStage": stage["stage"],
+        "lifecycleStageLabel": stage["label"],
+        "lifecycleStageSource": stage["source"],
         "status": status,
         "statusLabel": SPARE_STATUS_LABELS.get(status, status.replace("_", " ").title()),
         "lifecycleColor": lifecycle,
@@ -634,6 +842,8 @@ def serialize_spare_request_item(
         "emailLabel": email_label,
         "emailColor": email_color,
         "emailCount": email_count,
+        "received": int(request.get("email", {}).get("total_received") or 0),
+        "sent": int(request.get("email", {}).get("total_sent") or 0),
         "requestedBom": item.get("requested_bom") or "—",
         "deliveredBom": item.get("delivered_bom") or "—",
         "part": item.get("part") or item.get("requested_description") or "—",
@@ -642,34 +852,112 @@ def serialize_spare_request_item(
         "slot": item.get("slot") or "—",
         "faultySn": item.get("faulty_sn") or "—",
         "newSn": item.get("new_sn") or "—",
+        "returnCondition": item.get("return_condition"),
+        "faultTagIds": list(item.get("fault_tag_ids") or []),
+        "faultTagId": next(iter(item.get("fault_tag_ids") or []), None),
         "site": profile.get("site_code") or "—",
+        "siteAddress": profile.get("site_address") or "",
         "cloud": profile.get("cloud") or "—",
         "conflictCount": conflicts,
         "risk": "red" if conflicts or age_color == "red" else "yellow" if age_color == "yellow" or email_color == "yellow" else "grey" if lifecycle == "grey" else "none",
         "readOnly": False,
         "source": "active",
+        "canAdvance": stage["stage"] in {0, 2, 3, 5}
+        or (
+            stage["stage"] == 1
+            and bool(request.get("spare_sr"))
+            and bool(item.get("rma"))
+        ),
+        "canRollback": stage["stage"] > 0
+        and not (
+            stage["stage"] == 1
+            and any(
+                lifecycle_stage(candidate, request) != 1
+                for candidate in request.get("items", [])
+            )
+        ),
+        "nextStageLabel": (
+            LIFECYCLE_STAGE_LABELS[stage["stage"] + 1]
+            if stage["stage"] < 6
+            else None
+        ),
+        "rollbackRequiresDoubleConfirmation": _rollback_requires_email_override(
+            request, item, stage
+        ),
+    }
+
+
+def _fault_tag_row(record: dict[str, Any]) -> dict[str, Any]:
+    members = list(record.get("members") or [])
+    status = fault_tag_status(record)
+    status_labels = {
+        "exported": "Exported",
+        "sent": "Sent · membership locked",
+        "partial_warehouse": "Partial warehouse evidence",
+        "awaiting_user_confirmation": "Ready for user confirmation",
+        "completed": "Completed",
+    }
+    return {
+        "rowId": record.get("fault_tag_id"),
+        "faultTagId": record.get("fault_tag_id"),
+        "status": status,
+        "statusLabel": status_labels.get(status, status.replace("_", " ").title()),
+        "memberCount": len(members),
+        "coveredCount": sum(bool(member.get("warehouse_evidence_at")) for member in members),
+        "confirmedCount": sum(bool(member.get("user_confirmed_at")) for member in members),
+        "returnSite": record.get("return_site", {}).get("code") or "—",
+        "rmas": ", ".join(str(member.get("rma")) for member in members if member.get("rma")),
+        "locked": bool(record.get("locked_at")),
+        "createdAt": record.get("created_at"),
     }
 
 
 def _archived_spare_row(row: dict[str, Any]) -> dict[str, Any]:
     status = str(row.get("Status") or "returned").casefold()
     email_days = row.get("Email inactivity days")
+    email_count = int(row.get("Emails received") or 0) + int(row.get("Emails sent") or 0)
+    if status == "returned":
+        stage = 6
+        stage_label = LIFECYCLE_STAGE_LABELS[stage]
+    elif row.get("Return Export"):
+        stage = 4
+        stage_label = LIFECYCLE_STAGE_LABELS[stage]
+    elif row.get("Dispatch Date"):
+        stage = 3
+        stage_label = LIFECYCLE_STAGE_LABELS[stage]
+    elif row.get("Spare SR") and row.get("RMA"):
+        stage = 2
+        stage_label = LIFECYCLE_STAGE_LABELS[stage]
+    else:
+        stage = 0
+        stage_label = "Cancelled" if status == "cancelled" else LIFECYCLE_STAGE_LABELS[stage]
     return {
         "rowId": str(row.get("Item ID") or ""),
         "requestId": str(row.get("Request ID") or ""),
+        "revision": None,
         "itemId": str(row.get("Item ID") or ""),
         "ticketId": str(row.get("TT") or ""),
         "rma": row.get("RMA") or "—",
         "spareSr": row.get("Spare SR") or "—",
+        "trackingId": row.get("Spare SR") or row.get("Request ID") or "—",
+        "trackingIdProvisional": not bool(row.get("Spare SR")),
+        "lifecycleStage": stage,
+        "lifecycleStageLabel": stage_label,
+        "lifecycleStageSource": "archive",
         "status": status,
         "statusLabel": SPARE_STATUS_LABELS.get(status, status.replace("_", " ").title()),
         "lifecycleColor": "grey",
         "dispatchAgeDays": None,
         "dispatchAgeColor": None,
         "emailInactivityDays": email_days,
-        "emailLabel": "No email" if email_days in (None, "") else f"{int(email_days)}d at archive",
+        "emailLabel": _last_email_label(
+            None if email_days in (None, "") else int(email_days),
+            email_count,
+        ),
         "emailColor": None,
-        "emailCount": int(row.get("Emails received") or 0) + int(row.get("Emails sent") or 0),
+        "emailCount": email_count,
+        "received": int(row.get("Emails received") or 0),
+        "sent": int(row.get("Emails sent") or 0),
         "requestedBom": row.get("Requested BOM") or "—",
         "deliveredBom": row.get("Delivered BOM") or "—",
         "part": row.get("Part") or row.get("Description") or "—",
@@ -678,6 +966,9 @@ def _archived_spare_row(row: dict[str, Any]) -> dict[str, Any]:
         "slot": row.get("Slot") or "—",
         "faultySn": row.get("Faulty SN") or "—",
         "newSn": row.get("New SN") or "—",
+        "returnCondition": row.get("Return Condition"),
+        "faultTagIds": [],
+        "faultTagId": None,
         "site": row.get("Site") or "—",
         "cloud": row.get("Cloud") or "—",
         "conflictCount": 0,
@@ -692,10 +983,21 @@ def _archived_spare_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def _eligible_spare_rows(store: ZeusStore) -> list[dict[str, Any]]:
     rows = _spare_part_rows(store.iter_tickets(status="active"), store.config)
+    occupied = active_source_part_keys(store.iter_spare_requests())
     return [
         {**row, "eligible": True}
         for row in rows
-        if row.get("hasPart") and row.get("bom") != "—"
+        if (
+            row.get("hasPart")
+            and row.get("bom") != "—"
+            and not row.get("submitted")
+            and (
+                row.get("ticketId"),
+                row.get("deviceNumber"),
+                row.get("partNumber"),
+            )
+            not in occupied
+        )
     ]
 
 
@@ -713,6 +1015,8 @@ def _spare_request_sort_value(row: dict[str, Any], mode: str) -> Any:
         return int(row.get("ticketId") or 0)
     if mode == "rma":
         return None if row.get("rma") == "—" else str(row.get("rma"))
+    if mode == "tracking":
+        return str(row.get("trackingId") or "")
     if mode == "email":
         return row.get("emailInactivityDays")
     if mode == "age":
@@ -736,7 +1040,12 @@ def spare_requests_dashboard_payload(
 
     direction = direction or SPARE_REQUEST_DEFAULT_SORT_DIRECTIONS.get(sort, "asc")
     requests = list(store.iter_spare_requests())
-    if view == "eligible":
+    fault_tag_rows: list[dict[str, Any]] = []
+    if view == "fault-tags":
+        fault_tag_rows = [_fault_tag_row(record) for record in store.iter_fault_tags()]
+        rows = fault_tag_rows
+        columns = FAULT_TAG_COLUMN_DEFINITIONS
+    elif view == "eligible":
         rows = _eligible_spare_rows(store)
         columns = tuple(
             {**column, "label": "TT"} if column.get("key") == "ticketId" else column
@@ -747,7 +1056,7 @@ def spare_requests_dashboard_payload(
         columns = SPARE_REQUEST_COLUMN_DEFINITIONS
     else:
         rows = [
-            serialize_spare_request_item(request, item)
+            serialize_spare_request_item(request, item, store.config)
             for request in requests
             for item in request.get("items", [])
         ]
@@ -781,44 +1090,100 @@ def spare_requests_dashboard_payload(
             "activeItems": len(active_items),
             "awaitingStock": statuses.count("awaiting_stock"),
             "awaitingDispatch": statuses.count("awaiting_dispatch"),
-            "dispatched": sum(status in {"dispatched", "awaiting_warehouse", "awaiting_user_confirmation"} for status in statuses),
+            "dispatched": sum(status in {"dispatched", "awaiting_warehouse", "awaiting_user_confirmation", "warehouse_confirmed"} for status in statuses),
             "warehouseCandidates": statuses.count("awaiting_user_confirmation"),
             "conflicts": sum(_request_conflict_count(request) for request in requests),
             "eligibleParts": len(_eligible_spare_rows(store)),
             "completedItems": len(read_archived_items(closed_path)) if closed_path else 0,
         },
-        "spareRequests": present + missing if view != "eligible" else [],
+        "spareRequests": present + missing if view not in {"eligible", "fault-tags"} else [],
         "eligibleParts": present + missing if view == "eligible" else [],
+        "faultTags": present + missing if view == "fault-tags" else [],
         "columns": [deepcopy(column) for column in columns],
     }
 
 
-def serialize_spare_request_detail(request: dict[str, Any]) -> dict[str, Any]:
+def serialize_spare_request_detail(
+    request: dict[str, Any], config: dict[str, Any] | None = None
+) -> dict[str, Any]:
     email_days, email_label, email_color, email_count = _spare_email_facts(request)
+    email = deepcopy(request.get("email") or {})
+    email["total_received"] = int(email.get("total_received") or 0)
+    email["total_sent"] = int(email.get("total_sent") or 0)
+    email["last_activity_at"] = email.get("last_activity_at")
+    email["messages"] = (
+        deepcopy(email.get("messages"))
+        if isinstance(email.get("messages"), list)
+        else []
+    )
     return {
         "requestId": request.get("request_id"),
         "revision": spare_request_revision(request),
         "ticketId": request.get("tt"),
+        "reportDate": request.get("report_date") or next(
+            (
+                line.get("report_date")
+                for line in request.get("request_lines", [])
+                if line.get("report_date")
+            ),
+            None,
+        ),
         "ttEditable": bool(request.get("tt_editable")),
         "source": request.get("source"),
+        "creationMethod": request.get("creation_method") or (
+            "zeus_export"
+            if request.get("export", {}).get("request_filename")
+            else "legacy"
+        ),
         "spareSr": request.get("spare_sr"),
+        "trackingId": request.get("spare_sr") or request.get("request_id"),
+        "trackingIdProvisional": not bool(request.get("spare_sr")),
+        "requestSentAt": request.get("request_sent_at"),
+        "canDelete": not bool(request.get("spare_sr")) and not any(
+            item.get("rma") or item.get("attendance_confirmed_at")
+            for item in request.get("items", [])
+        ),
         "status": request_overall_status(request),
         "profile": deepcopy(request.get("profile") or {}),
         "requestLines": deepcopy(request.get("request_lines") or []),
         "items": [
             {
                 **deepcopy(item),
+                # Details remain usable while Database Maintenance is still
+                # offering the schema upgrade.  These collections did not
+                # exist on every pre-3.1.8 Active Request record.
+                "rma_aliases": (
+                    deepcopy(item.get("rma_aliases"))
+                    if isinstance(item.get("rma_aliases"), list)
+                    else []
+                ),
+                "conflicts": (
+                    deepcopy(item.get("conflicts"))
+                    if isinstance(item.get("conflicts"), list)
+                    else []
+                ),
                 "status": item_status(item, request),
                 "statusLabel": SPARE_STATUS_LABELS.get(item_status(item, request), item_status(item, request)),
                 "lifecycleColor": lifecycle_color(item, request),
                 "dispatchAgeDays": dispatch_age_days(item),
-                "dispatchAgeColor": spare_aging_color(dispatch_age_days(item)),
+                "dispatchAgeColor": spare_aging_color(
+                    dispatch_age_days(item),
+                    red_days=int(
+                        (config or {}).get("aging", {}).get(
+                            "spare_dispatch_red_days", 20
+                        )
+                    ),
+                ),
+                "lifecycle": lifecycle_stage_details(item, request),
+                "rollbackRequiresDoubleConfirmation": _rollback_requires_email_override(
+                    request, item, lifecycle_stage_details(item, request)
+                ),
             }
             for item in request.get("items", [])
         ],
         "export": deepcopy(request.get("export") or {}),
         "email": {
-            **deepcopy(request.get("email") or {}),
+            **email,
             "inactivityDays": email_days,
             "label": email_label,
             "color": email_color,

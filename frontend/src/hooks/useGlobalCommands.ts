@@ -3,13 +3,14 @@ import { useEffect } from "react";
 interface GlobalCommandHandlers {
   disabled?: boolean;
   queryDisabled?: boolean;
+  syncDisabled?: boolean;
   onSearch: () => void;
-  onSort: () => void;
+  onSync: () => void;
   onOperations: () => void;
   onQuery: () => void;
 }
 
-function isEditingArea(target: EventTarget | null): boolean {
+export function isEditingArea(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   return Boolean(target.closest(
     'input, textarea, select, [role="textbox"], [contenteditable]:not([contenteditable="false"])',
@@ -20,8 +21,9 @@ function isEditingArea(target: EventTarget | null): boolean {
 export function useGlobalCommands({
   disabled = false,
   queryDisabled = false,
+  syncDisabled = false,
   onSearch,
-  onSort,
+  onSync,
   onOperations,
   onQuery,
 }: GlobalCommandHandlers) {
@@ -35,6 +37,7 @@ export function useGlobalCommands({
         || event.altKey
         || event.metaKey
         || isEditingArea(event.target)
+        || Boolean(document.querySelector(".modal-backdrop"))
       ) return;
 
       const key = event.key.toLowerCase();
@@ -46,7 +49,7 @@ export function useGlobalCommands({
         return;
       }
 
-      if (key === "s") onSort();
+      if (key === "s" && !syncDisabled) onSync();
       else if (key === "m") onOperations();
       else if (key === "r" && !queryDisabled) onQuery();
       else return;
@@ -55,5 +58,5 @@ export function useGlobalCommands({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [disabled, onOperations, onQuery, onSearch, onSort, queryDisabled]);
+  }, [disabled, onOperations, onQuery, onSearch, onSync, queryDisabled, syncDisabled]);
 }

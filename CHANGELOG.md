@@ -1,6 +1,245 @@
 # Changelog
 
-## 3.1.1 - Unreleased
+## 3.1.15 - 2026-08-11
+
+- Fixes active Spare Request email retention by normalizing each parsed message
+  timestamp before comparing it with the 180-day cutoff.
+- Prevents scheduled, shortcut, Operations, and direct API email jobs from
+  opening Outlook when Zeus has no active ticket, Spare Request, or Fault Tag
+  record eligible for synchronization.
+- Counts standalone elapsed Maintenance Windows in Upcoming, permits their
+  completion review there, and uses the same status contract for cards and
+  summary totals.
+- Adds revision-safe Upcoming edit and confirmed delete controls that update
+  every linked SR atomically while preserving prior MW attempts.
+- Allows unlinked Maintenance Windows and transfers authority into or out of SR
+  records as membership is added or removed, without duplicating linked truth.
+
+## 3.1.14 - 2026-08-11
+
+- Decouples direct Outlook fetching from Advanced Search so an invalid source
+  workbook cannot block or be misreported as an email failure.
+- Adds exact Outlook folder/message/body progress, a bounded expandable
+  in-session activity log, and correct cancelled status for stopped scans.
+- Avoids reopening already-retained bodies during incremental fetches and skips
+  expensive HTML retrieval for ordinary Service Request mail while preserving
+  HTML parsing for Spare Request evidence.
+- Retries transient Windows access-denied/sharing failures at the exact atomic
+  ticket replacement boundary, clears inherited read-only state in the private
+  transaction copy, and preserves the previous database with a diagnostic if
+  the lock persists.
+
+## 3.1.13 - 2026-08-11
+
+- Restores the startup review for every elapsed Maintenance Window, preserving
+  safe per-ticket decisions for standalone MWs and atomic per-SR review for
+  shared Upcoming windows.
+- Confirms the exact `Customer Org.` Advanced Search mapping through dashboard
+  and detail projections, accepts compatible legacy organization keys, and
+  clarifies that a rejected workbook applies none of its values.
+- Gives sent and received email rows distinct restrained green/cyan accents
+  matching their dashboard counters.
+- Rebalances the Maintenance Window header and replaces the broken text-based
+  visibility control with compact accessible eye and eye-off icons.
+
+## 3.1.12 - 2026-08-11
+
+- Adds a first-class **Upcoming** workspace for several concurrent Maintenance
+  Windows, each linked to several Service Requests, while enforcing one
+  unfinished MW per SR and atomic revision-safe scheduling.
+- Completes a shared MW through an explicit review of every linked SR, defaulting
+  each outcome to **Completed** and archiving the reviewed result in each SR's
+  own structured history.
+- Adds optional `:00`/`:30` start and finish times, infers the next day when the
+  finish clock precedes the start, and rejects recorded durations over 12 hours.
+- Retains all matched sent and received email bodies per ticket by default;
+  Configuration can still set a finite maximum or `0` for counters only.
+
+## 3.1.11 - 2026-08-11
+
+- Reorders Service Request work fields around one full-width Maintenance Window
+  editor, derives Unplanned/Planned/Incomplete automatically from its date, and
+  places manual **Completed** and archived-cycle **New MW** actions beside Save.
+- Protects every editable Active Request fact in browser drafts at every
+  lifecycle stage, includes those drafts in the global manager/count, restores
+  them after navigation or reload, and supports one-step field/discard undo.
+- Moves New Request, BOM catalog, and contextual lifecycle actions into the
+  Active Requests upper row, collapsing them to hover-labelled icons on narrow
+  screens.
+- Hides raw detail History by default in both Service Requests and Active
+  Requests, with an off-by-default toggle under Configuration → Developer
+  options.
+
+## 3.1.10 - 2026-08-11
+
+- Makes **Confirm SR and RMA** validate and persist the visible Spare SR/RMA
+  drafts before advancing, while retaining the existing RMA uniqueness,
+  historical-alias, and Fault Tag correction safeguards.
+- Records manual dispatch at the current Ecuador time without asking the user
+  for a redundant timestamp, and locks dashboard bulk selection to one
+  lifecycle stage as soon as its first item is selected.
+- Replaces the stage-four export-only action with a **Fault Tag** choice:
+  generate/export a new workbook, or create an internal Fault Tag ID and mark
+  an externally sent tag as manual. Both paths still require matching warehouse
+  email evidence plus final user confirmation.
+- Keeps one **Create Request** entry point in SR detail, distinguishes Create
+  from Export inside the themed request form, collapses constrained toolbar
+  actions to hover-labelled icons, and gives lifecycle actions visible colors.
+- Centers the no-email zero in one square badge and narrows Last Email and Spare
+  Parts columns to their actual two- and four-badge capacities.
+
+## 3.1.9 - 2026-08-10
+
+- Keeps pre-migration Active Requests usable by supplying safe empty detail
+  collections at the API boundary and defensively rendering stage-zero records
+  without changing their Added to Zeus lifecycle state.
+- Replaces pill and circular email/spare counters with compact, softly rounded
+  rectangular badges shared by Service Requests and Spare Requests.
+
+## 3.1.8 - 2026-08-10
+
+- Stabilizes Service Request and Spare Request table geometry and replaces row
+  email triangles with a shared Last Email header legend plus fixed received,
+  sent, gray-zero, and no-email red-zero badges.
+- Reclassifies Service Request spare-unit summaries as gray pending dispatch,
+  yellow dispatched, red overdue from displayed day 20 by default, and green
+  warehouse-returned, including returned archive items while their SR is open.
+- Makes Spare Request controls stage-specific in both item detail and bulk
+  selection, restores audited manual request-email confirmation with an
+  editable timestamp, and keeps Advanced Search actions in Service Requests.
+- Allows audited RMA correction while permanently reserving previous aliases;
+  unlocked Fault Tags update and require re-export, while tags with sent or
+  warehouse evidence must be deleted and recreated first.
+
+## 3.1.7 - 2026-08-10
+
+- Rebuilds the Spare Request lifecycle as seven fully named stages with
+  dashboard bulk advance and one-stage rollback. Email-backed rollback requires
+  a second confirmation and audit note; the exact email remains evidence while
+  its lifecycle effect stays suppressed on later synchronization.
+- Introduces independent multi-item Fault Tag batches with Ecuador timestamp
+  IDs, per-item Faulty/New conditions, explicit mixed-site return destinations,
+  revision-safe re-export, and a dedicated active view. Export never advances
+  an Active Request.
+- Locks Fault Tag membership when Zeus detects its first sent email. A mistaken
+  batch can still be deleted to release its items without changing lifecycle;
+  later additions use a new Fault Tag.
+- Requires matching warehouse email evidence plus explicit user confirmation
+  before completing each item. Partial batches stay visible until every member
+  completes, then archive with the final item.
+- Adds New Request Create/Export paths at Added to Zeus, Customer Organization
+  filtering/search, directional Last Email triangles, and eligible/active/
+  completed spare-unit badges with active items turning red after 20 full days.
+- Makes row clicks highlight-only and double-click/Enter open detail, expands
+  affected-device batch entry, adds themed destructive confirmations, and
+  batches overdue Maintenance Window outcomes with optional rescheduling.
+- Simplifies Protected Drafts to Close, Discard selected, and Save Selected,
+  with one-level undo for the latest Save or Discard and a reload warning while
+  that undo remains available.
+- Defaults available Outlook stores to hourly fetch-and-sync, supports linked
+  intervals in Configuration, and makes the page-level `S` command explicitly
+  fetch and synchronize email while `R` checks Advanced Search.
+
+## 3.1.6 - 2026-08-10
+
+- Replaces the separate dashboard MW and Planned columns with one date-first
+  Maintenance Window field backed by a structured status and attempt history.
+  A real current date is always shown; undated states remain Unplanned,
+  Incomplete, No visibility, or Complete.
+- Prompts for the result of every past scheduled MW. Success completes the
+  work, while failure records the attempt, clears the current date, and waits
+  for a new plan without losing history.
+- Adds Configuration → Database maintenance with read-only integrity preview,
+  explicit confirmation, complete backup, staged schema migration, canonical
+  Markdown regeneration, full validation, and atomic replacement.
+- Refuses automatic repair when an embedded Markdown record is missing or
+  invalid, directing recovery to a known-good backup instead of guessing.
+- Keeps `Planned Date` and `Done?` as generated workbook compatibility
+  projections while the 3.1.6 database and web interface use the unified MW
+  record.
+
+## 3.1.5 - 2026-08-08
+
+- Removes organization-specific names, sender addresses, domains, and worksheet
+  titles from the distributable application. Trusted mail roles are configured
+  locally, while selected XLSX worksheet names are preserved by position.
+- Replaces native browser confirmation and prompt boxes with Zeus-themed local
+  dialogs across data managers, protected drafts, configuration, operations,
+  conflict resolution, and archive purging.
+- Rebuilds Global data as a friendly Zeus Operations-style card workspace with
+  contextual counts, descriptions, record lists, and editors.
+- Moves faulty serial evidence to the damaged-device level, removes New SN from
+  the SR Spare Parts entry form, adds part notes, and makes unique newline slot
+  entries derive physical-unit quantity automatically.
+- Prefetches and caches Service Requests and Spare Requests projections in the
+  browser and server so workspace changes refresh in place instead of reopening
+  the full workbench loading screen.
+- Keeps arrows highlight-only while detail is closed, refreshes an already-open
+  detail as arrow selection moves, and leaves native wheel input to scroll the
+  table without changing selection.
+- Defers missing Spare Request export-configuration redirection until an
+  explicit export attempt, so manual and eligible-SR request forms open freely
+  and remain intact while Configuration is corrected.
+- Themes every Spare Request autocomplete, moves required customer email/phone
+  and the automatically loaded original TT date into the ticket-level section,
+  and makes missing export configuration an explicit red action.
+- Replaces the browser-native Global data SR picker with a bounded Zeus-themed
+  prefix autocomplete, fixes the two-row narrow Spare Request toolbar, and adds
+  persisted Compact, Standard, and Large semantic typography presets.
+
+## 3.1.4 - 2026-08-08
+
+- Fixes the successful-save revision race that could misclassify Zeus's own
+  committed Work Fields update as a stale browser draft and keep reload
+  protection active after the data was already saved.
+- Adds amber protected-draft row markers and a selectable Drafts manager with
+  explicit restore semantics, per-SR field summaries, selective discard, and
+  confirmed all-or-nothing multi-SR database saves.
+- Rebases drafts at field level so unrelated database changes do not cause
+  false conflicts, while overlapping changes still require explicit review.
+- Makes keyboard focus follow row and detail-tab navigation, eliminating stale
+  cyan focus outlines on previously active controls.
+- Keeps Global data open after successful saves, disables clean saves, prevents
+  accidental dirty dismissal, autocompletes SR customer imports, describes
+  every manager collection, and displays the current profile as the default
+  requester.
+
+## 3.1.3 - 2026-08-08
+
+- Makes the transactional Markdown database authoritative for current Zeus
+  work. Browser saves no longer read or rewrite Pendings.xlsx; they validate the
+  ticket revision, commit atomically, and record the audit event.
+- Makes Pendings.xlsx and Closed.xlsx explicit generated outputs. Advanced
+  Search checks only discover/refresh source records and mark missing IDs for
+  deferred closure; a verified paired export finalizes those deletions.
+- Protects unsaved Work Fields and Spare Parts drafts across row/tab changes and
+  remounts, warns on row navigation, and intercepts reload while drafts exist.
+- Adds persisted category filters with OR-within/AND-across semantics, filtered
+  ↑/↓ navigation, bounded ←/→ detail-tab navigation, and edit-control shortcut
+  suppression.
+- Renames the user-facing Done field to MW and combines email age plus cumulative
+  count in Last Email, removing the separate count column.
+- Makes BOM quantity the sole physical-unit, future-RMA, and Fault Tag row
+  multiplier. Each unit's one Faulty SN cell contains the complete diagnostic
+  component-serial list.
+
+## 3.1.2 - 2026-08-08
+
+- Adds mandatory first-run local contact setup with optional profile picture
+  and username. There is no account, password, authentication, or remote
+  profile; the saved contact becomes the default Spare Request requester.
+- Adds a human-oriented Global data manager for customer organizations,
+  organization-owned customer contacts, independent sites, and pinned
+  requesters. The BOM catalog remains inside Spare Requests.
+- Adds verified data-folder relocation with a 20 MiB reserve check, complete
+  SHA-256 clone verification, soft restart, rollback on mismatch, and delayed
+  deletion of the original only after the restarted process accepts the clone.
+- Reworks Spare Request export around autocomplete fields, one customer-contact
+  field, automatic initials, configuration readiness prompts, and one BOM plus
+  quantity per group. Multiple faulty serials are entered one per line and
+  remain independent from the requested BOM quantity in records and XLSX output.
+
+## 3.1.1 - 2026-08-08
 
 - Adds independent, per-unit Spare Request records with immutable TT/RMA rules,
   partial-stock handling, requested-versus-delivered BOM tracking, and conflict

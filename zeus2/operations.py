@@ -10,8 +10,8 @@ class ReadOnlyTicketError(PermissionError):
 
 
 READ_ONLY_MESSAGE = (
-    "Direct Markdown ticket edits are forbidden. Edit recognized local fields "
-    "through the Zeus web panel or in Pendings.xlsx; both paths keep Pendings authoritative."
+    "Direct extension writes are forbidden. Edit recognized work fields through "
+    "the Zeus web panel so the local Markdown database remains authoritative."
 )
 
 

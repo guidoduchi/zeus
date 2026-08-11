@@ -18,8 +18,12 @@ OUTLOOK_STORE_SUFFIXES = {".ost", ".pst"}
 # Runtime markers (processed filenames, hashes and successful operation times)
 # live in current/state.json and are never accepted from this file.
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 6,
+    "schema_version": 10,
     "paths": {
+        # ``None`` keeps the mutable database under ``%LOCALAPPDATA%\\Zeus\\data``.
+        # A configured value is only written by the verified migration workflow;
+        # the generic settings editor must never repoint it directly.
+        "data_directory": None,
         "workbook_directory": None,
         "advanced_search_directory": None,
         "outlook_store_path": None,
@@ -33,12 +37,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "poll_interval_minutes": 15,
     },
     "email": {
-        "fetch_interval_days": 7,
-        "sync_mode": "scheduled",  # scheduled | after_fetch
-        "sync_interval_days": 7,
-        "retained_message_count": 7,
+        "fetch_interval_minutes": 60,
+        "sync_mode": "after_fetch",  # scheduled | after_fetch
+        "sync_interval_minutes": 60,
+        # ``None`` retains every matched body. A finite non-negative integer is
+        # an explicit per-ticket cap; 0 keeps counters without storing bodies.
+        "retained_message_count": None,
         "incremental_overlap_days": 7,
         "fetch_new_ticket_history_automatically": True,
+        # Organization-specific senders stay in local configuration rather
+        # than being embedded in the distributable application.
+        "request_confirmation_sender": None,
+        "dispatch_notification_sender": None,
+        "warehouse_sender_domain": None,
     },
     "aging": {
         "calendar_days": True,
@@ -49,6 +60,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "planned_due_soon_days": 2,
         "resolve_due_soon_days": 3,
         "resolve_suspend_status_contains": ["suspend"],
+        "spare_dispatch_red_days": 20,
     },
     "excel": {
         "portal_url_template": None,
@@ -58,6 +70,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "port": 8765,
         "open_browser": True,
         "system_tray": True,
+        "font_scale": "standard",
+        "show_detail_history": False,
     },
 }
 
@@ -83,6 +97,14 @@ class SettingSpec:
 
 
 SETTING_SPECS: tuple[SettingSpec, ...] = (
+    SettingSpec(
+        "paths.data_directory",
+        "Zeus data folder",
+        "Application storage",
+        "data_directory",
+        "Mutable Markdown database, backups, audit history, profile, and local managers. Use Move data to change it safely.",
+        editable=False,
+    ),
     SettingSpec(
         "paths.workbook_directory",
         "Workbook folder",
@@ -126,7 +148,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Spare Request XLSX template",
         "Paths",
         "xlsx_template",
-        "Local two-sheet Huawei request template. The file remains outside the installation and repository.",
+        "Local two-sheet request template. Worksheet names are preserved from the selected file.",
         nullable=True,
     ),
     SettingSpec(
@@ -149,15 +171,15 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Data query interval",
         "Data sources",
         "integer",
-        "Minutes between Pendings-first source queries while Zeus is open; 0 disables scheduled queries.",
+        "Minutes between Advanced Search checks while Zeus is open; 0 disables scheduled checks.",
         minimum=0,
     ),
     SettingSpec(
-        "email.fetch_interval_days",
+        "email.fetch_interval_minutes",
         "Email fetch interval",
         "Email",
         "integer",
-        "Calendar days between Outlook fetches; -1 startup, 0 manual only.",
+        "Minutes between Outlook fetches while Zeus is open; -1 startup only, 0 manual only.",
         minimum=-1,
     ),
     SettingSpec(
@@ -169,11 +191,11 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         choices=("scheduled", "after_fetch"),
     ),
     SettingSpec(
-        "email.sync_interval_days",
+        "email.sync_interval_minutes",
         "Email synchronization interval",
         "Email",
         "integer",
-        "Calendar days between staged-email syncs; -1 startup, 0 manual only.",
+        "Minutes between staged-email syncs when it is independent; linked mode inherits the fetch interval.",
         minimum=-1,
     ),
     SettingSpec(
@@ -181,8 +203,9 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Retained email bodies",
         "Email",
         "integer",
-        "Newest sent/received message bodies retained per ticket.",
+        "All sent/received message bodies are retained when blank. Enter a maximum per ticket, or 0 to keep counters without bodies.",
         minimum=0,
+        nullable=True,
     ),
     SettingSpec(
         "email.incremental_overlap_days",
@@ -198,6 +221,30 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Email",
         "boolean",
         "Fetch and synchronize history when a new ticket is discovered.",
+    ),
+    SettingSpec(
+        "email.request_confirmation_sender",
+        "Request-confirmation sender",
+        "Email",
+        "text",
+        "Exact trusted email address used for Spare SR and RMA assignment messages.",
+        nullable=True,
+    ),
+    SettingSpec(
+        "email.dispatch_notification_sender",
+        "Dispatch-notification sender",
+        "Email",
+        "text",
+        "Exact trusted email address used for delivered BOM and new-serial messages.",
+        nullable=True,
+    ),
+    SettingSpec(
+        "email.warehouse_sender_domain",
+        "Warehouse sender domain",
+        "Email",
+        "text",
+        "Trusted email domain for return/warehouse messages, for example @warehouse.example.",
+        nullable=True,
     ),
     SettingSpec(
         "aging.calendar_days",
@@ -256,6 +303,14 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         minimum=0,
     ),
     SettingSpec(
+        "aging.spare_dispatch_red_days",
+        "Spare dispatch overdue threshold",
+        "Aging",
+        "integer",
+        "Displayed dispatch age when an unresolved active spare turns red; 20 means red on day 20.",
+        minimum=0,
+    ),
+    SettingSpec(
         "aging.resolve_suspend_status_contains",
         "Suspended-status terms",
         "Aging",
@@ -299,6 +354,21 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "Application",
         "boolean",
         "Keep Open, Logs, Restart, and Exit controls in the Windows notification area.",
+    ),
+    SettingSpec(
+        "web.font_scale",
+        "Interface text size",
+        "Appearance",
+        "choice",
+        "Use one consistent typography scale throughout Zeus.",
+        choices=("compact", "standard", "large"),
+    ),
+    SettingSpec(
+        "web.show_detail_history",
+        "Show raw detail history",
+        "Developer options",
+        "boolean",
+        "Expose the raw History tab in Service Request and Active Request details. Off by default for ordinary users.",
     ),
 )
 
@@ -357,12 +427,23 @@ def get_dotted(config: dict[str, Any], dotted_key: str) -> Any:
     return cursor
 
 
+def retained_message_limit(config: dict[str, Any]) -> int | None:
+    """Return the explicit body cap, or ``None`` when every body is retained."""
+
+    value = config.get("email", {}).get("retained_message_count")
+    return None if value is None else int(value)
+
+
 def _looks_like_outlook_store(value: Any) -> bool:
     return bool(value) and Path(str(value).strip().strip('"')).suffix.lower() in OUTLOOK_STORE_SUFFIXES
 
 
 def _migrate_legacy_keys(saved: dict[str, Any]) -> dict[str, Any]:
     migrated = copy.deepcopy(saved)
+    try:
+        saved_schema = int(migrated.get("schema_version") or 1)
+    except (TypeError, ValueError):
+        saved_schema = 1
     paths = migrated.setdefault("paths", {})
     if not isinstance(paths, dict):
         paths = {}
@@ -390,11 +471,49 @@ def _migrate_legacy_keys(saved: dict[str, Any]) -> dict[str, Any]:
         email = migrated.setdefault("email", {})
         if "historical_days" in legacy_mail and "incremental_overlap_days" not in email:
             email["incremental_overlap_days"] = legacy_mail["historical_days"]
+    email = migrated.setdefault("email", {})
+    if not isinstance(email, dict):
+        email = {}
+        migrated["email"] = email
+    old_fetch = email.pop("fetch_interval_days", None)
+    old_sync = email.pop("sync_interval_days", None)
+    if "fetch_interval_minutes" not in email and old_fetch is not None:
+        try:
+            old_fetch_value = int(old_fetch)
+        except (TypeError, ValueError):
+            old_fetch_value = 7
+        email["fetch_interval_minutes"] = (
+            old_fetch_value
+            if old_fetch_value in {-1, 0}
+            else 60 if saved_schema <= 9 and old_fetch_value == 7
+            else old_fetch_value * 1440
+        )
+    if "sync_interval_minutes" not in email and old_sync is not None:
+        try:
+            old_sync_value = int(old_sync)
+        except (TypeError, ValueError):
+            old_sync_value = 7
+        email["sync_interval_minutes"] = (
+            old_sync_value
+            if old_sync_value in {-1, 0}
+            else 60 if saved_schema <= 9 and old_sync_value == 7
+            else old_sync_value * 1440
+        )
+    if (
+        saved_schema <= 9
+        and old_fetch == 7
+        and old_sync == 7
+        and email.get("sync_mode") == "scheduled"
+    ):
+        # 3.1.7 makes the ordinary one-hour fetch+sync operation the default.
+        # Preserve deliberately customized schedules, but migrate the former
+        # untouched seven-day defaults into linked mode.
+        email["sync_mode"] = "after_fetch"
     migrated.pop("base_dir", None)
     migrated.pop("updatefile_dir", None)
     migrated.pop("mail", None)
     paths.pop("update_directory", None)
-    migrated["schema_version"] = 6
+    migrated["schema_version"] = 10
     return migrated
 
 
@@ -440,13 +559,16 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
         raise ValueError("advanced_search.poll_interval_minutes cannot be negative")
 
     email = config.get("email", {})
-    for key in ("fetch_interval_days", "sync_interval_days"):
+    for key in ("fetch_interval_minutes", "sync_interval_minutes"):
         value = _require_integer(config, f"email.{key}")
         if value < -1:
             raise ValueError(f"email.{key} must be -1, 0, or a positive integer")
-    retained = _require_integer(config, "email.retained_message_count")
-    if retained < 0:
-        raise ValueError("email.retained_message_count cannot be negative")
+    retained = get_dotted(config, "email.retained_message_count")
+    if retained is not None:
+        if isinstance(retained, bool) or not isinstance(retained, int):
+            raise ValueError("email.retained_message_count must be a whole number or null")
+        if retained < 0:
+            raise ValueError("email.retained_message_count cannot be negative")
     overlap = _require_integer(config, "email.incremental_overlap_days")
     if overlap < 0:
         raise ValueError("email.incremental_overlap_days cannot be negative")
@@ -454,6 +576,14 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
         raise ValueError("email.sync_mode must be 'scheduled' or 'after_fetch'")
     if not isinstance(email.get("fetch_new_ticket_history_automatically"), bool):
         raise ValueError("email.fetch_new_ticket_history_automatically must be true or false")
+    for key in (
+        "request_confirmation_sender",
+        "dispatch_notification_sender",
+        "warehouse_sender_domain",
+    ):
+        value = email.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"email.{key} must be text or null")
 
     aging = config.get("aging", {})
     if aging.get("calendar_days") is not True:
@@ -465,6 +595,7 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
         "ticket_age_red_days",
         "planned_due_soon_days",
         "resolve_due_soon_days",
+        "spare_dispatch_red_days",
     ):
         if _require_integer(config, f"aging.{key}") < 0:
             raise ValueError(f"aging.{key} cannot be negative")
@@ -488,9 +619,11 @@ def _validate(config: dict[str, Any], *, validate_paths: bool = False) -> None:
     port = _require_integer(config, "web.port")
     if not 1024 <= port <= 65535:
         raise ValueError("web.port must be between 1024 and 65535")
-    for key in ("open_browser", "system_tray"):
+    for key in ("open_browser", "system_tray", "show_detail_history"):
         if not isinstance(config.get("web", {}).get(key), bool):
             raise ValueError(f"web.{key} must be true or false")
+    if config.get("web", {}).get("font_scale") not in {"compact", "standard", "large"}:
+        raise ValueError("web.font_scale must be 'compact', 'standard', or 'large'")
 
 
 def load_config(home: Path) -> dict[str, Any]:
@@ -501,7 +634,11 @@ def load_config(home: Path) -> dict[str, Any]:
     migrated = _migrate_legacy_keys(saved)
     _assert_known_structure(migrated)
     config = deep_merge(DEFAULT_CONFIG, migrated)
-    config["schema_version"] = 6
+    config["schema_version"] = 10
+    if config.get("email", {}).get("sync_mode") == "after_fetch":
+        config["email"]["sync_interval_minutes"] = config["email"][
+            "fetch_interval_minutes"
+        ]
     _validate(config)
     return config
 
@@ -509,9 +646,17 @@ def load_config(home: Path) -> dict[str, Any]:
 def save_config(home: Path, config: dict[str, Any]) -> Path:
     resolved_home = home.expanduser().resolve()
     resolved_home.mkdir(parents=True, exist_ok=True)
+    # Loading may repair legacy aliases, but saving must reject typos and
+    # unknown root keys instead of silently consuming them as migrations.
     _assert_known_structure(config)
-    prepared = deep_merge(DEFAULT_CONFIG, config)
-    prepared["schema_version"] = 6
+    migrated = _migrate_legacy_keys(config)
+    _assert_known_structure(migrated)
+    prepared = deep_merge(DEFAULT_CONFIG, migrated)
+    prepared["schema_version"] = 10
+    if prepared.get("email", {}).get("sync_mode") == "after_fetch":
+        prepared["email"]["sync_interval_minutes"] = prepared["email"][
+            "fetch_interval_minutes"
+        ]
     _validate(prepared, validate_paths=True)
     path = config_path(resolved_home)
     atomic_write_json(path, prepared)

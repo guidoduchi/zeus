@@ -6,13 +6,54 @@ const STORAGE_KEY = "zeus3.dashboard.columns";
 interface StoredPreferences {
   order: string[];
   visible: string[];
+  layoutVersion: number;
 }
+
+const CURRENT_LAYOUT_VERSION = 2;
 
 function defaults(definitions: ColumnDefinition[]): StoredPreferences {
   return {
     order: definitions.map((column) => column.key),
     visible: definitions.filter((column) => column.default).map((column) => column.key),
+    layoutVersion: CURRENT_LAYOUT_VERSION,
   };
+}
+
+function mergeLegacyMaintenanceWindowColumns(
+  preferences: StoredPreferences,
+  definitions: ColumnDefinition[],
+): StoredPreferences {
+  const known = new Set(definitions.map((column) => column.key));
+  if (!known.has("done") || known.has("plannedDate")) return preferences;
+  const aliases = new Set(["done", "plannedDate"]);
+  const merge = (values: string[], include: boolean) => {
+    const firstAlias = values.findIndex((key) => aliases.has(key));
+    const merged = values.filter((key) => !aliases.has(key));
+    if (include) {
+      const insertion = firstAlias < 0
+        ? merged.length
+        : values.slice(0, firstAlias).filter((key) => !aliases.has(key)).length;
+      merged.splice(insertion, 0, "done");
+    }
+    return merged;
+  };
+  return {
+    order: merge(preferences.order, preferences.order.some((key) => aliases.has(key))),
+    visible: merge(preferences.visible, preferences.visible.some((key) => aliases.has(key))),
+    layoutVersion: preferences.layoutVersion,
+  };
+}
+
+function migrateSparePartsAfterLastEmail(preferences: StoredPreferences): StoredPreferences {
+  if (preferences.layoutVersion >= CURRENT_LAYOUT_VERSION) return preferences;
+  const order = [...preferences.order];
+  const emailIndex = order.indexOf("emailLabel");
+  const spareIndex = order.indexOf("spareBadges");
+  if (emailIndex >= 0 && spareIndex >= 0) {
+    order.splice(spareIndex, 1);
+    order.splice(order.indexOf("emailLabel") + 1, 0, "spareBadges");
+  }
+  return { ...preferences, order, layoutVersion: CURRENT_LAYOUT_VERSION };
 }
 
 function readStored(definitions: ColumnDefinition[], storageKey: string): StoredPreferences {
@@ -27,13 +68,20 @@ function readStored(definitions: ColumnDefinition[], storageKey: string): Stored
     const storedVisible = Array.isArray(parsed.visible)
       ? parsed.visible.filter((key): key is string => typeof key === "string")
       : [];
+    const layoutVersion = Number.isFinite(parsed.layoutVersion)
+      ? Number(parsed.layoutVersion)
+      : 1;
     // App bootstrap renders once before the dashboard schema arrives. Preserve
     // the raw known-later keys through that render so a reload cannot replace a
     // user's saved choices with defaults.
-    if (!definitions.length) return { order: storedOrder, visible: storedVisible };
+    if (!definitions.length) return { order: storedOrder, visible: storedVisible, layoutVersion };
+    const migrated = migrateSparePartsAfterLastEmail(mergeLegacyMaintenanceWindowColumns(
+      { order: storedOrder, visible: storedVisible, layoutVersion },
+      definitions,
+    ));
     const known = new Set(definitions.map((column) => column.key));
-    const previouslyKnown = new Set(storedOrder);
-    const order = storedOrder.filter((key) => known.has(key));
+    const previouslyKnown = new Set(migrated.order);
+    const order = migrated.order.filter((key) => known.has(key));
     for (const key of fallback.order) {
       if (!order.includes(key)) order.push(key);
     }
@@ -42,7 +90,7 @@ function readStored(definitions: ColumnDefinition[], storageKey: string): Stored
       if (ticketIndex >= 0) order.splice(ticketIndex, 1);
       order.unshift("ticketId");
     }
-    const visible = storedVisible.filter((key) => known.has(key));
+    const visible = migrated.visible.filter((key) => known.has(key));
     if (!visible.length) visible.push(...fallback.visible);
     for (const column of definitions) {
       if (column.default && !previouslyKnown.has(column.key) && !visible.includes(column.key)) {
@@ -50,7 +98,7 @@ function readStored(definitions: ColumnDefinition[], storageKey: string): Stored
       }
     }
     if (known.has("ticketId") && !visible.includes("ticketId")) visible.unshift("ticketId");
-    return { order, visible };
+    return { order, visible, layoutVersion: migrated.layoutVersion };
   } catch {
     return fallback;
   }
@@ -66,9 +114,12 @@ export function useColumnPreferences(definitions: ColumnDefinition[], storageKey
   useEffect(() => {
     if (!definitions.length) return;
     setPreferences((current) => {
+      const migrated = migrateSparePartsAfterLastEmail(
+        mergeLegacyMaintenanceWindowColumns(current, definitions),
+      );
       const known = new Set(definitions.map((column) => column.key));
-      const previouslyKnown = new Set(current.order);
-      const order = current.order.filter((key) => known.has(key));
+      const previouslyKnown = new Set(migrated.order);
+      const order = migrated.order.filter((key) => known.has(key));
       for (const column of definitions) {
         if (!order.includes(column.key)) order.push(column.key);
       }
@@ -77,7 +128,7 @@ export function useColumnPreferences(definitions: ColumnDefinition[], storageKey
         if (ticketIndex >= 0) order.splice(ticketIndex, 1);
         order.unshift("ticketId");
       }
-      const visible = current.visible.filter((key) => known.has(key));
+      const visible = migrated.visible.filter((key) => known.has(key));
       if (!visible.length) visible.push(...defaults(definitions).visible);
       for (const column of definitions) {
         if (column.default && !previouslyKnown.has(column.key) && !visible.includes(column.key)) {
@@ -85,7 +136,7 @@ export function useColumnPreferences(definitions: ColumnDefinition[], storageKey
         }
       }
       if (known.has("ticketId") && !visible.includes("ticketId")) visible.unshift("ticketId");
-      return { order, visible };
+      return { order, visible, layoutVersion: migrated.layoutVersion };
     });
   }, [definitions]);
 

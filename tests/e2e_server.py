@@ -18,7 +18,13 @@ if str(PROJECT_ROOT) not in sys.path:
 from zeus2.config import save_config
 from zeus2.excel_export import publish_operational_workbooks
 from zeus2.main import main
-from zeus2.spare_request_excel import append_archived_item
+from zeus2.reference_data import save_user_profile
+from zeus2.spare_request_excel import (
+    FAULTY_TAG_SHEET,
+    REQUEST_SHEET,
+    RETURN_SHEET,
+    append_archived_item,
+)
 from zeus2.spare_requests import (
     create_request_record,
     normalize_profile,
@@ -27,7 +33,7 @@ from zeus2.spare_requests import (
 )
 from zeus2.startup import run_startup
 from zeus2.store import ZeusStore
-from zeus2.tickets import LOCAL_COLUMNS, PENDING_COLUMNS
+from zeus2.tickets import LOCAL_COLUMNS, UPSTREAM_COLUMNS, normalize_local
 
 
 def pending_row(ticket_id: str, **values: object) -> dict[str, object]:
@@ -52,15 +58,18 @@ def pending_row(ticket_id: str, **values: object) -> dict[str, object]:
     return row
 
 
-def write_managed(path: Path, rows: list[dict[str, object]]) -> None:
-    """Write the minimal valid workbook consumed by the browser fixture."""
+def write_advanced(path: Path, rows: list[dict[str, object]]) -> None:
+    """Write the discovery source used by the database-first browser fixture."""
 
     workbook = Workbook()
     worksheet = workbook.active
-    worksheet.title = "Pendings"
-    worksheet.append(list(PENDING_COLUMNS))
+    worksheet.title = "Service Request"
+    worksheet.append(list(UPSTREAM_COLUMNS))
     for row in rows:
-        worksheet.append([row.get(column) for column in PENDING_COLUMNS])
+        worksheet.append([row.get(column) for column in UPSTREAM_COLUMNS])
+        worksheet.cell(worksheet.max_row, 1).hyperlink = (
+            f"https://example.invalid/sr/{row['SRNo']}"
+        )
     workbook.save(path)
     workbook.close()
 
@@ -69,14 +78,39 @@ def prepare_fixture(root: Path) -> Path:
     home = root / "home"
     workbooks = root / "workbooks"
     downloads = root / "downloads"
+    spare_exports = root / "spare-exports"
     workbooks.mkdir()
     downloads.mkdir()
+    spare_exports.mkdir()
     store = ZeusStore(home / "data", config_home=home)
     store.ensure_layout()
+    save_user_profile(
+        store.root,
+        {
+            "name": "Zeus Browser User",
+            "email": "browser.user@example.com",
+            "phone": "+593 99 000 0000",
+            "username": "browser-user",
+        },
+    )
     config = store.config
     config["paths"]["workbook_directory"] = str(workbooks)
     config["paths"]["advanced_search_directory"] = str(downloads)
     config["paths"]["outlook_store_path"] = None
+    request_template = root / "spare-request-template.xlsx"
+    request_book = Workbook()
+    request_book.active.title = REQUEST_SHEET
+    request_book.create_sheet(FAULTY_TAG_SHEET)
+    request_book.save(request_template)
+    request_book.close()
+    return_template = root / "spare-return-template.xlsx"
+    return_book = Workbook()
+    return_book.active.title = RETURN_SHEET
+    return_book.save(return_template)
+    return_book.close()
+    config["paths"]["spare_parts_export_directory"] = str(spare_exports)
+    config["paths"]["spare_request_template_path"] = str(request_template)
+    config["paths"]["spare_return_template_path"] = str(return_template)
     config["advanced_search"]["poll_interval_minutes"] = 0
     save_config(home, config)
 
@@ -104,8 +138,21 @@ def prepare_fixture(root: Path) -> Path:
         )
         for index in range(1, 35)
     ]
-    write_managed(workbooks / "Pendings.xlsx", rows)
+    write_advanced(
+        downloads / "Advanced Search(Service Request)20260808010101.xlsx",
+        rows,
+    )
     run_startup(store)
+    with store.transaction("e2e-database-work-fields", {}) as staging:
+        for row in rows:
+            ticket_id = str(row["SRNo"])
+            ticket = store.read_ticket(ticket_id, staging)
+            # Omit spare_parts so normalization performs the one-time legacy
+            # scalar-to-hierarchy migration inside the authoritative database.
+            ticket["local"] = normalize_local(
+                {"fields": {column: row.get(column) for column in LOCAL_COLUMNS}}
+            )
+            store.write_ticket_bundle(staging, ticket)
     legacy = store.read_ticket("39400001")
     quoted_lines = "\n".join(
         f"Quoted historical line {index:03d}: prior diagnostic context"
@@ -157,19 +204,22 @@ def prepare_fixture(root: Path) -> Path:
             "siteAddress": "Quito operations center",
             "cloud": "FusionSphere",
             "requester": {"name": "Zeus User", "email": "user@example.com"},
-            "contact": {"name": "Customer", "email": "customer@example.com"},
+            "contact": {
+                "name": "Customer",
+                "email": "customer@example.com",
+                "phone": "+593 98 000 0000",
+            },
         }
     )
     lines = normalize_request_lines(
         [
             {
                 "bom": "BOM-01",
-                "amount": 2,
                 "description": "Disk",
                 "part": "Disk",
                 "model": "2288H V5",
                 "device": "server-01",
-                "slot": "Slot 1",
+                "slots": ["Slot 1", "Slot 2"],
                 "faultySn": "FAULTY-01",
                 "reportDate": "2026-07-01",
             }
@@ -209,7 +259,7 @@ def prepare_fixture(root: Path) -> Path:
         tt="39400003",
         source="ticket",
         profile=profile,
-        lines=normalize_request_lines([{**lines[0], "amount": 1}]),
+        lines=normalize_request_lines([{**lines[0], "slots": ["Slot 3"]}]),
         export_path=None,
         subject="completed",
     )

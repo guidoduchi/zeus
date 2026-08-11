@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { browsePath, getSettings, openPath, saveSettings } from "../api";
-import type { Setting, SettingsPayload } from "../types";
+import {
+  browsePath,
+  getDatabaseMaintenance,
+  getSettings,
+  migrateDataDirectory,
+  openPath,
+  runDatabaseMaintenance,
+  saveSettings,
+} from "../api";
+import type { DatabaseMaintenanceStatus, Setting, SettingsPayload } from "../types";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -13,6 +22,11 @@ function editValue(value: unknown): string | boolean {
   if (typeof value === "boolean") return value;
   if (Array.isArray(value)) return value.join(", ");
   return value === null || value === undefined ? "" : String(value);
+}
+
+function choiceLabel(value: string): string {
+  const words = value.replaceAll("_", " ").replaceAll("-", " ");
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }
 
 function SettingControl({
@@ -28,7 +42,7 @@ function SettingControl({
   onBrowse: () => void;
   onOpen: () => void;
 }) {
-  const path = setting.kind === "directory" || setting.kind === "outlook_store" || setting.kind === "xlsx_template";
+  const path = setting.kind === "directory" || setting.kind === "data_directory" || setting.kind === "outlook_store" || setting.kind === "xlsx_template";
   return (
     <div className={`setting-row ${!setting.editable ? "fixed" : ""}`}>
       <div className="setting-copy">
@@ -45,7 +59,7 @@ function SettingControl({
           </label>
         ) : setting.kind === "choice" ? (
           <select id={`setting-${setting.key}`} value={String(value)} disabled={!setting.editable} onChange={(event) => onChange(event.target.value)}>
-            {setting.choices.map((choice) => <option value={choice} key={choice}>{choice}</option>)}
+            {setting.choices.map((choice) => <option value={choice} key={choice}>{choiceLabel(choice)}</option>)}
           </select>
         ) : setting.kind === "locked" ? (
           <input id={`setting-${setting.key}`} value={String(value)} disabled />
@@ -58,9 +72,9 @@ function SettingControl({
               value={String(value)}
               disabled={!setting.editable}
               onChange={(event) => onChange(event.target.value)}
-              placeholder={setting.nullable ? "Not configured" : undefined}
+              placeholder={setting.key === "email.retained_message_count" ? "All emails" : setting.nullable ? "Not configured" : undefined}
             />
-            {path && <button type="button" onClick={onBrowse}>Browse…</button>}
+            {path && <button type="button" onClick={onBrowse}>{setting.kind === "data_directory" ? "Move data…" : "Browse…"}</button>}
             {path && setting.status?.path && <button type="button" className="icon-button" onClick={onOpen} title="Open folder" aria-label={`Open ${setting.label}`}>↗</button>}
           </div>
         )}
@@ -73,12 +87,19 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
   const [payload, setPayload] = useState<SettingsPayload | null>(null);
   const [draft, setDraft] = useState<Record<string, string | boolean>>({});
   const [saving, setSaving] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [migrationTarget, setMigrationTarget] = useState<string | null>(null);
+  const [maintenance, setMaintenance] = useState<DatabaseMaintenanceStatus | null>(null);
+  const [checkingDatabase, setCheckingDatabase] = useState(false);
+  const [maintainingDatabase, setMaintainingDatabase] = useState(false);
+  const [maintenanceConfirmation, setMaintenanceConfirmation] = useState(false);
 
   useEffect(() => {
     getSettings().then((result) => {
       setPayload(result);
       setDraft(Object.fromEntries(result.settings.map((setting) => [setting.key, editValue(setting.value)])));
     }).catch(onError);
+    getDatabaseMaintenance().then(setMaintenance).catch(onError);
   }, [onError]);
 
   const categories = useMemo(() => {
@@ -116,13 +137,76 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
   async function browse(setting: Setting) {
     try {
       const result = await browsePath(setting.key);
-      if (!result.cancelled && result.path) setDraft((current) => ({ ...current, [setting.key]: result.path! }));
+      if (result.cancelled || !result.path) return;
+      if (setting.kind === "data_directory") {
+        setMigrationTarget(result.path);
+        return;
+      }
+      setDraft((current) => ({ ...current, [setting.key]: result.path! }));
     } catch (error) {
+      setMigrating(false);
       onError(error);
     }
   }
 
-  return (
+  async function confirmMigration() {
+    if (!migrationTarget) return;
+    setMigrating(true);
+    try {
+      await migrateDataDirectory(migrationTarget);
+      setMigrationTarget(null);
+      window.setTimeout(() => window.location.reload(), 2500);
+    } catch (error) {
+      setMigrating(false);
+      onError(error);
+    }
+  }
+
+  async function checkDatabase() {
+    setCheckingDatabase(true);
+    try {
+      setMaintenance(await getDatabaseMaintenance());
+    } catch (error) {
+      onError(error);
+    } finally {
+      setCheckingDatabase(false);
+    }
+  }
+
+  async function confirmDatabaseMaintenance() {
+    setMaintainingDatabase(true);
+    try {
+      const result = await runDatabaseMaintenance();
+      setMaintenance(result);
+      setMaintenanceConfirmation(false);
+      onSaved();
+    } catch (error) {
+      onError(error);
+    } finally {
+      setMaintainingDatabase(false);
+    }
+  }
+
+  const maintenanceLabel = maintenance?.status === "current"
+    ? "Database is current"
+    : maintenance?.status === "upgrade_available"
+      ? "Upgrade available"
+      : maintenance?.status === "repair_available"
+        ? "Markdown repair available"
+        : maintenance?.status === "blocked"
+          ? "Manual recovery required"
+          : maintenance?.status === "busy"
+            ? "Check paused during another operation"
+            : "Not checked";
+  const maintenanceActionLabel = maintenance?.status === "upgrade_available"
+    ? "Upgrade & repair"
+    : maintenance?.status === "repair_available"
+      ? "Repair Markdown"
+      : maintenance?.status === "blocked"
+        ? "Repair blocked"
+        : "No repair needed";
+
+  return <>
     <Modal
       title="Zeus configuration"
       subtitle="Validated controls replace direct JSON editing. Path dialogs open on this Windows computer."
@@ -131,7 +215,7 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
       actions={<>
         <span>{changedCount ? `${changedCount} unsaved setting(s)` : "Configuration is current"}</span>
         <button type="button" onClick={onClose}>Close</button>
-        <button type="button" className="primary-button" disabled={!changedCount || saving} onClick={save}>{saving ? "Saving…" : "Save configuration"}</button>
+        <button type="button" className="primary-button" disabled={!changedCount || saving || migrating} onClick={save}>{saving ? "Saving…" : "Save configuration"}</button>
       </>}
     >
       {!payload ? <div className="detail-loading">Reading configuration…</div> : (
@@ -151,9 +235,48 @@ export function SettingsModal({ onClose, onSaved, onError }: Props) {
               ))}
             </section>
           ))}
-          <div className="restart-note">Changing the preferred port takes effect the next time Zeus starts. The current server remains safely bound to its existing local port.</div>
+          <section className={`settings-group database-maintenance-group status-${maintenance?.status || "unknown"}`}>
+            <h3>Database maintenance</h3>
+            <div className="database-maintenance-summary">
+              <div>
+                <strong>{maintenanceLabel}</strong>
+                <span>{maintenance ? `Schema ${maintenance.storedSchemaVersion} → ${maintenance.currentSchemaVersion} · ${maintenance.ticketCount} ticket(s) · ${maintenance.spareRequestCount} Active Request(s)` : "Reading embedded Markdown records…"}</span>
+              </div>
+              <div className="database-maintenance-counts">
+                <span>Upgrade <strong>{maintenance?.outdatedTicketCount || 0}</strong></span>
+                <span>Repair <strong>{maintenance?.repairableMarkdownCount || 0}</strong></span>
+                <span>Review <strong>{maintenance?.reviewCount || 0}</strong></span>
+                <span>Blocked <strong>{maintenance?.blockedCount || 0}</strong></span>
+              </div>
+              <p>Check is read-only. Upgrade & repair creates a full backup, migrates a staging copy, regenerates readable Markdown from valid embedded records, validates the complete store, and replaces the live database only after every check passes.</p>
+              {!!maintenance?.reviewRecords.length && <ul className="database-maintenance-list review-list">{maintenance.reviewRecords.slice(0, 6).map((record, index) => <li key={`${record.ticketId || record.path}-${index}`}><strong>{record.ticketId || record.path}</strong><span>{record.message}</span></li>)}</ul>}
+              {!!maintenance?.blockedRecords.length && <ul className="database-maintenance-list blocked-list">{maintenance.blockedRecords.slice(0, 6).map((record, index) => <li key={`${record.path}-${index}`}><strong>{record.path}</strong><span>{record.message}</span></li>)}</ul>}
+              {maintenance?.changed && <small className="status-good">Maintenance completed. Backup: {maintenance.backup || "created by the transaction"}.</small>}
+              <div className="database-maintenance-actions">
+                <button type="button" className="secondary-button" disabled={checkingDatabase || maintainingDatabase} onClick={() => void checkDatabase()}>{checkingDatabase ? "Checking…" : "Check integrity"}</button>
+                <button type="button" className={maintenance?.status === "blocked" ? "danger-button" : "primary-button"} disabled={!maintenance?.canApply || maintainingDatabase} onClick={() => setMaintenanceConfirmation(true)}>{maintenanceActionLabel}</button>
+              </div>
+            </div>
+          </section>
+          <div className="restart-note">{migrating ? "The verified data clone is complete. Zeus is restarting into its new location…" : "Changing the preferred port takes effect the next time Zeus starts. Moving the data folder always performs its own soft restart."}</div>
         </div>
       )}
     </Modal>
-  );
+    {migrationTarget && <ConfirmationDialog
+      title="Move the Zeus data folder?"
+      message={`Zeus will clone and verify every mutable record at ${migrationTarget}, perform a soft restart, and remove the old data folder only after the new location starts successfully.`}
+      confirmLabel="Verify and move data"
+      busy={migrating}
+      onCancel={() => setMigrationTarget(null)}
+      onConfirm={() => void confirmMigration()}
+    />}
+    {maintenanceConfirmation && maintenance && <ConfirmationDialog
+      title="Upgrade and repair the Zeus database?"
+      message={`Zeus will back up the complete current database, upgrade ${maintenance.outdatedTicketCount} ticket record(s), repair ${maintenance.repairableMarkdownCount} readable Markdown file(s), validate the staged copy, and commit it atomically. Embedded records that cannot be decoded are never guessed.`}
+      confirmLabel="Back up, upgrade & repair"
+      busy={maintainingDatabase}
+      onCancel={() => setMaintenanceConfirmation(false)}
+      onConfirm={() => void confirmDatabaseMaintenance()}
+    />}
+  </>;
 }

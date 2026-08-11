@@ -5,7 +5,10 @@ interface Props {
   rows: SparePartSummary[];
   columns: ColumnDefinition[];
   selectedRowId: string | null;
-  onSelect: (row: SparePartSummary) => void;
+  draftTicketIds?: ReadonlySet<string>;
+  detailOpen: boolean;
+  onHighlight: (row: SparePartSummary) => void;
+  onOpen: (row: SparePartSummary) => void;
   onCloseDetail: () => void;
 }
 
@@ -13,7 +16,10 @@ export function SparePartsGrid({
   rows,
   columns,
   selectedRowId,
-  onSelect,
+  draftTicketIds,
+  detailOpen,
+  onHighlight,
+  onOpen,
   onCloseDetail,
 }: Props) {
   return (
@@ -23,9 +29,13 @@ export function SparePartsGrid({
       selectedRowId={selectedRowId}
       ariaLabel="Zeus spare parts"
       emptyTitle="No matching spare-parts records."
-      emptyHint="Add damaged devices and parts from an SR's Spare Parts editor."
+      emptyHint="Add affected devices and any replacement parts from an SR's Work Fields or Spare Parts editor."
       countLabel="part row(s)"
-      onSelect={onSelect}
+      draftTicketIds={draftTicketIds}
+      detailOpen={detailOpen}
+      selectionLabel={(row) => `SR ${row.ticketId}${row.part ? ` · ${row.part}` : ""}${row.slot ? ` · ${row.slot}` : ""}`}
+      onHighlight={onHighlight}
+      onOpen={onOpen}
       onCloseDetail={onCloseDetail}
     />
   );

@@ -4,16 +4,22 @@ import { WorkspaceGrid, type WorkspaceGridRow } from "./WorkspaceGrid";
 interface Props {
   tickets: TicketSummary[];
   columns: ColumnDefinition[];
-  selectedId: string | null;
-  onSelect: (ticketId: string) => void;
+  selectedRowId: string | null;
+  draftTicketIds?: ReadonlySet<string>;
+  detailOpen: boolean;
+  onHighlight: (ticketId: string) => void;
+  onOpen: (ticketId: string) => void;
   onCloseDetail: () => void;
 }
 
 export function TicketGrid({
   tickets,
   columns,
-  selectedId,
-  onSelect,
+  selectedRowId,
+  draftTicketIds,
+  detailOpen,
+  onHighlight,
+  onOpen,
   onCloseDetail,
 }: Props) {
   return (
@@ -23,12 +29,16 @@ export function TicketGrid({
         rowId: ticket.ticketId,
       } as TicketSummary & WorkspaceGridRow))}
       columns={columns}
-      selectedRowId={selectedId}
+      selectedRowId={selectedRowId}
       ariaLabel="Zeus service requests"
-      emptyTitle="No matching Markdown ticket records."
-      emptyHint="Configure or query Pendings.xlsx to build the dashboard."
+      emptyTitle="No matching Zeus ticket records."
+      emptyHint="Check the configured Advanced Search source to discover new service requests."
       countLabel="service request(s)"
-      onSelect={(ticket) => onSelect(ticket.ticketId)}
+      draftTicketIds={draftTicketIds}
+      detailOpen={detailOpen}
+      selectionLabel={(ticket) => `Customer contact: ${ticket.customerContact || "—"}`}
+      onHighlight={(ticket) => onHighlight(ticket.ticketId)}
+      onOpen={(ticket) => onOpen(ticket.ticketId)}
       onCloseDetail={onCloseDetail}
     />
   );

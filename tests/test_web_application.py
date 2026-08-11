@@ -10,17 +10,20 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from openpyxl import load_workbook
 
 import zeus2.main as main_module
-from tests.test_zeus2 import pending_row, write_managed
-from zeus2.application.edits import PendingsConflictError, edit_ticket_through_pendings
+from tests.test_zeus2 import pending_row, upstream_row, write_advanced, write_managed
+from zeus2.application.edits import (
+    TicketRevisionConflictError,
+    edit_ticket_through_pendings,
+)
 from zeus2.application.errors import ValidationError
-from zeus2.application.jobs import EventBroker, JobManager
+from zeus2.application.jobs import EventBroker, JobContext, JobManager
 from zeus2.application.serialization import (
     dashboard_payload,
     spare_parts_dashboard_payload,
@@ -35,10 +38,13 @@ from zeus2.excel_export import (
 )
 from zeus2.excel_import import WorkbookValidationError, read_pendings
 from zeus2.main import _restart_command
-from zeus2.startup import run_startup
+from zeus2.mail import MailFetchCancelled
+from zeus2.reconcile import sync_advanced_search
+from zeus2.reference_data import save_user_profile, user_profile_path
+from zeus2.startup import StartupResult, run_startup
 from zeus2.store import ZeusStore
 from zeus2.tickets import PENDING_COLUMNS
-from zeus2.utils import sha256_file
+from zeus2.utils import local_today, sha256_file
 from zeus2.web.runtime import InstanceRegistry, process_creation_marker
 from zeus2.web.server import ZeusWebServer
 
@@ -64,22 +70,63 @@ class WebFixture(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def seed_pendings_only(self) -> None:
+    def seed_database(self) -> None:
+        """Create one discovered ticket plus representative Zeus-owned fields."""
+
+        row = pending_row(
+            "12345678",
+            summary="Advanced Search builds Zeus",
+            **{"Site": "GYE", "Notes": "Initial note"},
+        )
         write_managed(
             self.books / "Pendings.xlsx",
-            [
-                pending_row(
-                    "12345678",
-                    summary="Pendings alone builds Zeus",
-                    **{"Site": "GYE", "Notes": "Initial note"},
-                )
-            ],
+            [row],
+        )
+        source = self.downloads / "Advanced Search(Service Request)20260801010101.xlsx"
+        write_advanced(
+            source,
+            [upstream_row("12345678", summary="Advanced Search builds Zeus")],
+        )
+        sync_advanced_search(self.store, source)
+        ticket = self.store.read_ticket("12345678")
+        edit_ticket_through_pendings(
+            self.store,
+            "12345678",
+            {"Site": "GYE", "Notes": "Initial note"},
+            expected_revision=ticket_revision(ticket),
         )
 
 
-class PendingsFirstSourceTests(WebFixture):
-    def test_pendings_alone_builds_markdown_and_dashboard(self) -> None:
-        self.seed_pendings_only()
+class DatabaseFirstSourceTests(WebFixture):
+    def test_customer_organization_from_advanced_search_reaches_dashboard_and_detail(self) -> None:
+        source = self.downloads / "Advanced Search(Service Request)20260811010101.xlsx"
+        row = upstream_row("12345678", summary="Organization mapping")
+        row["Customer Org."] = "Consorcio Ecuatoriano de Telecomunicaciones S.A."
+        write_advanced(source, [row])
+
+        sync_advanced_search(self.store, source)
+        service = ApplicationService(self.store)
+        try:
+            dashboard_ticket = service.dashboard(sort="report", search="")["tickets"][0]
+            detail = service.ticket("12345678")
+        finally:
+            service.stop()
+
+        self.assertEqual(
+            dashboard_ticket["customerOrganization"],
+            "Consorcio Ecuatoriano de Telecomunicaciones S.A.",
+        )
+        self.assertEqual(
+            detail["upstreamFields"]["Customer Org."],
+            "Consorcio Ecuatoriano de Telecomunicaciones S.A.",
+        )
+
+    def test_pendings_alone_is_read_only_output_and_does_not_seed_database(self) -> None:
+        write_managed(
+            self.books / "Pendings.xlsx",
+            [pending_row("12345678", **{"Notes": "must not import"})],
+        )
+        before_hash = sha256_file(self.books / "Pendings.xlsx")
         result = run_startup(self.store)
 
         self.assertFalse(result.advanced_search_valid)
@@ -90,18 +137,16 @@ class PendingsFirstSourceTests(WebFixture):
             any("Advanced Search was skipped" in notice for notice in result.notices)
         )
         self.assertFalse((self.books / "Closed.xlsx").exists())
-        ticket = self.store.read_ticket("12345678")
-        self.assertEqual(ticket["upstream"]["fields"]["Problem Summary"], "Pendings alone builds Zeus")
-        self.assertEqual(ticket["local"]["fields"]["Site"], "GYE")
+        self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), before_hash)
         dashboard = dashboard_payload(self.store)
-        self.assertEqual(dashboard["stats"]["active"], 1)
-        self.assertEqual(dashboard["tickets"][0]["ticketId"], "12345678")
-        self.assertEqual(dashboard["tickets"][0]["severity"], "Minor")
+        self.assertEqual(dashboard["stats"]["active"], 0)
+        self.assertEqual(dashboard["tickets"], [])
 
-    def test_browser_edit_writes_pendings_first_then_markdown(self) -> None:
-        self.seed_pendings_only()
+    def test_browser_edit_writes_database_without_touching_pendings(self) -> None:
+        self.seed_database()
         run_startup(self.store)
         before = self.store.read_ticket("12345678")
+        workbook_hash = sha256_file(self.books / "Pendings.xlsx")
 
         result = edit_ticket_through_pendings(
             self.store,
@@ -111,34 +156,111 @@ class PendingsFirstSourceTests(WebFixture):
         )
 
         self.assertTrue(result["changed"])
-        workbook = load_workbook(self.books / "Pendings.xlsx", data_only=False)
-        try:
-            headers = [cell.value for cell in workbook.active[1]]
-            notes_column = headers.index("Notes") + 1
-            done_column = headers.index("Done?") + 1
-            self.assertEqual(workbook.active.cell(2, notes_column).value, "Changed from Zeus web")
-            self.assertEqual(workbook.active.cell(2, done_column).value, "Y")
-        finally:
-            workbook.close()
+        self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), workbook_hash)
         updated = self.store.read_ticket("12345678")
         self.assertEqual(updated["local"]["fields"]["Notes"], "Changed from Zeus web")
         self.assertEqual(updated["local"]["fields"]["Done?"], "Y")
-        self.assertTrue((self.books / "Zeus Backups" / "Web edits").is_dir())
+        self.assertFalse((self.books / "Zeus Backups" / "Web edits").exists())
 
-    def test_normalized_spare_parts_and_calendar_round_trip_through_workbook(self) -> None:
-        write_managed(
-            self.books / "Pendings.xlsx",
+    def test_selected_ticket_drafts_commit_in_one_database_transaction(self) -> None:
+        source = self.downloads / "Advanced Search(Service Request)20260808010101.xlsx"
+        write_advanced(
+            source,
             [
-                pending_row(
-                    "12345678",
-                    summary="Derived work fields",
-                    **{"BOM": None, "Spare": "Y"},
-                )
+                upstream_row("12345678", summary="First protected draft"),
+                upstream_row("87654321", summary="Second protected draft"),
             ],
         )
+        sync_advanced_search(self.store, source)
+        service = ApplicationService(self.store)
+        try:
+            first = service.ticket("12345678")
+            second = service.ticket("87654321")
+            result = service.edit_tickets(
+                [
+                    {
+                        "ticketId": "12345678",
+                        "revision": first["revision"],
+                        "changes": {"Notes": "First saved draft"},
+                    },
+                    {
+                        "ticketId": "87654321",
+                        "revision": second["revision"],
+                        "changes": {"Planned Date": "2026-08-20", "Done?": "P"},
+                    },
+                ]
+            )
+        finally:
+            service.stop()
+
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["ticketIds"], ["12345678", "87654321"])
+        self.assertEqual(
+            self.store.read_ticket("12345678")["local"]["fields"]["Notes"],
+            "First saved draft",
+        )
+        self.assertEqual(
+            self.store.read_ticket("87654321")["local"]["fields"]["Done?"],
+            "P",
+        )
+        audit = self.store.audit_file.read_text(encoding="utf-8")
+        self.assertEqual(audit.count('"action": "web-local-batch-edit"'), 1)
+
+    def test_conflicted_draft_batch_changes_no_ticket(self) -> None:
+        source = self.downloads / "Advanced Search(Service Request)20260808010202.xlsx"
+        write_advanced(
+            source,
+            [
+                upstream_row("12345678", summary="First protected draft"),
+                upstream_row("87654321", summary="Second protected draft"),
+            ],
+        )
+        sync_advanced_search(self.store, source)
+        first = self.store.read_ticket("12345678")
+        second = self.store.read_ticket("87654321")
+        first_revision = ticket_revision(first)
+        stale_second_revision = ticket_revision(second)
+        edit_ticket_through_pendings(
+            self.store,
+            "87654321",
+            {"Notes": "Concurrent database change"},
+            expected_revision=stale_second_revision,
+        )
+        service = ApplicationService(self.store)
+        try:
+            with self.assertRaises(TicketRevisionConflictError):
+                service.edit_tickets(
+                    [
+                        {
+                            "ticketId": "12345678",
+                            "revision": first_revision,
+                            "changes": {"Notes": "Must roll back"},
+                        },
+                        {
+                            "ticketId": "87654321",
+                            "revision": stale_second_revision,
+                            "changes": {"Notes": "Must conflict"},
+                        },
+                    ]
+                )
+        finally:
+            service.stop()
+
+        self.assertNotEqual(
+            self.store.read_ticket("12345678")["local"]["fields"].get("Notes"),
+            "Must roll back",
+        )
+        self.assertEqual(
+            self.store.read_ticket("87654321")["local"]["fields"]["Notes"],
+            "Concurrent database change",
+        )
+
+    def test_normalized_spare_parts_save_to_database_then_export(self) -> None:
+        self.seed_database()
         run_startup(self.store)
         before = self.store.read_ticket("12345678")
         self.assertEqual(before["local"]["fields"]["Spare"], "N")
+        before_export_hash = sha256_file(self.books / "Pendings.xlsx")
 
         spare_parts = [
             {
@@ -186,6 +308,64 @@ class PendingsFirstSourceTests(WebFixture):
             result["changedFields"],
             ["Spare Parts", "Planned Date", "Spare"],
         )
+        self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), before_export_hash)
+        updated = self.store.read_ticket("12345678")
+        self.assertEqual(updated["local"]["fields"]["Planned Date"], "2026-08-21")
+        self.assertEqual(updated["local"]["fields"]["Spare"], "Y")
+        self.assertEqual(
+            updated["local"]["spare_parts"],
+            [
+                {
+                    "device_number": 1,
+                    "device": "server-a",
+                    "model": "2288H V5",
+                    "notes": None,
+                    "faulty_sns": ["FAULTY-1", "FAULTY-2"],
+                    "next_part_number": 3,
+                    "parts": [
+                        {
+                            "part_number": 1,
+                            "slot": "Slot 1",
+                            "part": "Disk",
+                            "bom": "BOM-9000",
+                            "new_sn": "NEW-1",
+                            "notes": None,
+                            "submitted_request_ids": [],
+                        },
+                        {
+                            "part_number": 2,
+                            "slot": "Slot 2",
+                            "part": "Disk",
+                            "bom": "BOM-9001",
+                            "new_sn": None,
+                            "notes": None,
+                            "submitted_request_ids": [],
+                        },
+                    ],
+                },
+                {
+                    "device_number": 2,
+                    "device": "server-b",
+                    "model": "CH121 V5",
+                    "notes": None,
+                    "faulty_sns": ["FAULTY-3"],
+                    "next_part_number": 2,
+                    "parts": [
+                        {
+                            "part_number": 1,
+                            "slot": "DIMM 3",
+                            "part": "Memory",
+                            "bom": "BOM-9002",
+                            "new_sn": "NEW-3",
+                            "notes": None,
+                            "submitted_request_ids": [],
+                        }
+                    ],
+                },
+            ],
+        )
+
+        publish_operational_workbooks(self.store, self.books, create_missing=True)
         workbook = load_workbook(self.books / "Pendings.xlsx", data_only=False)
         try:
             headers = [cell.value for cell in workbook.active[1]]
@@ -209,10 +389,6 @@ class PendingsFirstSourceTests(WebFixture):
             )
         finally:
             workbook.close()
-        updated = self.store.read_ticket("12345678")
-        self.assertEqual(updated["local"]["fields"]["Planned Date"], "2026-08-21")
-        self.assertEqual(updated["local"]["fields"]["Spare"], "Y")
-        self.assertEqual(updated["local"]["spare_parts"], spare_parts)
 
         spare_dashboard = spare_parts_dashboard_payload(
             self.store, sort="bom", direction="asc"
@@ -250,11 +426,11 @@ class PendingsFirstSourceTests(WebFixture):
         filtered = spare_parts_dashboard_payload(self.store, search="FAULTY-2")
         self.assertEqual(
             [row["bom"] for row in filtered["spareParts"]],
-            ["BOM-9001"],
+            ["BOM-9000", "BOM-9001"],
         )
 
     def test_spare_parts_export_folder_is_configurable_but_never_queried(self) -> None:
-        self.seed_pendings_only()
+        self.seed_database()
         run_startup(self.store)
         export_directory = self.root / "spare-exports"
         export_directory.mkdir()
@@ -287,7 +463,7 @@ class PendingsFirstSourceTests(WebFixture):
             service.stop()
 
     def test_finalized_spare_parts_remain_grouped_under_their_sr(self) -> None:
-        self.seed_pendings_only()
+        self.seed_database()
         run_startup(self.store)
         before = self.store.read_ticket("12345678")
         edit_ticket_through_pendings(
@@ -343,7 +519,7 @@ class PendingsFirstSourceTests(WebFixture):
 
             detail = service.ticket("12345678")
             self.assertEqual(detail["ticketId"], "12345678")
-            self.assertEqual(detail["summary"], "Pendings alone builds Zeus")
+            self.assertEqual(detail["summary"], "Advanced Search builds Zeus")
             self.assertTrue(detail["readOnly"])
             self.assertEqual(detail["source"], "closed")
             self.assertEqual(detail["spareParts"][0]["parts"][0]["bom"], "BOM-CLOSED")
@@ -357,7 +533,7 @@ class PendingsFirstSourceTests(WebFixture):
             service.stop()
 
     def test_normalized_spare_part_rejects_a_missing_parent_sr(self) -> None:
-        self.seed_pendings_only()
+        self.seed_database()
         run_startup(self.store)
         before = self.store.read_ticket("12345678")
         edit_ticket_through_pendings(
@@ -382,6 +558,7 @@ class PendingsFirstSourceTests(WebFixture):
             },
             expected_revision=ticket_revision(before),
         )
+        publish_operational_workbooks(self.store, self.books, create_missing=True)
         path = self.books / "Pendings.xlsx"
         workbook = load_workbook(path)
         try:
@@ -397,7 +574,7 @@ class PendingsFirstSourceTests(WebFixture):
             read_pendings(path)
 
     def test_spare_cannot_be_supplied_by_a_browser_edit(self) -> None:
-        self.seed_pendings_only()
+        self.seed_database()
         run_startup(self.store)
         before = self.store.read_ticket("12345678")
         workbook_hash = sha256_file(self.books / "Pendings.xlsx")
@@ -416,8 +593,8 @@ class PendingsFirstSourceTests(WebFixture):
         self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), workbook_hash)
         self.assertEqual(self.store.read_ticket("12345678")["local"]["fields"]["Spare"], "N")
 
-    def test_spare_parts_sheet_manual_edits_and_explicit_empty_row_round_trip(self) -> None:
-        self.seed_pendings_only()
+    def test_spare_parts_sheet_manual_edits_never_flow_back_to_database(self) -> None:
+        self.seed_database()
         run_startup(self.store)
         before = self.store.read_ticket("12345678")
         edit_ticket_through_pendings(
@@ -442,6 +619,7 @@ class PendingsFirstSourceTests(WebFixture):
             },
             expected_revision=ticket_revision(before),
         )
+        publish_operational_workbooks(self.store, self.books, create_missing=True)
 
         workbook = load_workbook(self.books / "Pendings.xlsx")
         sheet = workbook["Spare Parts"]
@@ -465,29 +643,22 @@ class PendingsFirstSourceTests(WebFixture):
         workbook.close()
 
         run_startup(self.store)
-        imported = self.store.read_ticket("12345678")
-        self.assertEqual(len(imported["local"]["spare_parts"]), 1)
-        self.assertEqual(len(imported["local"]["spare_parts"][0]["parts"]), 2)
-        self.assertEqual(
-            imported["local"]["spare_parts"][0]["parts"][0]["new_sn"],
-            "NEW-1",
+        authoritative = self.store.read_ticket("12345678")
+        self.assertEqual(len(authoritative["local"]["spare_parts"]), 1)
+        self.assertEqual(len(authoritative["local"]["spare_parts"][0]["parts"]), 1)
+        self.assertIsNone(
+            authoritative["local"]["spare_parts"][0]["parts"][0]["new_sn"]
         )
 
-        workbook = load_workbook(self.books / "Pendings.xlsx")
-        sheet = workbook["Spare Parts"]
-        sheet.delete_rows(2, max(1, sheet.max_row - 1))
-        sheet.append(["12345678"])
-        workbook.save(self.books / "Pendings.xlsx")
-        workbook.close()
-
-        run_startup(self.store)
-        cleared = self.store.read_ticket("12345678")
-        self.assertEqual(cleared["local"]["spare_parts"], [])
-        self.assertIsNone(cleared["local"]["fields"]["BOM"])
-        self.assertEqual(cleared["local"]["fields"]["Spare"], "N")
+        publish_operational_workbooks(self.store, self.books, create_missing=True)
+        generated = read_pendings(self.books / "Pendings.xlsx")
+        self.assertEqual(
+            len(generated.records["12345678"]["local"]["spare_parts"][0]["parts"]),
+            1,
+        )
 
     def test_normalized_workbook_rejects_deleted_spare_parts_sheet(self) -> None:
-        self.seed_pendings_only()
+        self.seed_database()
         run_startup(self.store)
         before = self.store.read_ticket("12345678")
         edit_ticket_through_pendings(
@@ -512,6 +683,7 @@ class PendingsFirstSourceTests(WebFixture):
             },
             expected_revision=ticket_revision(before),
         )
+        publish_operational_workbooks(self.store, self.books, create_missing=True)
 
         path = self.books / "Pendings.xlsx"
         workbook = load_workbook(path)
@@ -525,8 +697,8 @@ class PendingsFirstSourceTests(WebFixture):
         ):
             read_pendings(path)
 
-    def test_dashboard_exposes_total_emails_found_as_a_default_column(self) -> None:
-        self.seed_pendings_only()
+    def test_dashboard_combines_email_age_and_count_in_last_email_column(self) -> None:
+        self.seed_database()
         run_startup(self.store)
         ticket = self.store.read_ticket("12345678")
         ticket["email"]["total_received"] = 5
@@ -536,13 +708,26 @@ class PendingsFirstSourceTests(WebFixture):
         dashboard = dashboard_payload(self.store)
         self.assertEqual(dashboard["tickets"][0]["emailCount"], 8)
         email_column = next(
-            column for column in dashboard["columns"] if column["key"] == "emailCount"
+            column for column in dashboard["columns"] if column["key"] == "emailLabel"
         )
-        self.assertEqual(email_column["label"], "Emails")
+        mw_column = next(
+            column for column in dashboard["columns"] if column["key"] == "done"
+        )
+        self.assertEqual(email_column["label"], "Last Email")
         self.assertTrue(email_column["default"])
+        self.assertEqual(mw_column, {
+            "key": "done",
+            "label": "MW",
+            "width": 128,
+            "default": True,
+        })
+        self.assertNotIn("plannedDate", {column["key"] for column in dashboard["columns"]})
+        self.assertEqual(dashboard["tickets"][0]["emailLabel"], "No email")
+        self.assertEqual(dashboard["tickets"][0]["customerContact"], "Customer")
+        self.assertNotIn("emailCount", {column["key"] for column in dashboard["columns"]})
 
-    def test_external_excel_change_blocks_web_edit_without_overwrite(self) -> None:
-        self.seed_pendings_only()
+    def test_external_excel_change_is_ignored_by_database_edit(self) -> None:
+        self.seed_database()
         run_startup(self.store)
         ticket = self.store.read_ticket("12345678")
         workbook = load_workbook(self.books / "Pendings.xlsx")
@@ -552,22 +737,21 @@ class PendingsFirstSourceTests(WebFixture):
         workbook.close()
         changed_hash = sha256_file(self.books / "Pendings.xlsx")
 
-        with self.assertRaises(PendingsConflictError):
-            edit_ticket_through_pendings(
-                self.store,
-                "12345678",
-                {"Notes": "Web value that must not win"},
-                expected_revision=ticket_revision(ticket),
-            )
+        edit_ticket_through_pendings(
+            self.store,
+            "12345678",
+            {"Notes": "Database value wins at export"},
+            expected_revision=ticket_revision(ticket),
+        )
 
         self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), changed_hash)
         self.assertEqual(
             self.store.read_ticket("12345678")["local"]["fields"]["Notes"],
-            "Initial note",
+            "Database value wins at export",
         )
 
-    def test_query_recreates_deleted_pendings_from_markdown_not_a_backup(self) -> None:
-        self.seed_pendings_only()
+    def test_query_never_recreates_or_restores_deleted_pendings(self) -> None:
+        self.seed_database()
         run_startup(self.store)
         backup_directory = self.books / "Zeus Backups"
         backup_directory.mkdir(exist_ok=True)
@@ -579,31 +763,20 @@ class PendingsFirstSourceTests(WebFixture):
 
         ordinary_startup = run_startup(self.store)
         self.assertFalse((self.books / "Pendings.xlsx").exists())
-        self.assertTrue(
-            any("Pendings.xlsx was not found" in warning for warning in ordinary_startup.warnings)
-        )
+        self.assertFalse(any("Pendings" in warning for warning in ordinary_startup.warnings))
 
         query = run_startup(self.store, recreate_missing_pendings=True)
 
-        recreated = query.operations["pendings_recreation"]
-        self.assertTrue(recreated["created"])
-        self.assertEqual(recreated["source"], "markdown_database")
-        self.assertFalse(recreated["restoredBackup"])
-        self.assertTrue(any("No backup was restored" in notice for notice in query.notices))
-        self.assertFalse(any("PENDINGS WARNING" in warning for warning in query.warnings))
-        managed = read_pendings(self.books / "Pendings.xlsx")
+        self.assertNotIn("pendings_recreation", query.operations)
+        self.assertFalse((self.books / "Pendings.xlsx").exists())
         self.assertEqual(
-            managed.records["12345678"]["local"]["fields"]["Notes"],
+            self.store.read_ticket("12345678")["local"]["fields"]["Notes"],
             "Initial note",
-        )
-        self.assertEqual(
-            self.store.state()["pendings_state"]["last_import_sha256"],
-            sha256_file(self.books / "Pendings.xlsx"),
         )
         self.assertFalse((self.books / "Closed.xlsx").exists())
 
-    def test_save_recreates_deleted_pendings_then_applies_the_edit(self) -> None:
-        self.seed_pendings_only()
+    def test_save_succeeds_without_pendings_and_waits_for_export(self) -> None:
+        self.seed_database()
         run_startup(self.store)
         before = self.store.read_ticket("12345678")
         (self.books / "Pendings.xlsx").unlink()
@@ -616,41 +789,53 @@ class PendingsFirstSourceTests(WebFixture):
         )
 
         self.assertTrue(result["changed"])
-        self.assertTrue(result["pendingsRecreated"]["created"])
-        self.assertFalse(result["pendingsRecreated"]["restoredBackup"])
-        managed = read_pendings(self.books / "Pendings.xlsx")
-        self.assertEqual(
-            managed.records["12345678"]["local"]["fields"]["Notes"],
-            "Saved after deletion",
-        )
+        self.assertNotIn("pendingsRecreated", result)
+        self.assertFalse((self.books / "Pendings.xlsx").exists())
         self.assertEqual(
             self.store.read_ticket("12345678")["local"]["fields"]["Notes"],
             "Saved after deletion",
         )
         self.assertFalse((self.books / "Closed.xlsx").exists())
 
-    def test_recreation_keeps_closure_pending_markdown_rows_in_pendings(self) -> None:
-        self.seed_pendings_only()
+    def test_closure_pending_is_deleted_only_after_successful_explicit_export(self) -> None:
+        self.seed_database()
         run_startup(self.store)
-        ticket = self.store.read_ticket("12345678")
-        ticket["lifecycle"]["status"] = "closure_pending"
-        with self.store.transaction("test-closure-pending", {}) as staging:
-            self.store.write_ticket_bundle(staging, ticket)
-        (self.books / "Pendings.xlsx").unlink()
+        before_export_hash = sha256_file(self.books / "Pendings.xlsx")
+        newer = self.downloads / "Advanced Search(Service Request)20260802010101.xlsx"
+        write_advanced(newer, [upstream_row("87654321", summary="New source ticket")])
 
-        run_startup(self.store, recreate_missing_pendings=True)
+        query = run_startup(self.store)
 
         self.assertEqual(
-            set(read_pendings(self.books / "Pendings.xlsx").records),
-            {"12345678"},
+            query.operations["advanced_search"]["closure_pending_ids"],
+            ["12345678"],
         )
+        self.assertEqual(sha256_file(self.books / "Pendings.xlsx"), before_export_hash)
         self.assertEqual(
             self.store.read_ticket("12345678")["lifecycle"]["status"],
             "closure_pending",
         )
+        self.assertTrue(self.store.ticket_file("87654321").exists())
+
+        # Rechecking the same source keeps the marker and never finalizes it.
+        run_startup(self.store)
+        self.assertTrue(self.store.ticket_file("12345678").exists())
+
+        publish_operational_workbooks(self.store, self.books, create_missing=True)
+
+        self.assertFalse(self.store.ticket_file("12345678").exists())
+        self.assertEqual(
+            set(read_pendings(self.books / "Pendings.xlsx").records),
+            {"87654321"},
+        )
+        closed = load_workbook(self.books / "Closed.xlsx", read_only=True)
+        try:
+            self.assertEqual(str(closed.active["A2"].value), "12345678")
+        finally:
+            closed.close()
 
     def test_interrupted_recreation_is_finalized_from_its_journal(self) -> None:
-        self.seed_pendings_only()
+        self.seed_database()
         run_startup(self.store)
         (self.books / "Pendings.xlsx").unlink()
 
@@ -672,9 +857,9 @@ class PendingsFirstSourceTests(WebFixture):
         )
 
     def test_dashboard_supports_true_sr_ascending_and_descending_order(self) -> None:
-        write_managed(
-            self.books / "Pendings.xlsx",
-            [pending_row("12345678"), pending_row("12345680"), pending_row("12345679")],
+        write_advanced(
+            self.downloads / "Advanced Search(Service Request)20260801010101.xlsx",
+            [upstream_row("12345678"), upstream_row("12345680"), upstream_row("12345679")],
         )
         run_startup(self.store)
 
@@ -704,7 +889,7 @@ class JobManagerTests(unittest.TestCase):
 
         def first(context: object) -> dict[str, bool]:
             order.append("first-start")
-            context.report("query", "Reading Pendings")  # type: ignore[attr-defined]
+            context.report("query", "Checking Advanced Search")  # type: ignore[attr-defined]
             time.sleep(0.03)
             order.append("first-end")
             return {"ok": True}
@@ -725,14 +910,174 @@ class JobManagerTests(unittest.TestCase):
         manager.stop()
 
         self.assertEqual(order, ["first-start", "first-end", "second"])
-        self.assertTrue(any(event["payload"].get("message") == "Reading Pendings" for event in events))
+        self.assertTrue(any(event["payload"].get("message") == "Checking Advanced Search" for event in events))
         self.assertEqual(manager.get(one["id"])["status"], "succeeded")
         self.assertEqual(manager.get(two["id"])["status"], "succeeded")
 
+    def test_outlook_progress_preserves_counts_and_a_bounded_activity_log(self) -> None:
+        broker = EventBroker()
+        manager = JobManager(broker)
+        job = manager.submit(
+            "email-fetch",
+            "Fetching Outlook email",
+            lambda context: {"ok": True},
+        )
+        context = JobContext(manager, job["id"], threading.Event())
+
+        for scanned in range(100, 5_101, 100):
+            context.progress_callback(
+                {
+                    "phase": "scan",
+                    "folder": "Inbox",
+                    "index": scanned,
+                    "total": 20_000,
+                    "scanned": scanned,
+                    "matched": 12,
+                }
+            )
+
+        snapshot = manager.get(job["id"])
+        manager.stop()
+
+        self.assertEqual(snapshot["current"], 5_100)
+        self.assertEqual(snapshot["total"], 20_000)
+        self.assertIn("Inbox", snapshot["message"])
+        self.assertIn("5,100 / 20,000", snapshot["message"])
+        self.assertLessEqual(len(snapshot["updates"]), 50)
+        self.assertEqual(snapshot["updates"][-1]["current"], 5_100)
+
 
 class ApplicationServiceContractTests(WebFixture):
+    def test_dashboard_projection_is_cached_until_the_dataset_changes(self) -> None:
+        self.seed_database()
+        service = ApplicationService(self.store)
+        try:
+            with patch(
+                "zeus2.application.service.dashboard_payload",
+                wraps=dashboard_payload,
+            ) as serializer:
+                first = service.dashboard(sort="report", search="")
+                first["tickets"].clear()
+                second = service.dashboard(sort="report", search="")
+                self.assertEqual(serializer.call_count, 1)
+                self.assertEqual(len(second["tickets"]), 1)
+
+                service._touch_data("cache-test")
+                service.dashboard(sort="report", search="")
+                self.assertEqual(serializer.call_count, 2)
+        finally:
+            service.stop()
+
+    def test_raw_detail_history_setting_is_off_by_default_and_updates_bootstrap(self) -> None:
+        service = ApplicationService(self.store)
+        try:
+            self.assertFalse(service.bootstrap_payload()["appearance"]["showDetailHistory"])
+            settings = service.save_settings({"web.show_detail_history": True})
+            configured = next(
+                item for item in settings["settings"]
+                if item["key"] == "web.show_detail_history"
+            )
+            self.assertTrue(configured["value"])
+            self.assertTrue(service.bootstrap_payload()["appearance"]["showDetailHistory"])
+        finally:
+            service.stop()
+
+    def test_spare_prefill_maps_customer_and_multislot_device_data(self) -> None:
+        self.seed_database()
+        ticket = self.store.read_ticket("12345678")
+        ticket["upstream"]["fields"].update(
+            {
+                "Customer Organization": "Customer Org from Advanced Search",
+                "Customer Contact": "Customer Contact from Advanced Search",
+                "Contact Email": "customer@example.com",
+            }
+        )
+        ticket["local"]["spare_parts"] = [
+            {
+                "device": "server-a",
+                "model": "Server Model",
+                "faulty_sns": ["SERVER-SN-01", "MEMORY-SN-02"],
+                "parts": [
+                    {
+                        "slot": "DIMM101\nDIMM203\nDIMM103",
+                        "part": "DIMM",
+                        "bom": "BOM-9000",
+                        "notes": "Memory diagnostics completed.",
+                        "new_sn": None,
+                    }
+                ],
+            }
+        ]
+        self.store.write_ticket_bundle(self.store.current, ticket)
+        service = ApplicationService(self.store)
+        try:
+            prefill = service.spare_request_prefill("12345678")
+        finally:
+            service.stop()
+
+        profile = prefill["profile"]
+        self.assertEqual(profile["customerOrganization"], "Customer Org from Advanced Search")
+        self.assertEqual(profile["customerName"], "Customer Contact from Advanced Search")
+        self.assertEqual(profile["contact"]["email"], "customer@example.com")
+        self.assertEqual(prefill["reportDate"], "2026-07-01 10:00:00")
+        self.assertEqual(
+            prefill["lines"],
+            [
+                {
+                    "bom": "BOM-9000",
+                    "amount": 3,
+                    "description": "DIMM",
+                    "part": "DIMM",
+                    "model": "Server Model",
+                    "device": "server-a",
+                    "slot": "DIMM101\nDIMM203\nDIMM103",
+                    "slots": ["DIMM101", "DIMM203", "DIMM103"],
+                    "faultySn": "SERVER-SN-01\nMEMORY-SN-02",
+                    "notes": "Memory diagnostics completed.",
+                    "deviceNumber": 1,
+                    "partNumber": 1,
+                }
+            ],
+        )
+
+    def test_customer_import_uses_the_validated_form_values(self) -> None:
+        self.seed_database()
+        service = ApplicationService(self.store)
+        profile = {
+            "customerOrganization": "Consorcio Ecuatoriano de Telecomunicaciones",
+            "customerName": "Angel Guerrero",
+            "contact": {
+                "name": "Angel Guerrero",
+                "email": "angel@example.com",
+                "phone": "+593980000001",
+            },
+        }
+        try:
+            with self.assertRaisesRegex(ValidationError, "email and phone"):
+                service.import_customer_from_ticket(
+                    "12345678",
+                    {**profile, "contact": {**profile["contact"], "phone": ""}},
+                )
+            imported = service.import_customer_from_ticket("12345678", profile)
+        finally:
+            service.stop()
+
+        organization = next(
+            row
+            for row in imported["data"]["organizations"]
+            if row["name"] == profile["customerOrganization"]
+        )
+        customer = next(
+            row
+            for row in imported["data"]["customers"]
+            if row["name"] == profile["customerName"]
+        )
+        self.assertEqual(customer["organizationId"], organization["id"])
+        self.assertEqual(customer["email"], "angel@example.com")
+        self.assertEqual(customer["phone"], "+593980000001")
+
     def test_legacy_email_threads_are_compacted_without_resynchronizing(self) -> None:
-        self.seed_pendings_only()
+        self.seed_database()
         run_startup(self.store)
         ticket = self.store.read_ticket("12345678")
         raw_body = (
@@ -774,7 +1119,7 @@ class ApplicationServiceContractTests(WebFixture):
         self.assertIn("historial anterior", message["body"])
 
     def test_web_edit_returns_a_complete_immediately_renderable_ticket(self) -> None:
-        self.seed_pendings_only()
+        self.seed_database()
         run_startup(self.store)
         service = ApplicationService(self.store)
         try:
@@ -794,7 +1139,7 @@ class ApplicationServiceContractTests(WebFixture):
         finally:
             service.stop()
 
-    def test_scheduled_refresh_uses_the_full_pendings_first_query(self) -> None:
+    def test_scheduled_refresh_uses_the_advanced_search_query(self) -> None:
         service = ApplicationService(self.store)
         try:
             with patch.object(
@@ -808,8 +1153,36 @@ class ApplicationServiceContractTests(WebFixture):
         finally:
             service.stop()
 
-    def test_pendings_only_query_succeeds_when_advanced_search_is_absent(self) -> None:
-        self.seed_pendings_only()
+    def test_manual_query_only_reconciles_advanced_search(self) -> None:
+        service = ApplicationService(self.store)
+        try:
+            with (
+                patch("zeus2.application.service.run_startup") as full_startup,
+                patch(
+                    "zeus2.application.service.reconcile_advanced_and_new_mail",
+                    return_value=StartupResult(advanced_search_valid=True),
+                ) as advanced_only,
+            ):
+                job = service.submit_job("query", {})
+                deadline = time.monotonic() + 3
+                snapshot = service.jobs.get(job["id"])
+                while snapshot and snapshot["status"] in {"queued", "running"}:
+                    if time.monotonic() >= deadline:
+                        self.fail("Advanced Search-only query did not finish")
+                    time.sleep(0.01)
+                    snapshot = service.jobs.get(job["id"])
+
+            self.assertEqual(snapshot["status"], "succeeded")
+            full_startup.assert_not_called()
+            self.assertFalse(advanced_only.call_args.kwargs["fetch_new"])
+        finally:
+            service.stop()
+
+    def test_query_leaves_database_empty_when_only_pendings_exists(self) -> None:
+        write_managed(
+            self.books / "Pendings.xlsx",
+            [pending_row("12345678", **{"Notes": "must not import"})],
+        )
         service = ApplicationService(self.store)
         try:
             job = service.submit_job("query", {})
@@ -817,7 +1190,7 @@ class ApplicationServiceContractTests(WebFixture):
             snapshot = service.jobs.get(job["id"])
             while snapshot and snapshot["status"] in {"queued", "running"}:
                 if time.monotonic() >= deadline:
-                    self.fail("Pendings-only query did not finish")
+                    self.fail("Advanced Search query did not finish")
                 time.sleep(0.01)
                 snapshot = service.jobs.get(job["id"])
 
@@ -829,12 +1202,12 @@ class ApplicationServiceContractTests(WebFixture):
                     for notice in snapshot["result"]["notices"]
                 )
             )
-            self.assertEqual(service.dashboard(sort="report", search="")["stats"]["active"], 1)
+            self.assertEqual(service.dashboard(sort="report", search="")["stats"]["active"], 0)
         finally:
             service.stop()
 
-    def test_query_job_recreates_a_deleted_pendings_workbook(self) -> None:
-        self.seed_pendings_only()
+    def test_query_job_does_not_recreate_a_deleted_pendings_workbook(self) -> None:
+        self.seed_database()
         run_startup(self.store)
         (self.books / "Pendings.xlsx").unlink()
         service = ApplicationService(self.store)
@@ -850,47 +1223,28 @@ class ApplicationServiceContractTests(WebFixture):
 
             self.assertIsNotNone(snapshot)
             self.assertEqual(snapshot["status"], "succeeded")
-            self.assertTrue((self.books / "Pendings.xlsx").is_file())
-            self.assertTrue(
-                snapshot["result"]["operations"]["pendings_recreation"]["created"]
-            )
-            self.assertTrue(
-                any(
-                    "recreated it from 1 Markdown ticket record" in notice
-                    for notice in service.latest_startup.notices
-                )
-            )
+            self.assertFalse((self.books / "Pendings.xlsx").exists())
+            self.assertNotIn("pendings_recreation", snapshot["result"]["operations"])
         finally:
             service.stop()
 
-    def test_save_response_reports_recreation_and_clears_the_stale_warning(self) -> None:
-        self.seed_pendings_only()
+    def test_save_response_is_database_first_when_pendings_is_missing(self) -> None:
+        self.seed_database()
         startup = run_startup(self.store)
         (self.books / "Pendings.xlsx").unlink()
         service = ApplicationService(self.store)
         service.latest_startup = startup
-        service.latest_startup.warnings.append(
-            "PENDINGS WARNING — Pendings.xlsx was not found: deleted for test"
-        )
         try:
             before = service.ticket("12345678")
             result = service.edit_ticket(
                 "12345678",
-                changes={"Notes": "Recreated by the save endpoint"},
+                changes={"Notes": "Saved directly by the endpoint"},
                 expected_revision=before["revision"],
             )
 
-            self.assertTrue(result["pendingsRecreated"]["created"])
-            self.assertEqual(result["pendingsRecreated"]["rows"], 1)
-            self.assertFalse(
-                any(
-                    "Pendings.xlsx was not found" in warning
-                    for warning in service.latest_startup.warnings
-                )
-            )
-            self.assertTrue(
-                any("No backup was restored" in notice for notice in service.latest_startup.notices)
-            )
+            self.assertNotIn("pendingsRecreated", result)
+            self.assertFalse((self.books / "Pendings.xlsx").exists())
+            self.assertEqual(result["ticket"]["localFields"]["Notes"], "Saved directly by the endpoint")
         finally:
             service.stop()
 
@@ -907,6 +1261,7 @@ class ApplicationServiceContractTests(WebFixture):
             self.assertEqual(_restart_command(), ["C:/Zeus/zeus.exe", "serve"])
 
     def test_every_direct_email_job_fails_closed_when_outlook_is_disabled(self) -> None:
+        self.seed_database()
         service = ApplicationService(self.store)
         try:
             for kind in ("email-fetch", "email-sync", "email-rebuild"):
@@ -924,11 +1279,117 @@ class ApplicationServiceContractTests(WebFixture):
         finally:
             service.stop()
 
+    def test_manual_email_fetch_payload_forces_synchronization(self) -> None:
+        self.seed_database()
+        service = ApplicationService(self.store)
+        try:
+            with (
+                patch.object(service, "_require_outlook"),
+                patch(
+                    "zeus2.reconcile.sync_newest_advanced_search",
+                    side_effect=AssertionError(
+                        "A direct Outlook fetch must not query Advanced Search"
+                    ),
+                ),
+                patch(
+                    "zeus2.application.service.fetch_and_commit_outlook",
+                    return_value={"fetched": 1, "synchronized": 1},
+                ) as fetch,
+            ):
+                job = service.submit_job("email-fetch", {"synchronize": True})
+                deadline = time.monotonic() + 3
+                snapshot = service.jobs.get(job["id"])
+                while snapshot and snapshot["status"] in {"queued", "running"}:
+                    if time.monotonic() >= deadline:
+                        self.fail("Manual email fetch did not finish")
+                    time.sleep(0.01)
+                    snapshot = service.jobs.get(job["id"])
+
+            self.assertEqual(snapshot["status"], "succeeded")
+            self.assertTrue(fetch.call_args.kwargs["synchronize"])
+        finally:
+            service.stop()
+
+    def test_cancelled_outlook_fetch_is_reported_as_cancelled_not_failed(self) -> None:
+        self.seed_database()
+        service = ApplicationService(self.store)
+        try:
+            with (
+                patch.object(service, "_require_outlook"),
+                patch(
+                    "zeus2.application.service.fetch_and_commit_outlook",
+                    side_effect=MailFetchCancelled("Email fetch cancelled"),
+                ),
+            ):
+                job = service.submit_job("email-fetch", {})
+                deadline = time.monotonic() + 3
+                snapshot = service.jobs.get(job["id"])
+                while snapshot and snapshot["status"] in {"queued", "running"}:
+                    if time.monotonic() >= deadline:
+                        self.fail("Cancelled email fetch did not finish")
+                    time.sleep(0.01)
+                    snapshot = service.jobs.get(job["id"])
+
+            self.assertEqual(snapshot["status"], "cancelled")
+            self.assertIn("cancelled", snapshot["message"].lower())
+        finally:
+            service.stop()
+
+    def test_email_jobs_skip_without_opening_outlook_when_database_has_no_active_records(self) -> None:
+        service = ApplicationService(self.store)
+        try:
+            with (
+                patch.object(
+                    service,
+                    "_require_outlook",
+                    side_effect=AssertionError("Outlook must remain unopened"),
+                ),
+                patch(
+                    "zeus2.application.service.fetch_and_commit_outlook",
+                    side_effect=AssertionError("The Outlook scan must not start"),
+                ),
+                patch(
+                    "zeus2.application.service.synchronize_staged_email",
+                    side_effect=AssertionError("Email synchronization must not start"),
+                ),
+            ):
+                for kind in ("email-fetch", "email-sync", "email-rebuild"):
+                    job = service.submit_job(kind, {})
+                    deadline = time.monotonic() + 3
+                    snapshot = service.jobs.get(job["id"])
+                    while snapshot and snapshot["status"] in {"queued", "running"}:
+                        if time.monotonic() >= deadline:
+                            self.fail(f"{kind} did not finish")
+                        time.sleep(0.01)
+                        snapshot = service.jobs.get(job["id"])
+                    self.assertIsNotNone(snapshot)
+                    self.assertEqual(snapshot["status"], "succeeded")
+                    self.assertTrue(snapshot["result"]["skipped"])
+                    self.assertEqual(snapshot["result"]["reason"], "no_active_records")
+                    self.assertTrue(
+                        any(
+                            "No active Zeus records" in update["message"]
+                            for update in snapshot["updates"]
+                        )
+                    )
+            self.assertFalse(service.bootstrap_payload()["outlook"]["hasEligibleRecords"])
+        finally:
+            service.stop()
+
 
 class WebServerTests(WebFixture):
     def setUp(self) -> None:
         super().setUp()
-        self.seed_pendings_only()
+        save_user_profile(
+            self.store.root,
+            {
+                "name": "Zeus Test User",
+                "email": "zeus.user@example.com",
+                "phone": "+593 99 000 0000",
+                "username": "zeus-user",
+            },
+        )
+        self.seed_database()
         run_startup(self.store)
         self.service = ApplicationService(self.store)
         static = Path(__file__).resolve().parents[1] / "zeus2" / "web" / "static"
@@ -967,7 +1428,50 @@ class WebServerTests(WebFixture):
         self.assertEqual(status, 200)
         self.assertEqual(dashboard["stats"]["active"], 1)  # type: ignore[index]
         self.assertEqual(index["instanceId"], "test-instance")
+        self.assertEqual(
+            index["appearance"],
+            {"fontScale": "standard", "showDetailHistory": False},
+        )
         self.assertEqual(audit_before, audit_after)
+
+    def test_first_run_requires_profile_then_unlocks_the_workbench(self) -> None:
+        user_profile_path(self.store.root).unlink()
+        status, bootstrap, _ = self.read_json("/api/bootstrap")
+        self.assertEqual(status, 200)
+        self.assertTrue(bootstrap["onboarding"]["required"])
+
+        status, blocked, _ = self.read_json("/api/dashboard?sort=report&search=")
+        self.assertEqual(status, 428)
+        self.assertEqual(blocked["error"]["code"], "setup_required")
+
+        request = urllib.request.Request(
+            self.url + "/api/profile",
+            data=json.dumps(
+                {
+                    "profile": {
+                        "name": "First Run User",
+                        "email": "first.run@example.com",
+                        "phone": "+593 98 765 4321",
+                        "username": "first-run",
+                        "photoDataUrl": None,
+                    }
+                }
+            ).encode("utf-8"),
+            method="PATCH",
+            headers={
+                "Content-Type": "application/json",
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            saved = json.loads(response.read())
+        self.assertTrue(saved["complete"])
+        self.assertEqual(saved["profile"]["name"], "First Run User")
+        self.assertNotIn("password", saved["profile"])
+
+        status, dashboard, _ = self.read_json("/api/dashboard?sort=report&search=")
+        self.assertEqual(status, 200)
+        self.assertEqual(dashboard["stats"]["active"], 1)
 
     def test_spare_requests_workspace_is_available_without_mutating_sources(self) -> None:
         audit_before = self.store.audit_file.read_text(encoding="utf-8")
@@ -983,6 +1487,107 @@ class WebServerTests(WebFixture):
         self.assertEqual(payload["columns"][0]["label"], "TT")
         self.assertNotIn("tickets", payload)
         self.assertEqual(audit_before, audit_after)
+
+    def test_manual_spare_registration_route_needs_no_export_configuration(self) -> None:
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        payload = {
+            "source": "manual",
+            "ticketId": "12345678",
+            "reportDate": "2026-07-01",
+            "profile": {
+                "customerName": "Customer Network Team",
+                "siteCode": "GYE",
+                "siteAddress": "Guayaquil operations center",
+                "cloud": "Cloud",
+                "requester": {
+                    "name": "Zeus Test User",
+                    "email": "zeus.user@example.com",
+                    "phone": "+593990000000",
+                },
+                "contact": {
+                    "name": "Customer Contact",
+                    "email": "customer@example.com",
+                    "phone": "+593980000000",
+                },
+            },
+            "lines": [
+                {
+                    "bom": "BOM-1",
+                    "amount": 1,
+                    "description": "Disk",
+                    "part": "Disk",
+                    "reportDate": "2026-07-01",
+                }
+            ],
+        }
+        request = urllib.request.Request(
+            self.url + "/api/spare-requests/register-manual",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            registered = json.loads(response.read())
+            self.assertEqual(response.status, 201)
+
+        self.assertEqual(registered["request"]["creationMethod"], "zeus_create")
+        self.assertIsNone(registered["request"]["export"]["request_filename"])
+        self.assertEqual(
+            registered["request"]["history"][0]["action"],
+            "request-created",
+        )
+        request_id = registered["request"]["requestId"]
+        revision = registered["request"]["revision"]
+        delete_request = urllib.request.Request(
+            self.url + f"/api/spare-requests/{request_id}/delete",
+            data=json.dumps({"revision": revision}).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "If-Match": revision,
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(delete_request, timeout=3) as response:
+            deleted = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+        self.assertEqual(deleted["deleted"], request_id)
+        self.assertIsNone(deleted["exportPreserved"])
+
+    def test_manually_sent_fault_tag_route_preserves_the_mode_and_selection(self) -> None:
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        response_payload = {
+            "faultTagId": "FT-260811151500",
+            "faultTag": {"faultTagId": "FT-260811151500", "status": "sent"},
+        }
+        payload = {
+            "selections": [
+                {"itemId": "260811150000-0001", "condition": "Faulty"}
+            ]
+        }
+        with patch.object(
+            self.service,
+            "register_sent_fault_tag",
+            return_value=response_payload,
+        ) as register:
+            request = urllib.request.Request(
+                self.url + "/api/spare-requests/fault-tags/register-sent",
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+                },
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                result = json.loads(response.read())
+                self.assertEqual(response.status, 201)
+
+        self.assertEqual(result, response_payload)
+        register.assert_called_once_with(payload["selections"], return_site=None)
 
     def test_ticket_patch_returns_the_complete_detail_contract(self) -> None:
         _, bootstrap, _ = self.read_json("/api/bootstrap")
@@ -1010,6 +1615,339 @@ class WebServerTests(WebFixture):
         self.assertEqual(edited["localFields"]["Notes"], "Complete API response")
         self.assertIsInstance(edited["history"], list)
         self.assertIsInstance(edited["mops"], list)
+
+    def test_overdue_maintenance_window_route_records_an_incomplete_attempt(self) -> None:
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        _, detail, _ = self.read_json("/api/tickets/12345678")
+        planned_date = (local_today() - timedelta(days=1)).isoformat()
+        plan_request = urllib.request.Request(
+            self.url + "/api/tickets/12345678/local",
+            data=json.dumps(
+                {
+                    "revision": detail["revision"],
+                    "changes": {"Planned Date": planned_date},
+                }
+            ).encode("utf-8"),
+            method="PATCH",
+            headers={
+                "Content-Type": "application/json",
+                "If-Match": str(detail["revision"]),
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(plan_request, timeout=3) as response:
+            planned = json.loads(response.read())["ticket"]
+
+        _, due_bootstrap, _ = self.read_json("/api/bootstrap")
+        self.assertEqual(
+            [ticket["ticketId"] for ticket in due_bootstrap["maintenanceWindowsDue"]],
+            ["12345678"],
+        )
+        confirm_request = urllib.request.Request(
+            self.url + "/api/tickets/12345678/maintenance-window/confirm",
+            data=json.dumps(
+                {
+                    "revision": planned["revision"],
+                    "plannedDate": planned_date,
+                    "successful": False,
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "If-Match": str(planned["revision"]),
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(confirm_request, timeout=3) as response:
+            result = json.loads(response.read())["ticket"]
+
+        self.assertEqual(result["maintenanceWindow"]["status"], "incomplete")
+        self.assertEqual(result["maintenanceWindow"]["display"], "Incomplete")
+        self.assertIsNone(result["localFields"]["Planned Date"])
+        self.assertEqual(
+            result["maintenanceWindow"]["attempts"][-1]["date"],
+            planned_date,
+        )
+
+    def test_shared_maintenance_window_routes_enforce_one_open_window_and_review_every_sr(self) -> None:
+        source = self.downloads / "Advanced Search(Service Request)20260811010101.xlsx"
+        write_advanced(
+            source,
+            [
+                upstream_row("12345678", summary="First shared MW member"),
+                upstream_row("23456789", summary="Independent shared MW member"),
+                upstream_row("87654321", summary="Second shared MW member"),
+            ],
+        )
+        sync_advanced_search(self.store, source)
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+        }
+        planned_date = (local_today() - timedelta(days=1)).isoformat()
+        schedule_body = {
+            "date": planned_date,
+            "startTime": "23:30",
+            "ticketIds": ["12345678", "87654321"],
+        }
+
+        with patch(
+            "zeus2.application.upcoming.local_today",
+            return_value=local_today() - timedelta(days=2),
+        ):
+            schedule_request = urllib.request.Request(
+                self.url + "/api/maintenance-windows",
+                data=json.dumps(schedule_body).encode("utf-8"),
+                method="POST",
+                headers=headers,
+            )
+            with urllib.request.urlopen(schedule_request, timeout=3) as response:
+                self.assertEqual(response.status, 201)
+                scheduled = json.loads(response.read())
+
+            parallel_request = urllib.request.Request(
+                self.url + "/api/maintenance-windows",
+                data=json.dumps(
+                    {
+                        "date": planned_date,
+                        "startTime": "20:00",
+                        "ticketIds": ["23456789"],
+                    }
+                ).encode("utf-8"),
+                method="POST",
+                headers=headers,
+            )
+            with urllib.request.urlopen(parallel_request, timeout=3) as response:
+                parallel = json.loads(response.read())
+            self.assertEqual(len(parallel["upcoming"]["windows"]), 2)
+            parallel_window_id = parallel["windowId"]
+
+            conflict_request = urllib.request.Request(
+                self.url + "/api/maintenance-windows",
+                data=json.dumps(schedule_body).encode("utf-8"),
+                method="POST",
+                headers=headers,
+            )
+            with self.assertRaises(urllib.error.HTTPError) as conflict:
+                urllib.request.urlopen(conflict_request, timeout=3)
+            self.assertEqual(conflict.exception.code, 409)
+            conflict.exception.close()
+
+        window = scheduled["upcoming"]["windows"][0]
+        self.assertEqual(window["status"], "incomplete")
+        self.assertTrue(window["canComplete"])
+        self.assertEqual(len(window["members"]), 2)
+
+        incomplete_review = urllib.request.Request(
+            self.url + f"/api/maintenance-windows/{window['windowId']}/complete",
+            data=json.dumps(
+                {
+                    "revision": window["revision"],
+                    "outcomes": {"12345678": True},
+                    "finishTime": "00:30",
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={**headers, "If-Match": str(window["revision"])},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as invalid_review:
+            urllib.request.urlopen(incomplete_review, timeout=3)
+        self.assertEqual(invalid_review.exception.code, 422)
+        invalid_review.exception.close()
+
+        complete_request = urllib.request.Request(
+            self.url + f"/api/maintenance-windows/{window['windowId']}/complete",
+            data=json.dumps(
+                {
+                    "revision": window["revision"],
+                    "outcomes": {"12345678": True, "87654321": False},
+                    "finishTime": "00:30",
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={**headers, "If-Match": str(window["revision"])},
+        )
+        with urllib.request.urlopen(complete_request, timeout=3) as response:
+            completed = json.loads(response.read())
+
+        self.assertEqual(completed["ticketIds"], ["12345678", "87654321"])
+        self.assertEqual(
+            [candidate["windowId"] for candidate in completed["upcoming"]["windows"]],
+            [parallel_window_id],
+        )
+        archived = completed["upcoming"]["archived"][0]
+        self.assertEqual(archived["windowId"], window["windowId"])
+        self.assertEqual(archived["finishTime"], "00:30")
+        self.assertEqual(archived["finishDate"], local_today().isoformat())
+        self.assertEqual(
+            {member["ticketId"]: member["outcome"] for member in archived["members"]},
+            {"12345678": "completed", "87654321": "incomplete"},
+        )
+        incomplete_attempt = self.store.read_ticket("87654321")["local"]["maintenance_window"]["attempts"][-1]
+        self.assertEqual(incomplete_attempt["outcome"], "incomplete")
+        self.assertEqual(incomplete_attempt["finish_time"], "00:30")
+        self.assertEqual(incomplete_attempt["finish_date"], local_today().isoformat())
+
+    def test_standalone_elapsed_window_counts_and_can_be_reviewed_from_upcoming(self) -> None:
+        yesterday = (local_today() - timedelta(days=1)).isoformat()
+        detail = self.service.ticket("12345678")
+        self.service.edit_ticket(
+            "12345678",
+            changes={"Planned Date": yesterday},
+            expected_revision=detail["revision"],
+        )
+
+        upcoming = self.service.upcoming_maintenance_windows()
+        self.assertEqual(upcoming["stats"]["awaitingReview"], 1)
+        window = upcoming["windows"][0]
+        self.assertEqual(window["windowId"], "MW-SR-12345678")
+        self.assertEqual(window["kind"], "standalone")
+        self.assertTrue(window["canComplete"])
+
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        request = urllib.request.Request(
+            self.url + "/api/maintenance-windows/MW-SR-12345678/complete",
+            data=json.dumps(
+                {
+                    "revision": window["revision"],
+                    "outcomes": {"12345678": True},
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "If-Match": str(window["revision"]),
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            reviewed = json.loads(response.read())
+
+        self.assertEqual(reviewed["ticketIds"], ["12345678"])
+        self.assertEqual(reviewed["upcoming"]["stats"]["awaitingReview"], 0)
+        stored = self.store.read_ticket("12345678")["local"]["maintenance_window"]
+        self.assertEqual(stored["status"], "completed")
+        self.assertEqual(stored["attempts"][-1]["outcome"], "completed")
+
+    def test_unlinked_window_can_be_created_linked_updated_and_deleted_atomically(self) -> None:
+        source = self.downloads / "Advanced Search(Service Request)20260811020202.xlsx"
+        write_advanced(
+            source,
+            [
+                upstream_row("12345678", summary="Existing ticket"),
+                upstream_row("23456789", summary="Second member"),
+            ],
+        )
+        sync_advanced_search(self.store, source)
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+        }
+        first_date = (local_today() + timedelta(days=1)).isoformat()
+        second_date = (local_today() + timedelta(days=2)).isoformat()
+
+        create_request = urllib.request.Request(
+            self.url + "/api/maintenance-windows",
+            data=json.dumps(
+                {"date": first_date, "startTime": "21:30", "ticketIds": []}
+            ).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        with urllib.request.urlopen(create_request, timeout=3) as response:
+            created = json.loads(response.read())
+            self.assertEqual(response.status, 201)
+        window = created["upcoming"]["windows"][0]
+        self.assertEqual(window["kind"], "unlinked")
+        self.assertEqual(window["members"], [])
+
+        link_request = urllib.request.Request(
+            self.url + f"/api/maintenance-windows/{window['windowId']}",
+            data=json.dumps(
+                {
+                    "revision": window["revision"],
+                    "date": second_date,
+                    "startTime": "22:00",
+                    "ticketIds": ["12345678", "23456789"],
+                }
+            ).encode("utf-8"),
+            method="PATCH",
+            headers={**headers, "If-Match": str(window["revision"])},
+        )
+        with urllib.request.urlopen(link_request, timeout=3) as response:
+            linked = json.loads(response.read())
+        linked_window = linked["upcoming"]["windows"][0]
+        self.assertEqual(linked_window["kind"], "shared")
+        self.assertEqual(
+            {member["ticketId"] for member in linked_window["members"]},
+            {"12345678", "23456789"},
+        )
+        self.assertEqual(self.store.state().get("unlinked_maintenance_windows"), [])
+        for ticket_id in ("12345678", "23456789"):
+            stored = self.store.read_ticket(ticket_id)["local"]["maintenance_window"]
+            self.assertEqual(stored["date"], second_date)
+            self.assertEqual(stored["start_time"], "22:00")
+            self.assertEqual(stored["window_id"], linked_window["windowId"])
+
+        delete_request = urllib.request.Request(
+            self.url + f"/api/maintenance-windows/{linked_window['windowId']}/delete",
+            data=json.dumps({"revision": linked_window["revision"]}).encode("utf-8"),
+            method="POST",
+            headers={**headers, "If-Match": str(linked_window["revision"])},
+        )
+        with urllib.request.urlopen(delete_request, timeout=3) as response:
+            deleted = json.loads(response.read())
+        self.assertEqual(deleted["ticketIds"], ["12345678", "23456789"])
+        self.assertEqual(deleted["upcoming"]["windows"], [])
+        for ticket_id in ("12345678", "23456789"):
+            stored = self.store.read_ticket(ticket_id)["local"]["maintenance_window"]
+            self.assertEqual(stored["status"], "unplanned")
+            self.assertIsNone(stored["date"])
+            self.assertIsNone(stored["window_id"])
+
+    def test_database_maintenance_status_route_is_read_only_when_current(self) -> None:
+        audit_before = self.store.audit_file.read_text(encoding="utf-8")
+        status, maintenance, _ = self.read_json("/api/database/maintenance")
+        audit_after = self.store.audit_file.read_text(encoding="utf-8")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(maintenance["status"], "current")
+        self.assertFalse(maintenance["canApply"])
+        self.assertEqual(audit_before, audit_after)
+
+    def test_bulk_draft_patch_returns_complete_saved_tickets(self) -> None:
+        _, bootstrap, _ = self.read_json("/api/bootstrap")
+        _, detail, _ = self.read_json("/api/tickets/12345678")
+        body = json.dumps(
+            {
+                "edits": [
+                    {
+                        "ticketId": "12345678",
+                        "revision": detail["revision"],
+                        "changes": {"Notes": "Saved from protected drafts manager"},
+                    }
+                ]
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.url + "/api/tickets/bulk-local",
+            data=body,
+            method="PATCH",
+            headers={
+                "Content-Type": "application/json",
+                "X-Zeus-CSRF": str(bootstrap["csrfToken"]),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            payload = json.loads(response.read())
+
+        self.assertEqual(payload["ticketIds"], ["12345678"])
+        saved = payload["tickets"]["12345678"]
+        self.assertEqual(saved["localFields"]["Notes"], "Saved from protected drafts manager")
+        self.assertIsInstance(saved["history"], list)
 
     def test_bundled_react_entrypoint_and_hashed_assets_are_served_locally(self) -> None:
         with urllib.request.urlopen(self.url + "/", timeout=3) as response:

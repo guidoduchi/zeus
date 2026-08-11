@@ -4,14 +4,18 @@
 
 | Record area | Authoritative writer |
 |---|---|
-| `upstream.fields` | Advanced Search reconciliation, or the protected snapshot carried by Pendings when rebuilding from Pendings alone |
-| `local.fields` | validated Pendings import/restore/web-edit transaction for generic work fields and derived flat compatibility values |
-| `local.spare_parts` | normalized `Spare Parts` worksheet or the same Pendings-first browser transaction |
-| `local.presentation.cell_styles` | validated Pendings import/restore |
+| `upstream.fields` | Advanced Search reconciliation |
+| `local.fields` | validated database edit transactions; flat compatibility values are derived |
+| `local.spare_parts` | validated database edit transactions |
+| `local.presentation.cell_styles` | retained legacy presentation metadata and export defaults |
 | `lifecycle` | Advanced Search reconciliation and verified publication |
 | `email` | optional Outlook staging and synchronization |
 | `mop` | MOP output generation |
-| `current/spare_requests/active` | explicit Spare Request export plus LASpare/iCare/manual lifecycle transactions |
+| `global/user_profile.json` | explicit local profile setup/edit |
+| `global/reference_data.json` | structured Global data manager |
+| `global/spare_request_boms.json` | Spare Requests BOM catalog |
+| `current/spare_requests/active` | explicit Create/Export actions, configured-mail facts, and revision-safe lifecycle transactions |
+| `current/spare_requests/fault_tags` | Fault Tag export/re-export, linked sent/warehouse email evidence, and explicit member confirmation |
 | Completed Spare Request rows/email | dedicated `Closed.xlsx` tabs; never copied back to active Markdown |
 
 Every current ticket lives at `current/tickets/<SRNo>/<SRNo>.md`. The first
@@ -23,29 +27,31 @@ Lifecycle is `active` or `closure_pending`. Finalized tickets no longer remain
 in the Markdown database; their non-email fields are appended to `Closed.xlsx`
 and the ID remains in `closed_index.json`.
 
-## Pendings-first bootstrap
+## Database-first discovery and closure
 
-Pendings includes protected columns as an integrity snapshot plus the local
-work columns it owns. When no Markdown database exists, a valid Pendings file
-can seed both areas and produce the complete dashboard. Advanced Search later
-refreshes protected fields and lifecycle without overwriting local fields.
+Advanced Search is the discovery source for current Service Requests. A new
+valid workbook adds unknown IDs and refreshes protected fields on known IDs
+without overwriting local fields. Existing database IDs absent from that source
+become `closure_pending`, remain in Markdown, and can be reactivated by a later
+source before export.
 
-Closed is not required to import Pendings. When present it is validated and
-indexed. Advanced Search is not required to show Pendings-derived tickets.
-Outlook is never required to build or query the database.
+Pendings and Closed are not startup inputs. They may be absent, externally
+changed, or locked without affecting normal database reads and edits. Outlook
+is never required to build or query the database.
 
 ## Spare-parts hierarchy
 
 `local.spare_parts` is a list of damaged devices. Each device stores `device`,
-`model`, and a list of parts; each part stores `slot`, `part`, `bom`,
-`faulty_sn`, and `new_sn`. The normalized `Spare Parts` worksheet carries one
-row per part with explicit Device # and Part # ordering. Every SR has at least
-one row: a blank sentinel means that the ticket deliberately has no spare-parts
-record, while a missing SR row is rejected as unsafe.
+`model`, newline-delimited `faulty_sns`, and a list of parts; each part stores
+newline-delimited `slot`, `part`, `bom`, and `notes`. Legacy part-level fault
+and replacement serials upgrade without data loss, but new replacement serials
+belong to the independent Spare Request lifecycle. An explicit export emits a
+normalized `Spare Parts` worksheet with one row per part and explicit Device #
+and Part # ordering. Every exported SR has at least one row: a blank sentinel
+means that the ticket deliberately has no spare-parts record.
 
-Legacy Pendings files without this worksheet remain valid. Their single Model,
-Device, Slot, Part, BOM, Old SN, and New SN values migrate to one device/part
-record. The next authorized browser edit, recreation, or publication writes the
+Legacy records with single Model, Device, Slot, Part, BOM, Old SN, and New SN
+values migrate to one device/part record. The next explicit export writes the
 normalized worksheet. The flat primary-sheet columns remain generated export
 summaries, not a second editable hierarchy.
 
@@ -55,22 +61,77 @@ Service Requests projects current ticket Markdown. The top-level Spare Requests
 workspace is different: Active Requests projects independent records under
 `current/spare_requests/active/<request_id>/`; Eligible SR Parts is a reusable
 projection of current `local.spare_parts`; Completed reads the two dedicated
-tabs in validated Closed.xlsx. An eligible source part is never consumed and
-may seed multiple independent requests.
+tabs in validated Closed.xlsx. A source part is identified by TT, Device #, and
+Part #. It remains in the SR database but is withheld from eligibility while an
+Active Request owns that identity, then becomes eligible again after the active
+units are completed or cancelled.
 
-The request ID is a unique Ecuador `YYMMDDHHmmss` allocated at initial XLSX
-export. One request carries one eight-digit TT, at most one `SR` plus seven-digit
-Spare SR, a profile snapshot, original BOM groups, and quantity-expanded unit
-items. Each unit item owns at most one immutable `C` plus ten-digit RMA. It
-stores requested and delivered BOM separately, plus optional faulty/new serials,
-attendance, dispatch, return export, warehouse candidate, conflicts, and audit
-history. Partial confirmation assigns available RMAs and leaves remaining units
-in Awaiting stock under the same request.
+The request ID is a unique Ecuador `YYMMDDHHmmss` allocated at initial Create
+or Export. One request carries one eight-digit TT, one original TT report date, at
+most one `SR` plus seven-digit Spare SR, a profile snapshot, original BOM groups,
+and quantity-expanded unit items. The report date is captured once at TT level
+and propagated to unit/Fault Tag output; it is not independently edited per BOM.
+Each group stores exactly one requested BOM, zero or more unique slots, notes,
+and the damaged device's faulty-serial evidence. When slots exist, their
+unique newline count determines quantity and each unit receives one slot; a
+slotless manual group retains an explicit multiplier. Those serials are
+device-level evidence, not positional unit
+assignments: one whole-server BOM can retain the serials of several damaged
+internal parts, and every unit's single Faulty SN cell contains the whole list.
+Each unit item owns at most one immutable `C` plus ten-digit RMA. It stores
+requested and delivered BOM separately, plus New SN, attendance, dispatch,
+replacement confirmation, linked Fault Tag IDs, warehouse evidence, lifecycle
+suppressions, conflicts, and audit history. Partial confirmation assigns
+available RMAs and leaves remaining units in Awaiting stock under the same
+request.
+
+Lifecycle is contiguous and uses Added to Zeus, Request email sent, SR and RMA
+confirmed, Spare parts dispatched, Spare replaced, Warehouse evidence received,
+and Complete. A request-level sent-email fact is shared by every unit; changing
+that stage requires selecting all active units in the request. A rollback of an
+email-backed stage retains the message and appends a suppression keyed by exact
+message identity, so replay cannot restore the lifecycle effect.
+
+## Fault Tag records
+
+Each active Fault Tag lives at
+`current/spare_requests/fault_tags/active/<FT-ID>/<FT-ID>.md`; completed batches
+move to the sibling `completed` collection. Its ID is an Ecuador
+`FT-YYMMDDHHmmss`, independent from request IDs. A record snapshots the actual
+return site, export revisions, sent-email identity, lock state, and one or more
+members with request/item identity, Faulty/New condition, warehouse evidence,
+and explicit-user-confirmation time.
+
+Export, re-export, and manual sent registration do not change request lifecycle.
+The first detected sent Fault Tag email sets the immutable membership lock for
+an exported tag; registering a tag already sent outside Zeus creates the
+internal ID and sets the same lock with `locked_source=manual`. Only one active
+Fault Tag may own an item. Deleting a mistaken batch removes its links from
+active items without changing their stages. A confirmed member can leave active
+request Markdown while a partial batch remains active; stored member snapshots
+keep same-ID re-export possible. The final confirmed member archives the batch.
+
+## Local profile and global reference data
+
+`global/user_profile.json` contains name, email, phone, optional username, and
+an optional compact image data URL. A valid profile is a startup precondition
+and is synthesized as the first pinned/current requester without duplicating it
+inside `reference_data.json`.
+
+`global/reference_data.json` contains customer organizations, customer
+contacts, independent sites, and additional requesters. Every contact stores a
+required organization ID. A new Spare Request snapshot also requires the chosen
+customer contact's email and phone. Requesters store their own contact details and a
+favorite/pinned flag. `global/spare_request_boms.json` is deliberately separate
+because it is managed from the Spare Requests workspace. Saved requests always
+retain a complete profile snapshot, so later manager edits cannot rewrite old
+exports.
 
 Outlook facts are applied in confirmation-before-dispatch order irrespective of
 message arrival. Existing contradictory TT, Spare SR, RMA, delivered BOM, or New
-SN facts are never silently overwritten. Exact ITSAnet RMA + Spare SR messages
-create candidates only; archive remains an explicit user action.
+SN facts are never silently overwritten. Warehouse messages with exact RMA +
+Spare SR matches create evidence only. One explicit user confirmation completes
+that item; manual evidence cannot bypass the warehouse match.
 
 The configured export directory and local request/return templates are outside
 the authority graph. Request output retains the supplied two sheets and return
@@ -80,38 +141,76 @@ workbooks. Completed/cancelled items leave active Markdown permanently and are
 appended to `Spare Requests`; associated retained mail is appended to `Spare
 Request Emails`.
 
-## Missing-Pendings materialization
+## Operational workbook export
 
-When a manual or scheduled Query, or a browser Save, finds that
-`Pendings.xlsx` is genuinely absent, Zeus may materialize a replacement from
-every current Markdown record. It preserves the last known valid header order
-when available, writes active and closure-pending rows, builds the report sheet,
-verifies all ticket IDs, and establishes a new protected-field snapshot before
-ordinary import continues.
+An explicit export builds a temporary Pendings workbook from active database
+records and a temporary Closed workbook with all `closure_pending` rows
+appended. Zeus validates the generated IDs and both file hashes, creates paired
+backups when existing outputs are present, and atomically replaces the pair.
+Only after that verified replacement succeeds does the publication transaction
+remove finalized ticket records and update `closed_index.json`.
 
-This recovery is not publication and is not backup restore. It never reads a
-Pendings backup, creates or modifies `Closed.xlsx`, or finalizes a ticket. An
-existing workbook—even invalid or externally changed—remains protected by the
-normal validation and conflict rules. Preparation and replacement are
-journaled so startup can finalize a verified replacement after interruption.
+An interrupted paired export is journaled and recovered. Normal startup may
+finish journals created by older releases, but it does not otherwise import,
+materialize, or rewrite operational workbooks.
 
 ## Browser edit transaction
 
-A web edit is a Pendings transaction, not a direct Markdown mutation. Its
-preconditions are the ticket revision and the SHA-256 of the last imported
-Pendings file. A mismatch produces a conflict before any value is written.
-
-The candidate workbook is written and validated off to the side. Zeus then
-creates a recoverable original copy, replaces Pendings atomically, imports that
-file through the existing reconciliation path, and writes the audit event. If
-the Markdown import fails, the workbook backup is atomically restored.
+A web edit is a staged Markdown-database mutation. Its precondition is the
+ticket revision. The candidate local fields or normalized Spare Parts hierarchy
+are validated, written to a staging tree, checked against the revision again,
+and atomically committed with an audit event. Pendings is not read or written.
 
 `Spare` remains a workbook and Markdown compatibility value but is absent from
 the site. Normalization enforces `Y` when any normalized part has a non-empty
-BOM and `N` otherwise. A browser hierarchy edit rewrites the normalized table,
-flat compatibility cells, and `Spare` in one workbook transaction. Planned
-dates cross the browser boundary as `YYYY-MM-DD` and are stored in Excel as date
-cells rather than free-form display text.
+BOM and `N` otherwise. A browser hierarchy edit stores the normalized record
+and recalculates `Spare` in one database transaction. Flat compatibility cells
+are generated on export. Planned dates cross the browser boundary as
+`YYYY-MM-DD` and are exported as date cells rather than free-form display text.
+
+### Maintenance Window schema
+
+Zeus 3.1.6 introduced MW truth under `local.maintenance_window`:
+
+```json
+{
+  "schema_version": 1,
+  "status": "planned",
+  "date": "2026-08-21",
+  "start_time": "23:30",
+  "window_id": "MW-260811120000-ABCD",
+  "attempts": [
+    {
+      "date": "2026-08-21",
+      "start_time": "23:30",
+      "outcome": "completed",
+      "finish_time": "00:30",
+      "finish_date": "2026-08-22",
+      "window_id": "MW-260811120000-ABCD"
+    }
+  ],
+  "review_required": false
+}
+```
+
+`status` is `planned`, `unplanned`, `incomplete`, `completed`, or
+`no_visibility`. A past planned date requires an outcome. A failed outcome is
+appended to `attempts`, changes status to `incomplete`, and clears `date`; a
+later plan sets a new date without deleting the old attempt. A successful
+outcome preserves its date in history and changes the visible value to
+`Complete`.
+
+`start_time` and archived `finish_time` values are optional and restricted to
+`:00` or `:30`. When a finish clock time precedes a recorded start time, Zeus
+stores the finish on the next calendar day; the resulting duration must not
+exceed 12 hours. `window_id` links all members of one shared Upcoming window.
+It is cleared from the current SR state when that cycle is reviewed, while the
+archived attempt retains it permanently.
+
+`local.fields["Planned Date"]` and `local.fields["Done?"]` remain generated
+compatibility projections for Pendings/Closed export and older scripts. They
+are synchronized during every normalized write and do not form two independent
+sources of MW truth.
 
 ## State markers
 
@@ -119,24 +218,37 @@ cells rather than free-form display text.
 
 - newest processed Advanced Search filename, timestamp, SHA-256, row count,
   and processing time;
-- Pendings import SHA-256, result, and protected-field snapshot;
+- successful publication hashes, protected-field snapshot, and closed index;
 - successful email fetch and synchronization times;
 - full-scan, staged-message, publication, and recovery status.
+- unlinked Maintenance Windows, which transfer out of manager state when the
+  first SR becomes authoritative and return only if the last SR is detached;
+- database format version and last successful Database Maintenance timestamp.
 
 Configuration contains user choices only. Runtime markers are never accepted
 from the configuration API.
 
+`paths.data_directory` is the one exception that generic setting edits cannot
+write. The dedicated move transaction clones and hashes the complete mutable
+root, records `data_migration.json` in the fixed application home, updates the
+pointer, and requests a soft restart. Startup revalidates the prepared clone and
+original. A verified clone becomes authoritative before original cleanup; a
+mismatch restores the previous pointer. Failed Windows cleanup is marked
+`cleanup_pending` and retried without ever rolling back to a partially deleted
+old tree.
+
 ## Transaction boundary
 
-Ticket and Spare Request Markdown records, `state.json`, `closed_index.json`, and email staging form the
-`current/` transaction boundary. A mutation copies this tree below the same
+Ticket, Spare Request, and Fault Tag Markdown records, `state.json`,
+`closed_index.json`, and email staging form the `current/` transaction boundary.
+A mutation copies this tree below the same
 writable data root, validates it, swaps it atomically, and appends a local audit
 event. Keeping staging below the data root preserves Windows ACL inheritance
 and avoids cross-volume replacement failures.
 
-Workbook publication, Pendings restore/recreation, and web edits add their own
-backup or journal boundary. Startup recovers a verified operation or discards
-its uncommitted preparation before ordinary import begins.
+Workbook publication and legacy restore/recreation add their own backup or
+journal boundary. Startup recovers a verified interrupted operation before
+ordinary Advanced Search reconciliation begins.
 
 ## Email privacy
 

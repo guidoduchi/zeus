@@ -1,7 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { ApiError, getSpareReferenceData, getSpareRequestPrefill } from "../api";
-import type { SparePartSummary, SpareReferenceData } from "../types";
+import {
+  ApiError,
+  getSpareReferenceData,
+  getSpareRequestPrefill,
+  importCustomerFromTicket,
+} from "../api";
+import type {
+  RequesterProfile,
+  SparePartSummary,
+  SpareReferenceData,
+} from "../types";
+import { requestedQuantity } from "../ticketDraftModel";
+import { AutocompleteField } from "./AutocompleteField";
 import { Modal } from "./Modal";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 
 interface LineDraft {
   bom: string;
@@ -12,7 +24,7 @@ interface LineDraft {
   device: string;
   slot: string;
   faultySn: string;
-  reportDate: string;
+  notes: string;
   deviceNumber?: number;
   partNumber?: number | null;
 }
@@ -20,101 +32,200 @@ interface LineDraft {
 interface Props {
   initialTicketId?: string;
   initialPart?: SparePartSummary | null;
+  initialAction?: "export" | "manual";
+  configurationRevision?: number;
+  suspended?: boolean;
   onClose: () => void;
   onExport: (payload: Record<string, unknown>) => Promise<void>;
+  onRegisterManual?: (payload: Record<string, unknown>) => Promise<void>;
+  onExportSetupRequired: (missing: string[]) => void;
   onError: (error: unknown) => void;
 }
 
 const EMPTY_LINE: LineDraft = {
   bom: "", amount: "1", description: "", part: "", model: "", device: "",
-  slot: "", faultySn: "", reportDate: "",
+  slot: "", faultySn: "", notes: "",
 };
 
-export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExport, onError }: Props) {
+function normalized(value: unknown): string {
+  return String(value || "").trim().toLocaleLowerCase();
+}
+
+export function SpareRequestModal({ initialTicketId, initialPart, initialAction = "export", configurationRevision = 0, suspended = false, onClose, onExport, onRegisterManual, onExportSetupRequired, onError }: Props) {
   const inheritedTicket = Boolean(initialTicketId || initialPart);
   const [ticketId, setTicketId] = useState(initialTicketId || initialPart?.ticketId || "");
-  const [source, setSource] = useState<"ticket" | "manual">(initialTicketId || initialPart ? "ticket" : "manual");
+  const [source, setSource] = useState<"ticket" | "manual">(inheritedTicket ? "ticket" : "manual");
   const [ttLocked, setTtLocked] = useState(inheritedTicket);
+  const [reportDate, setReportDate] = useState("");
   const [profile, setProfile] = useState({
-    clientInitials: "", customerName: "", siteCode: initialPart?.site === "—" ? "" : initialPart?.site || "",
+    customerName: "", customerOrganization: "",
+    siteCode: initialPart?.site === "—" ? "" : initialPart?.site || "",
     siteName: "", siteAddress: "", cloud: initialPart?.cloud === "—" ? "" : initialPart?.cloud || "",
     requesterName: "", requesterEmail: "", requesterPhone: "",
-    contactName: "", contactEmail: "", contactPhone: "",
+    contactEmail: "", contactPhone: "",
   });
   const [lines, setLines] = useState<LineDraft[]>(initialPart ? [{
     bom: initialPart.bom === "—" ? "" : initialPart.bom,
-    amount: "1",
+    amount: String(requestedQuantity(initialPart.slot === "—" ? "" : initialPart.slot)),
     description: initialPart.part === "—" ? initialPart.bom : initialPart.part,
     part: initialPart.part === "—" ? "" : initialPart.part,
     model: initialPart.model === "—" ? "" : initialPart.model,
     device: initialPart.device === "—" ? "" : initialPart.device,
     slot: initialPart.slot === "—" ? "" : initialPart.slot,
     faultySn: initialPart.faultySn === "—" ? "" : initialPart.faultySn,
-    reportDate: "",
+    notes: "",
     deviceNumber: initialPart.deviceNumber,
     partNumber: initialPart.partNumber,
   }] : [{ ...EMPTY_LINE }]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingAction, setSavingAction] = useState<"export" | "manual" | null>(null);
+  const [importing, setImporting] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
   const [references, setReferences] = useState<SpareReferenceData | null>(null);
+  const [globalSaveConfirmation, setGlobalSaveConfirmation] = useState(false);
 
-  const canExport = useMemo(() => /^\d{8}$/.test(ticketId) && lines.some((line) => line.bom.trim()), [lines, ticketId]);
+  const requestReady = Boolean(references?.exportSetup.requestReady);
+  const canAttemptExport = useMemo(() => (
+    Boolean(references)
+    && /^\d{8}$/.test(ticketId)
+    && Boolean(profile.customerName.trim() && profile.customerOrganization.trim())
+    && Boolean(profile.contactEmail.trim() && profile.contactPhone.trim())
+    && Boolean(profile.siteCode.trim() && profile.siteAddress.trim() && profile.cloud.trim())
+    && Boolean(profile.requesterName.trim())
+    && Boolean(reportDate)
+    && lines.length > 0
+    && lines.every((line) => line.bom.trim() && line.description.trim() && Number(line.amount) >= 1)
+  ), [lines, profile, references, reportDate, ticketId]);
+
+  const customerOptions = useMemo(() => references?.customers.map((row) => ({
+    key: row.id,
+    value: row.name,
+    detail: references.organizations.find((organization) => organization.id === row.organizationId)?.name || "Customer contact",
+  })) || [], [references]);
+  const organizationOptions = useMemo(() => references?.organizations.map((row) => ({
+    key: row.id,
+    value: row.name,
+  })) || [], [references]);
+  const siteOptions = useMemo(() => references?.sites.map((row) => ({
+    key: row.id,
+    value: row.code,
+    detail: [row.name, row.address].filter(Boolean).join(" · "),
+    searchText: row.name,
+  })) || [], [references]);
+  const requesterOptions = useMemo(() => references?.requesters.map((row) => ({
+    key: row.id,
+    value: row.name,
+    detail: [row.email, row.phone].filter(Boolean).join(" · "),
+  })) || [], [references]);
+  const bomOptions = useMemo(() => references?.boms.map((row) => ({
+    key: row.id,
+    value: row.bom,
+    detail: row.description,
+    searchText: [row.part, row.model, row.device].filter(Boolean).join(" "),
+  })) || [], [references]);
 
   useEffect(() => {
-    if (!initialTicketId && !initialPart) return;
+    getSpareReferenceData().then((result) => {
+      setReferences(result);
+      const preferred = result.requesters.find((row) => row.currentUser)
+        || result.requesters.find((row) => row.pinned)
+        || result.requesters[0];
+      if (preferred) applyRequester(preferred, false);
+    }).catch(onError);
+  }, [configurationRevision, onError]);
+
+  useEffect(() => {
+    if (!inheritedTicket) return;
     void loadTicket(!initialPart);
   }, []);
 
-  useEffect(() => {
-    getSpareReferenceData().then(setReferences).catch(() => undefined);
-  }, []);
-
-  function presetValue(row: Record<string, unknown>, ...keys: string[]): string {
-    const value = keys.map((key) => row[key]).find((candidate) => candidate !== undefined && candidate !== null && candidate !== "");
-    return String(value || "");
+  function updateProfile(key: keyof typeof profile, value: string) {
+    setProfile((current) => ({ ...current, [key]: value }));
   }
 
-  function applyProfilePreset(kind: "customers" | "sites" | "requesters", id: string) {
-    const row = references?.[kind].find((candidate) => String(candidate.id) === id);
-    if (!row) return;
-    if (kind === "customers") {
-      setProfile((current) => ({
-        ...current,
-        clientInitials: presetValue(row, "clientInitials", "client_initials", "initials") || current.clientInitials,
-        customerName: presetValue(row, "customerName", "customer_name", "name") || current.customerName,
-      }));
-    } else if (kind === "sites") {
-      const contact = (row.contact || {}) as Record<string, unknown>;
-      setProfile((current) => ({
-        ...current,
-        siteCode: presetValue(row, "siteCode", "site_code", "code", "name") || current.siteCode,
-        siteName: presetValue(row, "siteName", "site_name", "name") || current.siteName,
-        siteAddress: presetValue(row, "siteAddress", "site_address", "address") || current.siteAddress,
-        cloud: presetValue(row, "cloud") || current.cloud,
-        contactName: presetValue(contact, "name") || presetValue(row, "contactName", "contact_name") || current.contactName,
-        contactEmail: presetValue(contact, "email") || presetValue(row, "contactEmail", "contact_email") || current.contactEmail,
-        contactPhone: presetValue(contact, "phone") || presetValue(row, "contactPhone", "contact_phone") || current.contactPhone,
-      }));
-    } else {
-      setProfile((current) => ({
-        ...current,
-        requesterName: presetValue(row, "name", "requesterName", "requester_name") || current.requesterName,
-        requesterEmail: presetValue(row, "email") || current.requesterEmail,
-        requesterPhone: presetValue(row, "phone") || current.requesterPhone,
-      }));
+  function applyRequester(row: RequesterProfile, overwrite = true) {
+    setProfile((current) => ({
+      ...current,
+      requesterName: overwrite ? row.name || current.requesterName : current.requesterName || row.name,
+      requesterEmail: overwrite ? row.email || current.requesterEmail : current.requesterEmail || row.email,
+      requesterPhone: overwrite ? row.phone || current.requesterPhone : current.requesterPhone || row.phone,
+    }));
+  }
+
+  function chooseCustomer(value: string) {
+    const customer = references?.customers.find((row) => normalized(row.name) === normalized(value));
+    if (!customer) {
+      updateProfile("customerName", value);
+      return;
     }
+    const organization = references?.organizations.find((row) => row.id === customer.organizationId);
+    setProfile((current) => ({
+      ...current,
+      customerName: customer.name,
+      customerOrganization: organization?.name || current.customerOrganization,
+      contactEmail: customer.email || "",
+      contactPhone: customer.phone || "",
+    }));
   }
 
-  function applyBomPreset(index: number, id: string) {
-    const row = references?.boms.find((candidate) => String(candidate.id) === id);
-    if (!row) return;
+  function chooseCustomerById(id: string) {
+    const customer = references?.customers.find((row) => row.id === id);
+    if (!customer) return;
+    const organization = references?.organizations.find((row) => row.id === customer.organizationId);
+    setProfile((current) => ({
+      ...current,
+      customerName: customer.name,
+      customerOrganization: organization?.name || current.customerOrganization,
+      contactEmail: customer.email || "",
+      contactPhone: customer.phone || "",
+    }));
+  }
+
+  function chooseSite(value: string) {
+    const site = references?.sites.find((row) => (
+      normalized(row.code) === normalized(value) || normalized(row.name) === normalized(value)
+    ));
+    if (!site) {
+      updateProfile("siteCode", value.toUpperCase());
+      return;
+    }
+    setProfile((current) => ({
+      ...current,
+      siteCode: site.code,
+      siteName: site.name || "",
+      siteAddress: site.address,
+      cloud: site.cloud || current.cloud,
+    }));
+  }
+
+  function chooseRequester(value: string) {
+    const requester = references?.requesters.find((row) => normalized(row.name) === normalized(value));
+    if (requester) applyRequester(requester);
+    else updateProfile("requesterName", value);
+  }
+
+  function updateLine(index: number, key: keyof LineDraft, value: string) {
+    setLines((current) => current.map((line, position) => {
+      if (position !== index) return line;
+      if (key === "slot") return { ...line, slot: value, amount: String(requestedQuantity(value)) };
+      return { ...line, [key]: value };
+    }));
+  }
+
+  function chooseBom(index: number, value: string) {
+    const bom = references?.boms.find((row) => normalized(row.bom) === normalized(value));
+    if (!bom) {
+      updateLine(index, "bom", value);
+      return;
+    }
     setLines((current) => current.map((line, position) => position !== index ? line : ({
       ...line,
-      bom: presetValue(row, "bom", "code", "id") || line.bom,
-      description: presetValue(row, "description", "part", "name") || line.description,
-      part: presetValue(row, "part", "name") || line.part,
-      model: presetValue(row, "model") || line.model,
+      bom: bom.bom,
+      description: bom.description || line.description,
+      part: bom.part || line.part,
+      model: bom.model || line.model,
+      device: bom.device || line.device,
     })));
   }
 
@@ -130,22 +241,24 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
       const contact = (incoming.contact || {}) as Record<string, unknown>;
       setProfile((current) => ({
         ...current,
-        customerName: String(incoming.customerName || current.customerName || ""),
+        customerOrganization: String(incoming.customerOrganization || current.customerOrganization || ""),
+        customerName: String(incoming.customerName || contact.name || current.customerName || ""),
         siteCode: String(incoming.siteCode || current.siteCode || ""),
         siteName: String(incoming.siteName || current.siteName || ""),
         siteAddress: String(incoming.siteAddress || current.siteAddress || ""),
         cloud: String(incoming.cloud || current.cloud || ""),
-        contactName: String(contact.name || current.contactName || ""),
         contactEmail: String(contact.email || current.contactEmail || ""),
         contactPhone: String(contact.phone || current.contactPhone || ""),
       }));
+      setReportDate(String(result.reportDate || "").slice(0, 10));
       if (replaceLines && result.lines.length) {
         setLines(result.lines.map((raw) => ({
           bom: String(raw.bom || ""), amount: String(raw.amount || 1),
           description: String(raw.description || raw.part || raw.bom || ""),
           part: String(raw.part || ""), model: String(raw.model || ""),
           device: String(raw.device || ""), slot: String(raw.slot || ""),
-          faultySn: String(raw.faultySn || ""), reportDate: String(raw.reportDate || "").slice(0, 10),
+          faultySn: String(raw.faultySn || ""),
+          notes: String(raw.notes || ""),
           deviceNumber: Number(raw.deviceNumber || 0) || undefined,
           partNumber: Number(raw.partNumber || 0) || null,
         })));
@@ -169,97 +282,139 @@ export function SpareRequestModal({ initialTicketId, initialPart, onClose, onExp
     }
   }
 
-  function updateProfile(key: keyof typeof profile, value: string) {
-    setProfile((current) => ({ ...current, [key]: value }));
-  }
-
-  function updateLine(index: number, key: keyof LineDraft, value: string) {
-    setLines((current) => current.map((line, position) => position === index ? { ...line, [key]: value } : line));
-  }
-
-  async function submit() {
-    if (!canExport) return;
-    setSaving(true);
+  async function importCustomer() {
+    setImporting(true);
     try {
-      await onExport({
-        source,
-        ticketId,
-        profile: {
-          clientInitials: profile.clientInitials,
-          customerName: profile.customerName,
-          siteCode: profile.siteCode,
-          siteName: profile.siteName,
-          siteAddress: profile.siteAddress,
-          cloud: profile.cloud,
-          requester: { name: profile.requesterName, email: profile.requesterEmail, phone: profile.requesterPhone },
-          contact: { name: profile.contactName, email: profile.contactEmail, phone: profile.contactPhone },
+      await importCustomerFromTicket(ticketId, {
+        customerOrganization: profile.customerOrganization,
+        customerName: profile.customerName,
+        contact: {
+          name: profile.customerName,
+          email: profile.contactEmail,
+          phone: profile.contactPhone,
         },
-        lines: lines.map((line) => ({ ...line, amount: Number(line.amount || 1) })),
       });
+      setReferences(await getSpareReferenceData());
+      setWarning(null);
+      setGlobalSaveConfirmation(true);
+    } catch (error) {
+      onError(error);
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function requestPayload(): Record<string, unknown> {
+    return {
+      source,
+      ticketId,
+      reportDate,
+      profile: {
+        customerOrganization: profile.customerOrganization,
+        customerName: profile.customerName,
+        siteCode: profile.siteCode,
+        siteName: profile.siteName,
+        siteAddress: profile.siteAddress,
+        cloud: profile.cloud,
+        requester: { name: profile.requesterName, email: profile.requesterEmail, phone: profile.requesterPhone },
+        contact: { name: profile.customerName, email: profile.contactEmail, phone: profile.contactPhone },
+      },
+      lines: lines.map((line) => ({
+        ...line,
+        amount: Number(line.amount || 1),
+        faultySns: line.faultySn.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+      })),
+    };
+  }
+
+  async function submit(action: "export" | "manual") {
+    if (!references || saving) return;
+    if (action === "export" && !requestReady) {
+      onExportSetupRequired(references?.exportSetup.requestMissing.map((item) => item.label) || []);
+      return;
+    }
+    if (!canAttemptExport || (action === "manual" && !onRegisterManual)) return;
+    setSaving(true);
+    setSavingAction(action);
+    try {
+      const payload = requestPayload();
+      if (action === "manual") await onRegisterManual!(payload);
+      else await onExport(payload);
       onClose();
     } catch (error) {
       onError(error);
     } finally {
       setSaving(false);
+      setSavingAction(null);
     }
   }
 
-  return (
-    <Modal
-      title="Export Spare Request"
-      subtitle="The Ecuador timestamp ID is allocated when the XLSX is written; quantity expands into individual unit items."
-      onClose={onClose}
-      wide
-      actions={<>
-        <span className="modal-action-note">{source === "ticket" ? "TT inherited from active SR" : "Manual TT · warning allowed"}</span>
-        <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
-        <button type="button" className="primary-button" disabled={!canExport || saving} onClick={submit}>{saving ? "Exporting…" : "Export XLSX & create request"}</button>
-      </>}
-    >
-      <div className="spare-request-form">
-        <section className="form-section">
-          <div className="section-heading"><strong>Ticket and customer</strong><span>{source}</span></div>
-          {references && (references.customers.length > 0 || references.sites.length > 0) && <div className="preset-row"><label className="form-field"><span>Customer preset</span><select defaultValue="" onChange={(event) => applyProfilePreset("customers", event.target.value)}><option value="">Choose…</option>{references.customers.map((row) => <option value={String(row.id)} key={String(row.id)}>{String(row.name || row.customerName || row.id)}</option>)}</select></label><label className="form-field"><span>Site preset</span><select defaultValue="" onChange={(event) => applyProfilePreset("sites", event.target.value)}><option value="">Choose…</option>{references.sites.map((row) => <option value={String(row.id)} key={String(row.id)}>{String(row.name || row.siteCode || row.id)}</option>)}</select></label></div>}
-          <div className="form-grid three">
-            <label className="form-field"><span>TT · 8 digits</span><input value={ticketId} disabled={ttLocked} maxLength={8} onChange={(event) => { setTicketId(event.target.value.replace(/\D/g, "")); setSource("manual"); }} /></label>
-            <button type="button" className="secondary-button field-button" disabled={loading || !/^\d{8}$/.test(ticketId)} onClick={() => loadTicket(true)}>{loading ? "Loading…" : "Load active SR"}</button>
-            <label className="form-field"><span>Client initials</span><input value={profile.clientInitials} maxLength={8} onChange={(event) => updateProfile("clientInitials", event.target.value.toUpperCase())} placeholder="Customer, not requester" /></label>
-            <label className="form-field"><span>Customer name</span><input value={profile.customerName} onChange={(event) => updateProfile("customerName", event.target.value)} /></label>
-            <label className="form-field"><span>Site code</span><input value={profile.siteCode} onChange={(event) => updateProfile("siteCode", event.target.value.toUpperCase())} /></label>
-            <label className="form-field"><span>Cloud</span><input value={profile.cloud} onChange={(event) => updateProfile("cloud", event.target.value)} /></label>
-            <label className="form-field full"><span>Site address</span><input value={profile.siteAddress} onChange={(event) => updateProfile("siteAddress", event.target.value)} /></label>
+  if (suspended) return null;
+
+  const setupRequired = Boolean(references && !requestReady);
+
+  return <Modal title="New Request" subtitle="Create a stage-zero request in Zeus, or create it and export the request workbook in one action." onClose={onClose} wide actions={<>
+    <span className="modal-action-note">{source === "ticket" ? "TT inherited from active SR" : "Manual TT · warning allowed"}</span>
+    <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
+    {onRegisterManual && <button
+      type="button"
+      className="create-button manual-registration-button"
+      disabled={!references || saving || !canAttemptExport}
+      title="Create this request at Added to Zeus without exporting an XLSX"
+      autoFocus={initialAction === "manual"}
+      onClick={() => void submit("manual")}
+    >{savingAction === "manual" ? "Creating…" : "Create"}</button>}
+    <button
+      type="button"
+      className={setupRequired ? "danger-button export-setup-button" : "primary-button"}
+      disabled={!references || saving || (!setupRequired && !canAttemptExport)}
+      title={setupRequired ? `Configure ${references?.exportSetup.requestMissing.map((item) => item.label).join(" and ") || "the Spare Request export paths"}` : undefined}
+      onClick={() => void submit("export")}
+    >{savingAction === "export" ? "Exporting…" : "Export"}</button>
+  </>}>
+    <div className="spare-request-form">
+      <section className="form-section">
+        <div className="section-heading"><strong>Customer and ticket</strong><span>{source}</span></div>
+        <div className="form-grid three">
+          <AutocompleteField label="Customer name" required value={profile.customerName} options={customerOptions} onChange={chooseCustomer} onSelect={(option) => chooseCustomerById(option.key)} autoFocus={initialAction !== "manual"} />
+          <AutocompleteField label="Customer organization" required value={profile.customerOrganization} options={organizationOptions} onChange={(value) => updateProfile("customerOrganization", value)} />
+          <label className="form-field"><span>TT · 8 digits</span><input value={ticketId} disabled={ttLocked} maxLength={8} onChange={(event) => { setTicketId(event.target.value.replace(/\D/g, "")); setSource("manual"); setReportDate(""); }} /></label>
+          <label className="form-field"><span>Customer email *</span><input type="email" required value={profile.contactEmail} onChange={(event) => updateProfile("contactEmail", event.target.value)} /></label>
+          <label className="form-field"><span>Customer phone *</span><input type="tel" required value={profile.contactPhone} onChange={(event) => updateProfile("contactPhone", event.target.value)} /></label>
+          <label className="form-field"><span>Original TT report date *</span><input type="date" required value={reportDate} readOnly={source === "ticket" && Boolean(reportDate)} onChange={(event) => setReportDate(event.target.value)} /></label>
+          <button type="button" className="secondary-button field-button" disabled={loading || !/^\d{8}$/.test(ticketId)} onClick={() => void loadTicket(true)}>{loading ? "Loading…" : "Load active SR"}</button>
+          {source === "ticket" && profile.customerName && profile.customerOrganization && <button type="button" className="secondary-button field-button global-save-button" disabled={importing || !profile.contactEmail.trim() || !profile.contactPhone.trim()} title={!profile.contactEmail.trim() || !profile.contactPhone.trim() ? "Customer email and phone are required before saving globally" : undefined} onClick={() => void importCustomer()}><span aria-hidden="true">◆</span>{importing ? "Importing…" : "Save customer globally"}</button>}
+        </div>
+        {warning && <p className="inline-warning">{warning}</p>}
+      </section>
+      <section className="form-section">
+        <div className="section-heading"><strong>Site and requester</strong><span>autocomplete from Global data</span></div>
+        <div className="form-grid three">
+          <AutocompleteField label="Site" required value={profile.siteCode} options={siteOptions} onChange={chooseSite} />
+          <label className="form-field"><span>Cloud *</span><input value={profile.cloud} onChange={(event) => updateProfile("cloud", event.target.value)} /></label>
+          <AutocompleteField label="Requester" required value={profile.requesterName} options={requesterOptions} onChange={chooseRequester} />
+          <label className="form-field full"><span>Site address *</span><input value={profile.siteAddress} onChange={(event) => updateProfile("siteAddress", event.target.value)} /></label>
+          <label className="form-field"><span>Requester email</span><input value={profile.requesterEmail} onChange={(event) => updateProfile("requesterEmail", event.target.value)} /></label>
+          <label className="form-field"><span>Requester phone</span><input value={profile.requesterPhone} onChange={(event) => updateProfile("requesterPhone", event.target.value)} /></label>
+        </div>
+      </section>
+      <section className="form-section">
+        <div className="section-heading"><strong>Requested BOM groups</strong><span>{lines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0)} requested unit(s)</span></div>
+        <div className="request-line-list">{lines.map((line, index) => <article className="request-line" key={index}>
+          <header><strong>BOM group {index + 1}</strong>{lines.length > 1 && <button type="button" className="text-button danger-text" onClick={() => setLines((current) => current.filter((_, position) => position !== index))}>Remove</button>}</header>
+          <div className="form-grid four">
+            <AutocompleteField label="BOM" required value={line.bom} options={bomOptions} onChange={(value) => chooseBom(index, value)} />
+            <label className="form-field wide"><span>Description / part *</span><input value={line.description} onChange={(event) => updateLine(index, "description", event.target.value)} /></label>
+            <label className="form-field"><span>{line.slot.trim() ? "Quantity · from slots" : "Quantity multiplier *"}</span><input type="number" min="1" max="1000" value={line.amount} readOnly={Boolean(line.slot.trim())} onChange={(event) => updateLine(index, "amount", event.target.value)} />{line.slot.trim() && <small>Automatically derived from {requestedQuantity(line.slot)} unique slot line(s).</small>}</label>
+            {(["model", "device"] as const).map((key) => <label className="form-field" key={key}><span>{key[0].toUpperCase() + key.slice(1)}</span><input value={line[key]} onChange={(event) => updateLine(index, key, event.target.value)} /></label>)}
+            <label className="form-field full slot-list-field"><span>Slots · one per line</span><textarea value={line.slot} onChange={(event) => updateLine(index, "slot", event.target.value)} placeholder={"DIMM101\nDIMM203\nDIMM103"} /><small>Each unique slot becomes one requested physical unit for this BOM.</small></label>
+            <label className="form-field full faulty-serials-field"><span>Damaged-device serial evidence · one per line</span><textarea value={line.faultySn} onChange={(event) => updateLine(index, "faultySn", event.target.value)} placeholder={"CPU-SN-001\nMEMORY-SN-002\nMEZZ-SN-003"} /><small>The complete evidence list stays attached to every physical unit without changing quantity.</small></label>
+            <label className="form-field full"><span>Notes</span><textarea value={line.notes} onChange={(event) => updateLine(index, "notes", event.target.value)} placeholder="Why this BOM is requested, tests already performed, or anything easy to forget." /></label>
           </div>
-          {warning && <p className="inline-warning">{warning}</p>}
-        </section>
-        <section className="form-section">
-          <div className="section-heading"><strong>Requester and customer contact</strong><span>stored locally</span></div>
-          {references?.requesters.length ? <div className="preset-row"><label className="form-field"><span>Requester preset</span><select defaultValue="" onChange={(event) => applyProfilePreset("requesters", event.target.value)}><option value="">Choose…</option>{references.requesters.map((row) => <option value={String(row.id)} key={String(row.id)}>{String(row.name || row.id)}</option>)}</select></label></div> : null}
-          <div className="form-grid three">
-            {(["requesterName", "requesterEmail", "requesterPhone", "contactName", "contactEmail", "contactPhone"] as const).map((key) => (
-              <label className="form-field" key={key}><span>{({ requesterName: "Requester name", requesterEmail: "Requester email", requesterPhone: "Requester phone", contactName: "Customer contact", contactEmail: "Contact email", contactPhone: "Contact phone" })[key]}</span><input value={profile[key]} onChange={(event) => updateProfile(key, event.target.value)} /></label>
-            ))}
-          </div>
-        </section>
-        <section className="form-section">
-          <div className="section-heading"><strong>Requested BOM groups</strong><span>{lines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0)} unit(s)</span></div>
-          <div className="request-line-list">
-            {lines.map((line, index) => (
-              <article className="request-line" key={index}>
-                <header><strong>Group {index + 1}</strong>{lines.length > 1 && <button type="button" className="text-button danger-text" onClick={() => setLines((current) => current.filter((_, position) => position !== index))}>Remove</button>}</header>
-                <div className="form-grid four">
-                  {references?.boms.length ? <label className="form-field"><span>BOM catalog preset</span><select defaultValue="" onChange={(event) => applyBomPreset(index, event.target.value)}><option value="">Choose…</option>{references.boms.map((row) => <option value={String(row.id)} key={String(row.id)}>{String(row.bom || row.code || row.name || row.id)}</option>)}</select></label> : null}
-                  <label className="form-field"><span>BOM</span><input value={line.bom} onChange={(event) => updateLine(index, "bom", event.target.value)} /></label>
-                  <label className="form-field"><span>Quantity</span><input type="number" min="1" max="1000" value={line.amount} onChange={(event) => updateLine(index, "amount", event.target.value)} /></label>
-                  <label className="form-field wide"><span>Description / part</span><input value={line.description} onChange={(event) => updateLine(index, "description", event.target.value)} /></label>
-                  {(["model", "device", "slot", "faultySn"] as const).map((key) => <label className="form-field" key={key}><span>{key === "faultySn" ? "Faulty SN (optional)" : key[0].toUpperCase() + key.slice(1)}</span><input value={line[key]} onChange={(event) => updateLine(index, key, event.target.value)} /></label>)}
-                  <label className="form-field"><span>Original TT report date</span><input type="date" value={line.reportDate} onChange={(event) => updateLine(index, "reportDate", event.target.value)} /></label>
-                </div>
-              </article>
-            ))}
-          </div>
-          <button type="button" className="secondary-button" onClick={() => setLines((current) => [...current, { ...EMPTY_LINE }])}>+ Add BOM group</button>
-        </section>
-      </div>
-    </Modal>
-  );
+        </article>)}</div>
+        <button type="button" className="secondary-button" onClick={() => setLines((current) => [...current, { ...EMPTY_LINE }])}>+ Add another BOM</button>
+      </section>
+    </div>
+    {globalSaveConfirmation && <ConfirmationDialog title="Customer saved to Global Data" message="This organization and customer contact are now reusable. Manage them anytime from Global Data in the top bar." confirmLabel="Got it" cancelLabel="Close" onCancel={() => setGlobalSaveConfirmation(false)} onConfirm={() => setGlobalSaveConfirmation(false)} />}
+  </Modal>;
 }

@@ -21,10 +21,26 @@ from .config import (
     resolve_path_setting,
     save_config,
 )
+from .maintenance_windows import (
+    LOCAL_SCHEMA_VERSION,
+    SHARED_WINDOW_ID_PATTERN,
+    maintenance_window_for_local,
+    maintenance_window_summary,
+    normalize_half_hour_time,
+    validate_maintenance_window_record,
+)
+from .fault_tags import (
+    decode_fault_tag_record,
+    normalize_fault_tag_id,
+    render_fault_tag_markdown,
+    validate_fault_tag_record,
+)
+from .reference_data import ensure_reference_layout
 from .spare_requests import (
     decode_request_record,
     normalize_request_id,
     render_request_markdown,
+    upgrade_request_record,
     validate_request_record,
 )
 from .tickets import LOCAL_COLUMNS, UPSTREAM_COLUMNS, empty_email, normalize_local
@@ -35,6 +51,7 @@ from .utils import (
     json_dumps,
     load_json,
     normalize_ticket_id,
+    parse_date,
     safe_filename,
     sha256_file,
 )
@@ -120,6 +137,7 @@ def render_ticket_markdown(ticket: dict[str, Any]) -> str:
     upstream = ticket.get("upstream", {}).get("fields", {})
     prepared_local = normalize_local(ticket.get("local"))
     local = prepared_local.get("fields", {})
+    maintenance_window = maintenance_window_summary(prepared_local)
     email = ticket.get("email", {})
     lines = [
         f"{RECORD_MARKER}{_encode_record(ticket)} -->",
@@ -137,6 +155,48 @@ def render_ticket_markdown(ticket: dict[str, Any]) -> str:
     ]
     for column in UPSTREAM_COLUMNS:
         lines.append(f"| {_display(column)} | {_display(upstream.get(column))} |")
+    lines.extend(
+        [
+            "",
+            "## Maintenance Window",
+            "",
+            f"- Current: **{_display(maintenance_window.get('display'))}**",
+            f"- State: {_display(maintenance_window.get('status'))}",
+            f"- Scheduled start: {_display(maintenance_window.get('startTime'))}",
+            f"- Shared window: {_display(maintenance_window.get('windowId'))}",
+            "",
+            "| Date | Start | Outcome | Finish | Confirmed at | Source |",
+            "|---|---|---|---|---|---|",
+        ]
+    )
+    attempts = maintenance_window.get("attempts") or []
+    if attempts:
+        for attempt in attempts:
+            lines.append(
+                "| "
+                + " | ".join(
+                    (
+                        _display(attempt.get("date")),
+                        _display(attempt.get("start_time")),
+                        _display(attempt.get("outcome")),
+                        _display(
+                            " ".join(
+                                value
+                                for value in (
+                                    str(attempt.get("finish_date") or ""),
+                                    str(attempt.get("finish_time") or ""),
+                                )
+                                if value
+                            )
+                        ),
+                        _display(attempt.get("confirmed_at")),
+                        _display(attempt.get("source")),
+                    )
+                )
+                + " |"
+            )
+    else:
+        lines.append("| — | — | — | — | — | — |")
     lines.extend(["", "## Pendings fields", "", "| Field | Value |", "|---|---|"])
     for column in LOCAL_COLUMNS:
         lines.append(f"| {_display(column)} | {_display(local.get(column))} |")
@@ -224,6 +284,10 @@ class ZeusStore:
         self.tickets = self.current / "tickets"
         self.staging = self.current / "email_staging"
         self.spare_requests = self.current / "spare_requests" / "active"
+        self.fault_tags = self.current / "spare_requests" / "fault_tags" / "active"
+        self.completed_fault_tags = (
+            self.current / "spare_requests" / "fault_tags" / "completed"
+        )
         self.backups = self.root / "backups"
         self.audit_dir = self.root / "audit"
         self.audit_file = self.audit_dir / "events.ndjson"
@@ -246,12 +310,15 @@ class ZeusStore:
         self.backups.mkdir(parents=True, exist_ok=True)
         self.audit_dir.mkdir(parents=True, exist_ok=True)
         ensure_config(self.config_home)
+        ensure_reference_layout(self.root, self.config_home)
         if create_current and not self.current.exists():
             self._create_empty_current(self.current)
         elif create_current:
             # Additive 3.1.1 migration: existing Zeus 2/3 stores gain the
             # independent Spare Request tree without rewriting ticket data.
             self.spare_requests.mkdir(parents=True, exist_ok=True)
+            self.fault_tags.mkdir(parents=True, exist_ok=True)
+            self.completed_fault_tags.mkdir(parents=True, exist_ok=True)
             unmatched = self.unmatched_spare_messages_file()
             if not unmatched.exists():
                 atomic_write_text(unmatched, "")
@@ -260,6 +327,7 @@ class ZeusStore:
     def _empty_state() -> dict[str, Any]:
         return {
             "schema_version": 2,
+            "database_schema_version": 4,
             "created_at": iso_now(),
             "updated_at": iso_now(),
             "advanced_search_state": None,
@@ -275,6 +343,7 @@ class ZeusStore:
                 "staged_at": None,
                 "staged_message_count": 0,
             },
+            "unlinked_maintenance_windows": [],
         }
 
     @classmethod
@@ -283,6 +352,12 @@ class ZeusStore:
         (path / "email_staging").mkdir(parents=True, exist_ok=True)
         atomic_write_text(path / "email_staging" / "messages.ndjson", "")
         (path / "spare_requests" / "active").mkdir(parents=True, exist_ok=True)
+        (path / "spare_requests" / "fault_tags" / "active").mkdir(
+            parents=True, exist_ok=True
+        )
+        (path / "spare_requests" / "fault_tags" / "completed").mkdir(
+            parents=True, exist_ok=True
+        )
         atomic_write_text(path / "spare_requests" / "unmatched_messages.ndjson", "")
         atomic_write_json(path / "closed_index.json", {
             "schema_version": 1,
@@ -337,6 +412,142 @@ class ZeusStore:
     def unmatched_spare_messages_file(self, current_path: Path | None = None) -> Path:
         return self.spare_request_root(current_path) / "unmatched_messages.ndjson"
 
+    def fault_tag_root(self, current_path: Path | None = None) -> Path:
+        return self.spare_request_root(current_path) / "fault_tags"
+
+    def fault_tag_collection(
+        self, current_path: Path | None = None, *, completed: bool = False
+    ) -> Path:
+        return self.fault_tag_root(current_path) / ("completed" if completed else "active")
+
+    def fault_tag_dir(
+        self,
+        fault_tag_id: str,
+        current_path: Path | None = None,
+        *,
+        completed: bool = False,
+    ) -> Path:
+        return self.fault_tag_collection(current_path, completed=completed) / normalize_fault_tag_id(
+            fault_tag_id
+        )
+
+    def fault_tag_file(
+        self,
+        fault_tag_id: str,
+        current_path: Path | None = None,
+        *,
+        completed: bool = False,
+    ) -> Path:
+        identifier = normalize_fault_tag_id(fault_tag_id)
+        return self.fault_tag_dir(
+            identifier, current_path, completed=completed
+        ) / f"{identifier}.md"
+
+    def read_fault_tag(
+        self,
+        fault_tag_id: str,
+        current_path: Path | None = None,
+        *,
+        completed: bool | None = None,
+    ) -> dict[str, Any]:
+        candidates = (
+            [completed] if completed is not None else [False, True]
+        )
+        for archived in candidates:
+            path = self.fault_tag_file(
+                fault_tag_id, current_path, completed=bool(archived)
+            )
+            if not path.is_file():
+                continue
+            with path.open("r", encoding="utf-8") as handle:
+                first_line = handle.readline().rstrip("\n")
+            try:
+                return decode_fault_tag_record(first_line, path)
+            except ValueError as exc:
+                raise StoreError(str(exc)) from exc
+        raise StoreError(f"Fault Tag not found: {normalize_fault_tag_id(fault_tag_id)}")
+
+    def iter_fault_tag_ids(
+        self,
+        current_path: Path | None = None,
+        *,
+        completed: bool = False,
+    ) -> Iterator[str]:
+        base = self.fault_tag_collection(current_path, completed=completed)
+        if not base.exists():
+            return
+        for directory in sorted(
+            base.iterdir(), key=lambda item: item.name, reverse=True
+        ):
+            if not directory.is_dir():
+                continue
+            try:
+                identifier = normalize_fault_tag_id(directory.name)
+            except ValueError:
+                continue
+            if (directory / f"{identifier}.md").is_file():
+                yield identifier
+
+    def iter_fault_tags(
+        self,
+        current_path: Path | None = None,
+        *,
+        completed: bool = False,
+    ) -> Iterator[dict[str, Any]]:
+        for identifier in self.iter_fault_tag_ids(
+            current_path, completed=completed
+        ):
+            yield self.read_fault_tag(
+                identifier, current_path, completed=completed
+            )
+
+    def write_fault_tag(
+        self,
+        current_path: Path,
+        record: dict[str, Any],
+        *,
+        completed: bool = False,
+    ) -> Path:
+        prepared = deepcopy(record)
+        identifier = normalize_fault_tag_id(prepared.get("fault_tag_id"))
+        prepared["fault_tag_id"] = identifier
+        prepared["updated_at"] = iso_now()
+        try:
+            validate_fault_tag_record(prepared, identifier)
+        except ValueError as exc:
+            raise StoreError(str(exc)) from exc
+        directory = self.fault_tag_dir(
+            identifier, current_path, completed=completed
+        )
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{identifier}.md"
+        atomic_write_text(path, render_fault_tag_markdown(prepared))
+        return path
+
+    def delete_fault_tag(
+        self,
+        fault_tag_id: str,
+        current_path: Path,
+        *,
+        completed: bool = False,
+    ) -> None:
+        directory = self.fault_tag_dir(
+            fault_tag_id, current_path, completed=completed
+        )
+        if directory.exists():
+            shutil.rmtree(directory)
+
+    def archive_fault_tag(self, fault_tag_id: str, current_path: Path) -> None:
+        identifier = normalize_fault_tag_id(fault_tag_id)
+        source = self.fault_tag_dir(identifier, current_path, completed=False)
+        if not source.is_dir():
+            raise StoreError(f"Active Fault Tag not found: {identifier}")
+        destination = self.fault_tag_dir(identifier, current_path, completed=True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            raise StoreError(f"Completed Fault Tag already exists: {identifier}")
+        os.replace(source, destination)
+
     def read_spare_request(
         self, request_id: str, current_path: Path | None = None
     ) -> dict[str, Any]:
@@ -372,7 +583,7 @@ class ZeusStore:
     def write_spare_request(
         self, current_path: Path, request: dict[str, Any]
     ) -> Path:
-        prepared = deepcopy(request)
+        prepared = upgrade_request_record(request)
         request_id = normalize_request_id(prepared.get("request_id"))
         prepared["request_id"] = request_id
         prepared["updated_at"] = iso_now()
@@ -494,11 +705,53 @@ class ZeusStore:
             raise StoreError(f"Ticket {ticket_id} has invalid retained email data")
         if not isinstance(ticket.get("local", {}).get("spare_parts", []), list):
             raise StoreError(f"Ticket {ticket_id} has invalid spare-parts data")
+        local = ticket.get("local", {})
+        raw_local_schema = local.get("schema_version")
+        try:
+            local_schema = int(
+                1 if raw_local_schema is None else raw_local_schema
+            )
+        except (TypeError, ValueError) as exc:
+            raise StoreError(f"Ticket {ticket_id} has an invalid local schema") from exc
+        if (
+            isinstance(raw_local_schema, bool)
+            or (
+                isinstance(raw_local_schema, float)
+                and not raw_local_schema.is_integer()
+            )
+            or local_schema < 1
+            or local_schema > LOCAL_SCHEMA_VERSION
+        ):
+            raise StoreError(f"Ticket {ticket_id} has an unsupported local schema")
+        if "maintenance_window" in local:
+            try:
+                validate_maintenance_window_record(local.get("maintenance_window"))
+            except ValueError as exc:
+                raise StoreError(f"Ticket {ticket_id}: {exc}") from exc
 
     def validate_current(self, current_path: Path) -> None:
         state = self.state(current_path)
         if state.get("schema_version") != 2:
             raise StoreError("Unsupported or missing store schema version")
+        unlinked_windows = state.get("unlinked_maintenance_windows", [])
+        if not isinstance(unlinked_windows, list):
+            raise StoreError("Unlinked Maintenance Window state must be a list")
+        unlinked_ids: set[str] = set()
+        for window in unlinked_windows:
+            if not isinstance(window, dict):
+                raise StoreError("Unlinked Maintenance Window record must be an object")
+            window_id = str(window.get("window_id") or "").strip().upper()
+            if not SHARED_WINDOW_ID_PATTERN.fullmatch(window_id):
+                raise StoreError("Unlinked Maintenance Window ID is invalid")
+            if window_id in unlinked_ids:
+                raise StoreError("Unlinked Maintenance Window IDs must be unique")
+            unlinked_ids.add(window_id)
+            if parse_date(window.get("date")) is None:
+                raise StoreError(f"Unlinked Maintenance Window {window_id} date is invalid")
+            try:
+                normalize_half_hour_time(window.get("start_time"))
+            except ValueError as exc:
+                raise StoreError(f"Unlinked Maintenance Window {window_id}: {exc}") from exc
         tickets_path = current_path / "tickets"
         if not tickets_path.is_dir():
             raise StoreError("Ticket directory is missing")
@@ -507,6 +760,14 @@ class ZeusStore:
                 continue
             ticket = self.read_ticket(directory.name, current_path)
             self.validate_ticket(ticket, directory.name)
+            linked_window_id = str(
+                maintenance_window_for_local(ticket.get("local")).get("window_id")
+                or ""
+            ).strip().upper()
+            if linked_window_id and linked_window_id in unlinked_ids:
+                raise StoreError(
+                    f"Maintenance Window {linked_window_id} cannot be both linked and unlinked"
+                )
         spare_root = self.spare_request_active(current_path)
         if not spare_root.is_dir():
             raise StoreError("Spare Request directory is missing")
@@ -526,11 +787,52 @@ class ZeusStore:
             if spare_sr:
                 global_spare_srs.add(str(spare_sr))
             for item in request.get("items", []):
-                rma = item.get("rma")
-                if rma and rma in global_rmas:
-                    raise StoreError(f"RMA {rma} belongs to more than one active Spare Request")
-                if rma:
-                    global_rmas.add(str(rma))
+                identities = [item.get("rma"), *list(item.get("rma_aliases") or [])]
+                for identity in identities:
+                    if identity and identity in global_rmas:
+                        raise StoreError(
+                            f"RMA identity {identity} belongs to more than one active Spare Request"
+                        )
+                    if identity:
+                        global_rmas.add(str(identity))
+        active_item_ids = {
+            str(item.get("item_id"))
+            for request in self.iter_spare_requests(current_path)
+            for item in request.get("items", [])
+            if item.get("item_id")
+        }
+        active_fault_tag_members: set[str] = set()
+        for completed in (False, True):
+            fault_tag_root = self.fault_tag_collection(
+                current_path, completed=completed
+            )
+            if not fault_tag_root.is_dir():
+                raise StoreError("Fault Tag directory is missing")
+            for directory in fault_tag_root.iterdir():
+                if not directory.is_dir():
+                    continue
+                record = self.read_fault_tag(
+                    directory.name, current_path, completed=completed
+                )
+                try:
+                    validate_fault_tag_record(record, directory.name)
+                except ValueError as exc:
+                    raise StoreError(str(exc)) from exc
+                if completed:
+                    continue
+                for member in record.get("members", []):
+                    item_id = str(member.get("item_id") or "")
+                    if item_id not in active_item_ids and not member.get(
+                        "user_confirmed_at"
+                    ):
+                        raise StoreError(
+                            f"Active Fault Tag {directory.name} references missing item {item_id}"
+                        )
+                    if item_id in active_fault_tag_members:
+                        raise StoreError(
+                            f"Active item {item_id} belongs to more than one Fault Tag"
+                        )
+                    active_fault_tag_members.add(item_id)
         index = self.closed_index(current_path)
         ids = index.get("ticket_ids", [])
         if not isinstance(ids, list) or len(ids) != len(set(ids)):
